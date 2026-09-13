@@ -68,10 +68,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
   currentUser,
   onOpenAuthLogin,
   onDownloadBackup,
-  onSwitchRoleQuick,
-  onQuickRoleSwitch,
 }) => {
-  const handleRoleSwitch = onSwitchRoleQuick || onQuickRoleSwitch;
   const [isManifestsOpen, setIsManifestsOpen] = useState(false);
   const [isUsersDropdownOpen, setIsUsersDropdownOpen] = useState(false);
   const [isAppLauncherOpen, setIsAppLauncherOpen] = useState(false);
@@ -80,83 +77,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
 
   return (
     <header className="bg-slate-900 text-slate-100 border-b border-slate-800 sticky top-0 z-40 shadow-md">
-      {/* 1. Production Role Switcher Banner (عزل الصلاحيات كأن التطبيق منشور في بيئة الإنتاج) */}
-      <div className="bg-slate-950/90 border-b border-slate-800/80 px-4 sm:px-6 lg:px-8 py-1.5 flex flex-wrap items-center justify-between gap-2 text-xs font-semibold">
-        <div className="flex items-center gap-2">
-          <span className="text-slate-400">الحساب الفعّال حالياً:</span>
-          <span className="font-bold text-white flex items-center gap-1.5 bg-slate-800/80 px-2.5 py-0.5 rounded-md border border-slate-700">
-            {role === 'ADMIN' && <Shield className="w-3.5 h-3.5 text-amber-400" />}
-            {role === 'OPERATOR' && <Briefcase className="w-3.5 h-3.5 text-blue-400" />}
-            {role === 'MERCHANT' && <Building2 className="w-3.5 h-3.5 text-indigo-400" />}
-            {role === 'DRIVER' && <Car className="w-3.5 h-3.5 text-emerald-400" />}
-            <span>{currentUser?.name || 'مدير النظام'}</span>
-            <span className="text-[10px] text-slate-400">
-              (
-              {role === 'ADMIN'
-                ? 'مدير العمليات'
-                : role === 'OPERATOR'
-                ? 'موظف العمليات'
-                : role === 'MERCHANT'
-                ? 'حساب تاجر'
-                : 'كابتن توصيل'}
-              )
-            </span>
-          </span>
-        </div>
-
-        {/* Quick Role Simulator Pills */}
-        {handleRoleSwitch && (
-          <div className="flex items-center gap-1 bg-slate-900 p-0.5 rounded-lg border border-slate-800 text-[11px]">
-            <span className="text-slate-400 px-1.5 hidden md:inline">محاكاة الدخول بصلاحية:</span>
-            <button
-              type="button"
-              onClick={() => handleRoleSwitch('ADMIN')}
-              className={`px-2 py-0.5 rounded transition-all cursor-pointer ${
-                role === 'ADMIN'
-                  ? 'bg-amber-500 text-slate-950 font-bold'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              العمليات (Admin)
-            </button>
-            <button
-              type="button"
-              onClick={() => handleRoleSwitch('OPERATOR')}
-              className={`px-2 py-0.5 rounded transition-all cursor-pointer ${
-                role === 'OPERATOR'
-                  ? 'bg-blue-600 text-white font-bold'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              الموظفون (Staff)
-            </button>
-            <button
-              type="button"
-              onClick={() => handleRoleSwitch('MERCHANT')}
-              className={`px-2 py-0.5 rounded transition-all cursor-pointer ${
-                role === 'MERCHANT'
-                  ? 'bg-indigo-600 text-white font-bold'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              التجار (Merchant)
-            </button>
-            <button
-              type="button"
-              onClick={() => handleRoleSwitch('DRIVER')}
-              className={`px-2 py-0.5 rounded transition-all cursor-pointer ${
-                role === 'DRIVER'
-                  ? 'bg-emerald-600 text-white font-bold'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              الكابتن (Driver)
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* 2. Main Navigation Bar */}
+      {/* Main Navigation Bar */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-15">
           {/* Brand Logo & ERP 9-Dots Launcher (Matching Screenshot 1 & 2) */}

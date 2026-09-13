@@ -646,7 +646,6 @@ export default function App() {
         onOpenIntegrations={() => setIsIntegrationsOpen(true)}
         currentUser={currentUser}
         onOpenAuthLogin={() => setIsAuthModalOpen(true)}
-        onQuickRoleSwitch={handleQuickRoleSwitch}
         onDownloadBackup={handleDownloadBackup}
       />
 
@@ -847,6 +846,7 @@ export default function App() {
           <main className="flex-1 py-4">
             <DriverPortal
               drivers={drivers}
+              currentUser={currentUser}
               onOrderUpdated={fetchOrders}
               onOpenWaybill={(order) => setActiveWaybillOrders([order])}
             />
@@ -885,6 +885,7 @@ export default function App() {
           <main className="flex-1 py-4">
             <MerchantPortal
               merchants={merchants}
+              currentUser={currentUser}
               onOpenWaybill={(order) => setActiveWaybillOrders([order])}
               onViewOrderDetails={(order) => setActiveOrderDetails(order)}
               onOrderCreated={fetchOrders}

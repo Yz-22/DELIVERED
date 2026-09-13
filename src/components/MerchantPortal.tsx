@@ -29,6 +29,7 @@ import { MerchantPos } from './MerchantPos';
 
 interface MerchantPortalProps {
   merchants: User[];
+  currentUser?: User | null;
   onOpenWaybill: (order: Order) => void;
   onViewOrderDetails: (order: Order) => void;
   onOrderCreated?: () => void;
@@ -36,13 +37,18 @@ interface MerchantPortalProps {
 
 export const MerchantPortal: React.FC<MerchantPortalProps> = ({
   merchants,
+  currentUser,
   onOpenWaybill,
   onViewOrderDetails,
   onOrderCreated,
 }) => {
-  const [selectedMerchantId, setSelectedMerchantId] = useState<string>(
-    merchants[0]?.id || 'u-mer-1'
-  );
+  // Lock to the logged-in merchant account only
+  const currentMerchant =
+    (currentUser?.role === 'MERCHANT' ? currentUser : null) ||
+    merchants.find((m) => m.id === currentUser?.id) ||
+    merchants[0];
+
+  const selectedMerchantId = currentMerchant?.id || 'u-mer-1';
   const [merchantOrders, setMerchantOrders] = useState<Order[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -64,8 +70,6 @@ export const MerchantPortal: React.FC<MerchantPortalProps> = ({
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
-
-  const currentMerchant = merchants.find((m) => m.id === selectedMerchantId) || merchants[0];
 
   const showToast = (text: string, type: 'success' | 'error' = 'success') => {
     setToastMessage({ text, type });
@@ -228,20 +232,18 @@ export const MerchantPortal: React.FC<MerchantPortalProps> = ({
             </div>
           </div>
 
-          {/* Switch Store Selector */}
-          <div className="bg-slate-800/90 p-2.5 rounded-2xl border border-slate-700 w-full md:w-auto">
-            <label className="text-[11px] text-slate-400 block mb-1">تسجيل الدخول كمتجر آخر:</label>
-            <select
-              value={selectedMerchantId}
-              onChange={(e) => setSelectedMerchantId(e.target.value)}
-              className="bg-slate-900 text-amber-300 font-bold text-xs px-3 py-2 rounded-xl border border-slate-700 focus:outline-none focus:border-amber-500 w-full sm:w-64"
-            >
-              {merchants.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.commercialName || m.name} ({m.city})
-                </option>
-              ))}
-            </select>
+          {/* Verified Store Account Badge */}
+          <div className="bg-slate-800/80 px-4 py-2.5 rounded-2xl border border-slate-700/80 text-right w-full md:w-auto flex items-center justify-between md:justify-end gap-3">
+            <div>
+              <div className="text-[11px] text-slate-400">حساب المتجر المعتمد</div>
+              <div className="text-xs font-bold text-emerald-400 flex items-center gap-1.5 justify-end">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span>نشط ومعتمد</span>
+              </div>
+            </div>
+            <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 shrink-0">
+              <Store className="w-5 h-5" />
+            </div>
           </div>
         </div>
 

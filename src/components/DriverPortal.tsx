@@ -30,19 +30,24 @@ import { CliqPaymentModal } from './CliqPaymentModal';
 
 interface DriverPortalProps {
   drivers: User[];
+  currentUser?: User | null;
   onOrderUpdated?: () => void;
   onOpenWaybill?: (order: Order) => void;
 }
 
 export const DriverPortal: React.FC<DriverPortalProps> = ({
   drivers,
+  currentUser,
   onOrderUpdated,
   onOpenWaybill,
 }) => {
-  // Selected driver (default to first driver if available)
-  const [selectedDriverId, setSelectedDriverId] = useState<string>(
-    drivers[0]?.id || 'u-drv-1'
-  );
+  // Lock to the logged-in driver account only
+  const currentDriver =
+    (currentUser?.role === 'DRIVER' ? currentUser : null) ||
+    drivers.find((d) => d.id === currentUser?.id) ||
+    drivers[0];
+
+  const selectedDriverId = currentDriver?.id || 'u-drv-1';
   const [driverOrders, setDriverOrders] = useState<Order[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [filterTab, setFilterTab] = useState<'ALL' | 'PENDING' | 'DELIVERED' | 'POSTPONED'>('PENDING');
@@ -60,9 +65,6 @@ export const DriverPortal: React.FC<DriverPortalProps> = ({
   const [postponeDate, setPostponeDate] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [successToast, setSuccessToast] = useState<string | null>(null);
-
-  // Current selected driver object
-  const currentDriver = drivers.find((d) => d.id === selectedDriverId) || drivers[0];
 
   // Fetch driver orders
   const fetchDriverOrders = async () => {
@@ -238,20 +240,18 @@ export const DriverPortal: React.FC<DriverPortalProps> = ({
             </div>
           </div>
 
-          {/* Switch Driver Selector */}
-          <div className="bg-slate-800/90 p-2 rounded-xl border border-slate-700">
-            <label className="text-[11px] text-slate-400 block mb-1">تبديل الكابتن الحالي:</label>
-            <select
-              value={selectedDriverId}
-              onChange={(e) => setSelectedDriverId(e.target.value)}
-              className="bg-slate-900 text-slate-100 text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-700 focus:outline-none focus:border-amber-500 w-full sm:w-56"
-            >
-              {drivers.map((drv) => (
-                <option key={drv.id} value={drv.id}>
-                  {drv.name} ({drv.city})
-                </option>
-              ))}
-            </select>
+          {/* Driver Status Badge */}
+          <div className="bg-slate-800/80 px-4 py-2 rounded-xl border border-slate-700/80 text-right flex items-center justify-between sm:justify-end gap-3">
+            <div>
+              <div className="text-[10px] text-slate-400">حالة الكابتن الميداني</div>
+              <div className="text-xs font-bold text-emerald-400 flex items-center gap-1.5 justify-end">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span>على رأس العمل (متصل)</span>
+              </div>
+            </div>
+            <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 shrink-0">
+              <Car className="w-4 h-4" />
+            </div>
           </div>
         </div>
 
