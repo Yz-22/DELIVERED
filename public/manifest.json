@@ -1,0 +1,28 @@
+{
+  "name": "DarGo TMS - نظام إدارة وتوصيل الطرود",
+  "short_name": "DarGo TMS",
+  "description": "نظام لوجستي متكامل لإدارة الطرود وبوابة الكابتن وإثبات التسليم POD والدفع الإلكتروني CliQ",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "lang": "ar",
+  "dir": "rtl",
+  "categories": ["business", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

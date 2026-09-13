@@ -1,0 +1,158 @@
+// This is your Prisma schema file for PostgreSQL
+// Learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// أدوار المستخدمين في النظام
+enum Role {
+  ADMIN     // مدير النظام
+  OPERATOR  // موظف عمليات / إدخال بيانات
+  MERCHANT  // التاجر / صاحب المتجر
+  DRIVER    // المندوب / السائق
+}
+
+// حالات الطلبية في دورة التوصيل اللوجستية
+enum OrderStatus {
+  PENDING           // بالانتظار (في مستودع التاجر أو قيد التسجيل)
+  PICKING           // جاري الاستلام (المندوب في طريقه لاستلام الطرد)
+  RECEIVED_AT_HUB   // تم الاستلام في المستودع الرئيسي
+  OUT_FOR_DELIVERY  // جاري التوصيل (مع السائق للوجهة النهائية)
+  POSTPONED         // مؤجل (طلب العميل تأجيل موعد التسليم)
+  CANCELLED         // ملغي (رفض الاستلام أو ألغي الطلب)
+  DELIVERED         // تم التسليم (تم بنجاح وتحصيل المبلغ)
+  RETURNED          // مرتجع للمتجر
+}
+
+// طرق الدفع والتحصيل
+enum PaymentType {
+  COD         // الدفع عند الاستلام كاش
+  CLIQ        // تحويل كليك فوري
+  PREPAID     // مدفوع مسبقاً
+}
+
+// جدول المستخدمين (مدراء، تجار، سائقين)
+model User {
+  id              String       @id @default(uuid())
+  name            String
+  email           String       @unique
+  phone           String       @unique
+  password        String
+  role            Role         @default(MERCHANT)
+  commercialName  String?      // الاسم التجاري (خاص بالتجار)
+  commercialType  String?      // نوع النشاط التجاري
+  city            String?      // المحافظة / المدينة
+  address         String?      // العنوان التفصيلي
+  vehicleType     String?      // نوع المركبة (خاص بالسائقين)
+  vehiclePlate    String?      // رقم لوحة المركبة
+  bankName        String?      // اسم البنك لتحويل التحصيلات
+  bankIban        String?      // الآيبان البنكي
+  cliqAlias       String?      // معرف كليك
+  isActive        Boolean      @default(true)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  // العلاقات
+  merchantOrders  Order[]      @relation("MerchantOrders")
+  driverOrders    Order[]      @relation("DriverOrders")
+  auditLogs       AuditLog[]
+
+  @@index([role])
+  @@index([phone])
+  @@map("users")
+}
+
+// جدول الطلبيات والشحنات اللوجستية
+model Order {
+  id                    String        @id @default(uuid())
+  sequence              String        @unique // رقم التسلسل الفريد (مثال: ORD-2026-0041)
+  referenceNumber       String?       // رقم المرجع الخاص بمتجر التاجر (مثال: REF-8891)
+  status                OrderStatus   @default(PENDING)
+  paymentType           PaymentType   @default(COD)
+  
+  // العلاقات: التاجر والسائق
+  merchantId            String
+  merchant              User          @relation("MerchantOrders", fields: [merchantId], references: [id], onDelete: Restrict)
+  
+  driverId              String?
+  driver                User?         @relation("DriverOrders", fields: [driverId], references: [id], onDelete: SetNull)
+
+  // بيانات المستلم والوجهة
+  recipientName         String        // اسم المستلم
+  recipientPhone        String        // هاتف المستلم (للواتساب والاتصال)
+  recipientPhoneAlt     String?       // هاتف بديل
+  governorate           String        // المحافظة (عمان، إربد، الزرقاء، ...)
+  area                  String        // المنطقة الرئيسية (ضاحية الياسمين، خلدا، الجبيهة، ...)
+  subArea               String?       // المنطقة الفرعية / الحي
+  fullAddress           String        // العنوان الكامل ونقاط الدلالة
+  locationCoordinates   String?       // إحداثيات GPS (lat,lng)
+
+  // الأمور المالية والمبالغ (بالدينار أو العملة المعتمدة)
+  merchantCollection    Decimal       @default(0.0) @db.Decimal(10, 2) // مبلغ البضاعة المستحق للتاجر
+  deliveryFee           Decimal       @default(0.0) @db.Decimal(10, 2) // تكلفة وأجرة التوصيل
+  totalCollection       Decimal       @default(0.0) @db.Decimal(10, 2) // إجمالي التحصيل من الزبون (بضاعة + توصيل)
+  isSettledWithMerchant Boolean       @default(false)                  // هل تم تسوية الحساب مع التاجر
+  isSettledWithDriver   Boolean       @default(false)                  // هل قام السائق بتوريد الكاش للشركة
+
+  // تفاصيل الطرد
+  packageType           String?       @default("طرد عادي") // ملابس، إلكترونيات، كسر، طعام
+  packageWeightKg       Decimal?      @db.Decimal(6, 2)
+  piecesCount           Int           @default(1)
+  deliveryAttempts      Int           @default(0)
+  notes                 String?       // ملاحظات خاصة بالمندوب أو وقت التسليم
+  cancellationReason    String?       // سبب الإلغاء أو التأجيل في حال حدث
+
+  // التواريخ
+  scheduledDate         DateTime?     // موعد التسليم المجدول
+  deliveredAt           DateTime?     // وقت اكتمال التسليم
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  // السجل التاريخي للتغييرات
+  statusLogs            OrderStatusLog[]
+
+  @@index([status])
+  @@index([merchantId])
+  @@index([driverId])
+  @@index([recipientPhone])
+  @@index([governorate])
+  @@index([createdAt])
+  @@map("orders")
+}
+
+// سجل تتبع تغييرات حالات الطلبية
+model OrderStatusLog {
+  id          String       @id @default(uuid())
+  orderId     String
+  order       Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  fromStatus  OrderStatus?
+  toStatus    OrderStatus
+  changedById String?
+  note        String?
+  createdAt   DateTime     @default(now())
+
+  @@index([orderId])
+  @@map("order_status_logs")
+}
+
+// سجل تدقيق العمليات للنظام
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String   // نوع الإجراء (إنشاء طلبية، تغيير سائق، تسوية مالية)
+  entity    String   // الكيان (Order, User)
+  entityId  String
+  payload   Json?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([entityId])
+  @@map("audit_logs")
+}
