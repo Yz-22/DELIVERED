@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { X, Plus, Package, MapPin, Phone, DollarSign, UserCheck, Shield } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, Plus, Package, MapPin, Phone, DollarSign, UserCheck, Shield, Store, Check, AlertCircle } from 'lucide-react';
 import { User } from '../types/logistics';
 import { GOVERNORATES } from '../utils/logisticsHelpers';
 
@@ -9,6 +9,7 @@ interface CreateOrderModalProps {
   onSubmit: (orderData: any) => void;
   merchants: User[];
   drivers: User[];
+  onAddNewMerchant?: (merchantData: Partial<User>) => Promise<User | null>;
 }
 
 export const CreateOrderModal: React.FC<CreateOrderModalProps> = ({
@@ -17,7 +18,24 @@ export const CreateOrderModal: React.FC<CreateOrderModalProps> = ({
   onSubmit,
   merchants,
   drivers,
+  onAddNewMerchant,
 }) => {
+  const [localMerchants, setLocalMerchants] = useState<User[]>(merchants);
+  const [isAddingMerchant, setIsAddingMerchant] = useState(false);
+  const [isSavingMerchant, setIsSavingMerchant] = useState(false);
+  const [merchantError, setMerchantError] = useState('');
+  const [newMerchantForm, setNewMerchantForm] = useState({
+    commercialName: '',
+    name: '',
+    phone: '',
+    city: 'عمان',
+    priceList: 'جميع المملكة 2',
+  });
+
+  useEffect(() => {
+    setLocalMerchants(merchants);
+  }, [merchants]);
+
   const [formData, setFormData] = useState({
     merchantId: merchants[0]?.id || '',
     driverId: '',
@@ -36,6 +54,82 @@ export const CreateOrderModal: React.FC<CreateOrderModalProps> = ({
     piecesCount: 1,
     notes: '',
   });
+
+  const handleQuickAddMerchant = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newMerchantForm.commercialName.trim()) {
+      setMerchantError('يرجى كتابة اسم المتجر أو الاسم التجاري');
+      return;
+    }
+    if (!newMerchantForm.phone.trim()) {
+      setMerchantError('يرجى كتابة رقم هاتف التاجر');
+      return;
+    }
+
+    setIsSavingMerchant(true);
+    setMerchantError('');
+
+    try {
+      const merchantPayload: Partial<User> = {
+        name: newMerchantForm.name.trim() || newMerchantForm.commercialName.trim(),
+        commercialName: newMerchantForm.commercialName.trim(),
+        phone: newMerchantForm.phone.trim(),
+        city: newMerchantForm.city,
+        priceList: newMerchantForm.priceList,
+        role: 'MERCHANT',
+        roleName: 'تاجر معتمد',
+        branch: 'فرع عمان الرئيسي',
+        isActive: true,
+      };
+
+      let createdUser: User | null = null;
+      if (onAddNewMerchant) {
+        createdUser = await onAddNewMerchant(merchantPayload);
+      } else {
+        const res = await fetch('/api/users', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(merchantPayload),
+        });
+        if (res.ok) {
+          createdUser = await res.json();
+        }
+      }
+
+      if (!createdUser) {
+        // Fallback local creation
+        createdUser = {
+          id: `u-mer-${Date.now()}`,
+          name: merchantPayload.name || '',
+          commercialName: merchantPayload.commercialName,
+          phone: merchantPayload.phone || '',
+          email: `${merchantPayload.phone}@dargo-tms.io`,
+          role: 'MERCHANT',
+          city: merchantPayload.city || 'عمان',
+          priceList: merchantPayload.priceList || 'جميع المملكة 2',
+          branch: 'فرع عمان الرئيسي',
+          isActive: true,
+        };
+      }
+
+      // Add to local list and select it immediately
+      setLocalMerchants((prev) => [createdUser!, ...prev.filter((m) => m.id !== createdUser!.id)]);
+      setFormData((prev) => ({ ...prev, merchantId: createdUser!.id }));
+      setIsAddingMerchant(false);
+      setNewMerchantForm({
+        commercialName: '',
+        name: '',
+        phone: '',
+        city: 'عمان',
+        priceList: 'جميع المملكة 2',
+      });
+    } catch (err: any) {
+      console.error(err);
+      setMerchantError('تعذر إضافة التاجر. يرجى المحاولة مرة أخرى.');
+    } finally {
+      setIsSavingMerchant(false);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -102,36 +196,191 @@ export const CreateOrderModal: React.FC<CreateOrderModalProps> = ({
         {/* Form Body */}
         <form onSubmit={handleSubmit} className="p-6 space-y-5 max-h-[80vh] overflow-y-auto">
           {/* Section 1: Merchant & Reference */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                التاجر / المتجر المرسل *
-              </label>
-              <select
-                value={formData.merchantId}
-                onChange={(e) => setFormData({ ...formData, merchantId: e.target.value })}
-                required
-                className="w-full text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-amber-500"
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-bold text-slate-700">
+                    التاجر / المتجر المرسل *
+                  </label>
+                  <button
+                    type="button"
+                    id="btn-quick-add-merchant-badge"
+                    onClick={() => {
+                      setIsAddingMerchant(!isAddingMerchant);
+                      setMerchantError('');
+                    }}
+                    className="text-[11px] font-bold text-amber-700 hover:text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-2 py-0.5 rounded-md transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
+                    title="إضافة تاجر جديد غير مسجل"
+                  >
+                    <Plus className="w-3 h-3 stroke-[2.5]" />
+                    <span>إضافة تاجر غير موجود</span>
+                  </button>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <select
+                    id="select-order-merchant"
+                    value={formData.merchantId}
+                    onChange={(e) => setFormData({ ...formData, merchantId: e.target.value })}
+                    required
+                    className="flex-1 text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-amber-500 font-medium"
+                  >
+                    {localMerchants.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.commercialName || m.name} ({m.city})
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    id="btn-add-merchant-plus"
+                    onClick={() => {
+                      setIsAddingMerchant(!isAddingMerchant);
+                      setMerchantError('');
+                    }}
+                    className="p-2.5 bg-amber-500 hover:bg-amber-600 active:scale-95 text-slate-950 rounded-lg transition-all shadow-xs flex items-center justify-center cursor-pointer border border-amber-600/30 shrink-0"
+                    title="إضافة تاجر جديد (+)"
+                  >
+                    <Plus className="w-4 h-4 stroke-[2.5]" />
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  رقم المرجع للمتجر (اختياري)
+                </label>
+                <input
+                  type="text"
+                  placeholder="مثال: REF-9901"
+                  value={formData.referenceNumber}
+                  onChange={(e) => setFormData({ ...formData, referenceNumber: e.target.value })}
+                  className="w-full text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-amber-500 font-mono"
+                />
+              </div>
+            </div>
+
+            {/* Quick Add Merchant Inline Drawer */}
+            {isAddingMerchant && (
+              <div
+                id="inline-add-merchant-card"
+                className="bg-amber-50/80 border border-amber-300/80 rounded-xl p-3.5 space-y-3 shadow-xs animate-in fade-in duration-150"
               >
-                {merchants.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.commercialName || m.name} ({m.city})
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                رقم المرجع للمتجر (اختياري)
-              </label>
-              <input
-                type="text"
-                placeholder="مثال: REF-9901"
-                value={formData.referenceNumber}
-                onChange={(e) => setFormData({ ...formData, referenceNumber: e.target.value })}
-                className="w-full text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-amber-500 font-mono"
-              />
-            </div>
+                <div className="flex items-center justify-between pb-2 border-b border-amber-200">
+                  <div className="flex items-center gap-2 text-xs font-bold text-amber-950">
+                    <Store className="w-4 h-4 text-amber-600" />
+                    <span>إضافة تاجر / متجر جديد فورياً للنظام</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsAddingMerchant(false)}
+                    className="text-slate-400 hover:text-slate-700 p-1 rounded-md transition-colors cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {merchantError && (
+                  <div className="p-2 bg-rose-50 border border-rose-200 rounded-lg text-xs text-rose-700 flex items-center gap-1.5 font-medium">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{merchantError}</span>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                      اسم المتجر / الاسم التجاري *
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="مثال: متجر الريحان فاشن"
+                      value={newMerchantForm.commercialName}
+                      onChange={(e) =>
+                        setNewMerchantForm({ ...newMerchantForm, commercialName: e.target.value })
+                      }
+                      className="w-full text-xs bg-white border border-slate-300 rounded-lg p-2 text-slate-900 focus:ring-2 focus:ring-amber-500"
+                      autoFocus
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                      اسم الشخص المسؤول (التاجر)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="مثال: يوسف العبداللات"
+                      value={newMerchantForm.name}
+                      onChange={(e) =>
+                        setNewMerchantForm({ ...newMerchantForm, name: e.target.value })
+                      }
+                      className="w-full text-xs bg-white border border-slate-300 rounded-lg p-2 text-slate-900 focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                      رقم الهاتف / الواتساب *
+                    </label>
+                    <input
+                      type="tel"
+                      placeholder="مثال: 0795551234"
+                      value={newMerchantForm.phone}
+                      onChange={(e) =>
+                        setNewMerchantForm({ ...newMerchantForm, phone: e.target.value })
+                      }
+                      className="w-full text-xs bg-white border border-slate-300 rounded-lg p-2 text-slate-900 focus:ring-2 focus:ring-amber-500 font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                      المدينة / المحافظة
+                    </label>
+                    <select
+                      value={newMerchantForm.city}
+                      onChange={(e) =>
+                        setNewMerchantForm({ ...newMerchantForm, city: e.target.value })
+                      }
+                      className="w-full text-xs bg-white border border-slate-300 rounded-lg p-2 text-slate-900 focus:ring-2 focus:ring-amber-500"
+                    >
+                      {GOVERNORATES.map((gov) => (
+                        <option key={gov} value={gov}>
+                          {gov}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setIsAddingMerchant(false)}
+                    className="px-3 py-1.5 text-xs text-slate-600 hover:text-slate-800 bg-white border border-slate-300 rounded-lg cursor-pointer"
+                  >
+                    إلغاء
+                  </button>
+                  <button
+                    type="button"
+                    id="btn-save-quick-merchant"
+                    onClick={handleQuickAddMerchant}
+                    disabled={isSavingMerchant}
+                    className="px-4 py-1.5 text-xs font-bold text-slate-950 bg-amber-500 hover:bg-amber-600 rounded-lg shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50 transition-colors"
+                  >
+                    {isSavingMerchant ? (
+                      <span>جاري الحفظ...</span>
+                    ) : (
+                      <>
+                        <Check className="w-3.5 h-3.5 stroke-[2.5]" />
+                        <span>حفظ واختيار التاجر فورياً</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Section 2: Recipient Details */}

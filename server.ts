@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
-import { Order, OrderStatus, User, ApiKey, NotificationLog } from './src/types/logistics.ts';
+import { Order, OrderStatus, User, ApiKey, NotificationLog, PricePlan } from './src/types/logistics';
 
 const app = express();
 const PORT = 3000;
@@ -85,7 +85,8 @@ let users: User[] = [
     roleName: 'صلاحية التاجر',
     commercialName: 'سحر الشرق فاشن',
     commercialType: 'ألبسة واكسسوارات',
-    priceList: 'جميع المملكة 2',
+    pricePlanId: 'pp-mer-std',
+    priceList: 'جميع المملكة 2 (القياسية)',
     branch: 'فرع عمان الرئيسي',
     accountManager: 'باسل البلبيسي',
     city: 'عمان',
@@ -101,7 +102,8 @@ let users: User[] = [
     roleName: 'صلاحية التاجر',
     commercialName: 'تيك زون الأردن',
     commercialType: 'إلكترونيات وهواتف',
-    priceList: 'عمان الكبرى VIP (1.75 د.أ)',
+    pricePlanId: 'pp-mer-vip',
+    priceList: 'عمان الكبرى VIP (كبار العملاء)',
     branch: 'فرع عمان الرئيسي',
     accountManager: 'باسل البلبيسي',
     city: 'عمان',
@@ -116,6 +118,8 @@ let users: User[] = [
     role: 'MERCHANT',
     commercialName: 'دار الفخامة للعطور',
     commercialType: 'عطور ومستحضرات تجميل',
+    pricePlanId: 'pp-mer-flat',
+    priceList: 'تسعيرة المتاجر الناشئة (سعر مخفض)',
     city: 'الزرقاء',
     address: 'الزرقاء الجديدة، شارع 36',
     isActive: true,
@@ -128,6 +132,8 @@ let users: User[] = [
     role: 'MERCHANT',
     commercialName: 'القلم الذهبي',
     commercialType: 'قرطاسية وهدايا',
+    pricePlanId: 'pp-mer-std',
+    priceList: 'جميع المملكة 2 (القياسية)',
     city: 'إربد',
     address: 'إربد، شارع الجامعة',
     isActive: true,
@@ -139,6 +145,8 @@ let users: User[] = [
     phone: '0791234567',
     role: 'DRIVER',
     city: 'عمان',
+    pricePlanId: 'pp-drv-std',
+    priceList: 'تسعيرة عمولة كباتن العاصمة والوسط',
     vehicleType: 'سيارة تويوتا بريوس',
     vehiclePlate: '12-98432',
     isActive: true,
@@ -150,6 +158,8 @@ let users: User[] = [
     phone: '0786543210',
     role: 'DRIVER',
     city: 'عمان',
+    pricePlanId: 'pp-drv-express',
+    priceList: 'تسعيرة كباتن التوصيل السريع VIP',
     vehicleType: 'هيونداي أفانتي',
     vehiclePlate: '44-11890',
     isActive: true,
@@ -161,6 +171,8 @@ let users: User[] = [
     phone: '0775556677',
     role: 'DRIVER',
     city: 'الزرقاء',
+    pricePlanId: 'pp-drv-std',
+    priceList: 'تسعيرة عمولة كباتن العاصمة والوسط',
     vehicleType: 'كيا سيفيا',
     vehiclePlate: '31-40291',
     isActive: true,
@@ -172,9 +184,197 @@ let users: User[] = [
     phone: '0798765432',
     role: 'DRIVER',
     city: 'إربد',
+    pricePlanId: 'pp-drv-outskirts',
+    priceList: 'تسعيرة خطوط المحافظات البعيدة والأطراف',
     vehicleType: 'ميتسوبيشي لانسر',
     vehiclePlate: '18-55209',
     isActive: true,
+  },
+];
+
+let pricePlans: PricePlan[] = [
+  {
+    id: 'pp-mer-std',
+    name: 'جميع المملكة 2 (القياسية)',
+    type: 'MERCHANT',
+    description: 'قائمة الأسعار المعتمدة للغالبية العظمى من المتاجر مع تغطية شاملة لجميع المحافظات',
+    isDefault: true,
+    defaultFee: 3.0,
+    governorateFees: {
+      'عمان': 2.0,
+      'الزرقاء': 2.5,
+      'السلط (البلقاء)': 3.0,
+      'مادبا': 3.0,
+      'إربد': 3.5,
+      'جرش': 3.5,
+      'عجلون': 3.5,
+      'المفرق': 3.5,
+      'الكرك': 4.0,
+      'الطفيلة': 4.0,
+      'معان': 4.5,
+      'العقبة': 4.5,
+    },
+    returnFee: 1.0,
+    extraWeightFeePerKg: 0.5,
+    createdAt: new Date(Date.now() - 86400000 * 30).toISOString(),
+    updatedAt: new Date(Date.now() - 86400000 * 5).toISOString(),
+  },
+  {
+    id: 'pp-mer-vip',
+    name: 'عمان الكبرى VIP (كبار العملاء)',
+    type: 'MERCHANT',
+    description: 'أسعار تفضيلية خاصة بالمتاجر ذات الحجم العالي (+500 طرد شهرياً)',
+    isDefault: false,
+    defaultFee: 2.5,
+    governorateFees: {
+      'عمان': 1.75,
+      'الزرقاء': 2.25,
+      'السلط (البلقاء)': 2.5,
+      'مادبا': 2.5,
+      'إربد': 3.0,
+      'جرش': 3.0,
+      'عجلون': 3.0,
+      'المفرق': 3.0,
+      'الكرك': 3.5,
+      'الطفيلة': 3.5,
+      'معان': 4.0,
+      'العقبة': 4.0,
+    },
+    returnFee: 0.5,
+    extraWeightFeePerKg: 0.25,
+    createdAt: new Date(Date.now() - 86400000 * 20).toISOString(),
+    updatedAt: new Date(Date.now() - 86400000 * 2).toISOString(),
+  },
+  {
+    id: 'pp-mer-flat',
+    name: 'تسعيرة المتاجر الناشئة (سعر مخفض)',
+    type: 'MERCHANT',
+    description: 'باقة تشجيعية لأصحاب المتاجر والمشاريع المنزلية الناشئة في عمان والزرقاء',
+    isDefault: false,
+    defaultFee: 3.0,
+    governorateFees: {
+      'عمان': 2.25,
+      'الزرقاء': 2.5,
+      'السلط (البلقاء)': 3.0,
+      'مادبا': 3.0,
+      'إربد': 3.5,
+      'جرش': 3.5,
+      'عجلون': 3.5,
+      'المفرق': 3.5,
+      'الكرك': 4.0,
+      'الطفيلة': 4.0,
+      'معان': 4.5,
+      'العقبة': 4.5,
+    },
+    returnFee: 1.0,
+    extraWeightFeePerKg: 0.5,
+    createdAt: new Date(Date.now() - 86400000 * 15).toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'pp-mer-heavy',
+    name: 'حساب الشركات والطرود الثقيلة',
+    type: 'MERCHANT',
+    description: 'للشحنات ذات الأحجام والأوزان العالية وقطع الأثاث والأجهزة المنزلية',
+    isDefault: false,
+    defaultFee: 4.5,
+    governorateFees: {
+      'عمان': 3.0,
+      'الزرقاء': 3.5,
+      'السلط (البلقاء)': 4.0,
+      'مادبا': 4.0,
+      'إربد': 4.5,
+      'جرش': 4.5,
+      'عجلون': 4.5,
+      'المفرق': 4.5,
+      'الكرك': 5.5,
+      'الطفيلة': 5.5,
+      'معان': 6.0,
+      'العقبة': 6.0,
+    },
+    returnFee: 2.0,
+    extraWeightFeePerKg: 0.75,
+    createdAt: new Date(Date.now() - 86400000 * 10).toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  // DRIVER PLANS (مستحقات وبدلات الكباتن)
+  {
+    id: 'pp-drv-std',
+    name: 'تسعيرة عمولة كباتن العاصمة والوسط',
+    type: 'DRIVER',
+    description: 'بدل توصيل الطرد المسلّم لكباتن مناطق عمان والزرقاء والبلقاء',
+    isDefault: true,
+    defaultFee: 1.5,
+    governorateFees: {
+      'عمان': 1.5,
+      'الزرقاء': 1.75,
+      'السلط (البلقاء)': 1.75,
+      'مادبا': 2.0,
+      'إربد': 2.25,
+      'جرش': 2.25,
+      'عجلون': 2.25,
+      'المفرق': 2.25,
+      'الكرك': 2.5,
+      'الطفيلة': 2.5,
+      'معان': 3.0,
+      'العقبة': 3.0,
+    },
+    returnFee: 0.75,
+    extraWeightFeePerKg: 0.25,
+    createdAt: new Date(Date.now() - 86400000 * 25).toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'pp-drv-express',
+    name: 'تسعيرة كباتن التوصيل السريع VIP',
+    type: 'DRIVER',
+    description: 'حافز إضافي للكباتن المتميزين ذوي معدل تسليم أعلى من 95%',
+    isDefault: false,
+    defaultFee: 1.8,
+    governorateFees: {
+      'عمان': 1.8,
+      'الزرقاء': 2.0,
+      'السلط (البلقاء)': 2.0,
+      'مادبا': 2.25,
+      'إربد': 2.5,
+      'جرش': 2.5,
+      'عجلون': 2.5,
+      'المفرق': 2.5,
+      'الكرك': 3.0,
+      'الطفيلة': 3.0,
+      'معان': 3.5,
+      'العقبة': 3.5,
+    },
+    returnFee: 1.0,
+    extraWeightFeePerKg: 0.3,
+    createdAt: new Date(Date.now() - 86400000 * 18).toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'pp-drv-outskirts',
+    name: 'تسعيرة خطوط المحافظات البعيدة والأطراف',
+    type: 'DRIVER',
+    description: 'بدل توصيل مخصص لكباتن خطوط الشمال والجنوب وتغطية القرى والبوادي',
+    isDefault: false,
+    defaultFee: 2.25,
+    governorateFees: {
+      'عمان': 1.6,
+      'الزرقاء': 1.8,
+      'السلط (البلقاء)': 2.0,
+      'مادبا': 2.0,
+      'إربد': 2.25,
+      'جرش': 2.25,
+      'عجلون': 2.25,
+      'المفرق': 2.25,
+      'الكرك': 2.75,
+      'الطفيلة': 2.75,
+      'معان': 3.25,
+      'العقبة': 3.25,
+    },
+    returnFee: 1.25,
+    extraWeightFeePerKg: 0.4,
+    createdAt: new Date(Date.now() - 86400000 * 12).toISOString(),
+    updatedAt: new Date().toISOString(),
   },
 ];
 
@@ -465,12 +665,52 @@ let orders: Order[] = [
 
 let nextSequenceNumber = 1010;
 
+// Helper: Get fee for merchant based on assigned price plan and governorate
+function getMerchantDeliveryFee(merchantId: string, governorate: string): number {
+  const merchant = users.find((u) => u.id === merchantId);
+  const plan =
+    pricePlans.find(
+      (p) => (merchant?.pricePlanId && p.id === merchant.pricePlanId) || (merchant?.priceList && p.name === merchant.priceList)
+    ) ||
+    pricePlans.find((p) => p.type === 'MERCHANT' && p.isDefault) ||
+    pricePlans.find((p) => p.type === 'MERCHANT');
+
+  if (plan && plan.governorateFees && plan.governorateFees[governorate] !== undefined) {
+    return plan.governorateFees[governorate];
+  }
+  return plan?.defaultFee ?? 3.0;
+}
+
+// Helper: Get driver compensation/commission based on assigned price plan and governorate
+function getDriverCompensationFee(driverId: string, governorate: string): number {
+  const driver = users.find((u) => u.id === driverId);
+  const plan =
+    pricePlans.find(
+      (p) => (driver?.pricePlanId && p.id === driver.pricePlanId) || (driver?.priceList && p.name === driver.priceList)
+    ) ||
+    pricePlans.find((p) => p.type === 'DRIVER' && p.isDefault) ||
+    pricePlans.find((p) => p.type === 'DRIVER');
+
+  if (plan && plan.governorateFees && plan.governorateFees[governorate] !== undefined) {
+    return plan.governorateFees[governorate];
+  }
+  return plan?.defaultFee ?? 1.5;
+}
+
 // Helper: Attach relational objects to an order
 function populateOrder(order: Order): Order {
   const merchant = users.find((u) => u.id === order.merchantId);
   const driver = order.driverId ? users.find((u) => u.id === order.driverId) || null : null;
+  const driverFee =
+    order.driverFee !== undefined
+      ? order.driverFee
+      : order.driverId
+      ? getDriverCompensationFee(order.driverId, order.governorate)
+      : 1.5;
+
   return {
     ...order,
+    driverFee,
     merchant,
     driver,
   };
@@ -487,6 +727,7 @@ function saveDatabase() {
     const payload = {
       users,
       orders,
+      pricePlans,
       apiKeys,
       notificationLogs,
       nextSequenceNumber,
@@ -505,10 +746,28 @@ function loadDatabase() {
       const data = JSON.parse(raw);
       if (Array.isArray(data.orders) && data.orders.length > 0) orders = data.orders;
       if (Array.isArray(data.users) && data.users.length > 0) users = data.users;
+      if (Array.isArray(data.pricePlans) && data.pricePlans.length > 0) pricePlans = data.pricePlans;
       if (Array.isArray(data.apiKeys) && data.apiKeys.length > 0) apiKeys = data.apiKeys;
       if (Array.isArray(data.notificationLogs)) notificationLogs = data.notificationLogs;
       if (typeof data.nextSequenceNumber === 'number') nextSequenceNumber = data.nextSequenceNumber;
-      console.log(`[DarGo DB] Loaded ${orders.length} orders and ${users.length} users from persistent storage.`);
+
+      // Ensure every merchant and driver has a pricePlanId
+      users.forEach((u) => {
+        if (!u.pricePlanId) {
+          const match = pricePlans.find((p) => p.name === u.priceList);
+          if (match) {
+            u.pricePlanId = match.id;
+          } else if (u.role === 'MERCHANT') {
+            u.pricePlanId = 'pp-mer-std';
+            u.priceList = u.priceList || 'جميع المملكة 2 (القياسية)';
+          } else if (u.role === 'DRIVER') {
+            u.pricePlanId = 'pp-drv-std';
+            u.priceList = u.priceList || 'تسعيرة عمولة كباتن العاصمة والوسط';
+          }
+        }
+      });
+
+      console.log(`[DarGo DB] Loaded ${orders.length} orders, ${users.length} users, and ${pricePlans.length} price plans from persistent storage.`);
     } else {
       saveDatabase();
     }
@@ -525,6 +784,220 @@ orders.forEach((o, idx) => {
   }
 });
 saveDatabase();
+
+// -------------------------------------------------------------
+// API Endpoints
+// -------------------------------------------------------------
+
+// Price Plans & Rate Cards Endpoints (قوائم وتسعيرات التوصيل للتاجر والسائق)
+// -------------------------------------------------------------
+app.get('/api/price-plans', (req, res) => {
+  const type = req.query.type as string; // 'MERCHANT' | 'DRIVER'
+  let list = [...pricePlans];
+  if (type) {
+    list = list.filter((p) => p.type === type);
+  }
+
+  // Calculate dynamic assigned users count for each plan
+  const enriched = list.map((plan) => {
+    const assignedUsers = users.filter(
+      (u) => u.pricePlanId === plan.id || (u.priceList && u.priceList === plan.name)
+    );
+    return {
+      ...plan,
+      assignedUsersCount: assignedUsers.length,
+      assignedUsers: assignedUsers.map((u) => ({
+        id: u.id,
+        name: u.name,
+        commercialName: u.commercialName,
+        phone: u.phone,
+        role: u.role,
+        city: u.city,
+      })),
+    };
+  });
+
+  res.json(enriched);
+});
+
+// Create new price plan
+app.post('/api/price-plans', (req, res) => {
+  try {
+    const {
+      name,
+      type = 'MERCHANT',
+      description = '',
+      isDefault = false,
+      defaultFee = 3.0,
+      governorateFees = {},
+      returnFee = 1.0,
+      extraWeightFeePerKg = 0.5,
+    } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'اسم قائمة التسعيرة مطلوب' });
+    }
+
+    if (isDefault) {
+      pricePlans.forEach((p) => {
+        if (p.type === type) p.isDefault = false;
+      });
+    }
+
+    const newPlan: PricePlan = {
+      id: `pp-${type.toLowerCase().slice(0, 3)}-${Date.now()}`,
+      name: name.trim(),
+      type,
+      description: description.trim(),
+      isDefault: Boolean(isDefault),
+      defaultFee: parseFloat(defaultFee) || 3.0,
+      governorateFees: governorateFees || {},
+      returnFee: parseFloat(returnFee) || 1.0,
+      extraWeightFeePerKg: parseFloat(extraWeightFeePerKg) || 0.5,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    pricePlans.unshift(newPlan);
+    saveDatabase();
+    res.status(201).json(newPlan);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update price plan
+app.patch('/api/price-plans/:id', (req, res) => {
+  const plan = pricePlans.find((p) => p.id === req.params.id);
+  if (!plan) {
+    return res.status(404).json({ error: 'قائمة التسعيرة غير موجودة' });
+  }
+
+  const prevName = plan.name;
+  const { name, isDefault, governorateFees, defaultFee, returnFee, extraWeightFeePerKg, description } = req.body;
+
+  if (isDefault) {
+    pricePlans.forEach((p) => {
+      if (p.type === plan.type && p.id !== plan.id) p.isDefault = false;
+    });
+  }
+
+  if (name !== undefined) plan.name = name.trim();
+  if (description !== undefined) plan.description = description.trim();
+  if (isDefault !== undefined) plan.isDefault = Boolean(isDefault);
+  if (defaultFee !== undefined) plan.defaultFee = parseFloat(defaultFee);
+  if (governorateFees !== undefined) plan.governorateFees = governorateFees;
+  if (returnFee !== undefined) plan.returnFee = parseFloat(returnFee);
+  if (extraWeightFeePerKg !== undefined) plan.extraWeightFeePerKg = parseFloat(extraWeightFeePerKg);
+  plan.updatedAt = new Date().toISOString();
+
+  // If name changed, synchronize priceList on all users using this plan
+  if (name && name !== prevName) {
+    users.forEach((u) => {
+      if (u.pricePlanId === plan.id || u.priceList === prevName) {
+        u.priceList = plan.name;
+        u.pricePlanId = plan.id;
+      }
+    });
+  }
+
+  saveDatabase();
+  res.json(plan);
+});
+
+// Delete price plan
+app.delete('/api/price-plans/:id', (req, res) => {
+  const index = pricePlans.findIndex((p) => p.id === req.params.id);
+  if (index === -1) {
+    return res.status(404).json({ error: 'قائمة التسعيرة غير موجودة' });
+  }
+
+  const planToDelete = pricePlans[index];
+  // Reassign users of this plan to another plan of the same type
+  const fallback =
+    pricePlans.find((p) => p.type === planToDelete.type && p.id !== planToDelete.id && p.isDefault) ||
+    pricePlans.find((p) => p.type === planToDelete.type && p.id !== planToDelete.id);
+
+  if (fallback) {
+    users.forEach((u) => {
+      if (u.pricePlanId === planToDelete.id) {
+        u.pricePlanId = fallback.id;
+        u.priceList = fallback.name;
+      }
+    });
+  }
+
+  pricePlans.splice(index, 1);
+  saveDatabase();
+  res.json({ message: 'تم حذف قائمة التسعيرة بنجاح', fallbackPlan: fallback?.name });
+});
+
+// Bulk assign price plan to users
+app.post('/api/price-plans/:id/assign', (req, res) => {
+  const plan = pricePlans.find((p) => p.id === req.params.id);
+  if (!plan) {
+    return res.status(404).json({ error: 'قائمة التسعيرة غير موجودة' });
+  }
+
+  const { userIds } = req.body;
+  if (!Array.isArray(userIds)) {
+    return res.status(400).json({ error: 'قائمة المستخدمين غير صحيحة' });
+  }
+
+  let updatedCount = 0;
+  users.forEach((u) => {
+    if (userIds.includes(u.id)) {
+      u.pricePlanId = plan.id;
+      u.priceList = plan.name;
+      updatedCount++;
+    }
+  });
+
+  saveDatabase();
+  res.json({
+    message: `تم تعيين تسعيرة "${plan.name}" لـ ${updatedCount} مستخدمين بنجاح`,
+    updatedCount,
+  });
+});
+
+// Dynamic calculate fee for merchant and driver by governorate
+app.post('/api/price-plans/calculate', (req, res) => {
+  const { merchantId, driverId, governorate = 'عمان' } = req.body;
+
+  let merchantFee = 3.0;
+  let merchantPlanName = 'الافتراضية';
+  if (merchantId) {
+    const merchant = users.find((u) => u.id === merchantId);
+    const mPlan =
+      pricePlans.find((p) => p.id === merchant?.pricePlanId || (merchant?.priceList && p.name === merchant.priceList)) ||
+      pricePlans.find((p) => p.type === 'MERCHANT' && p.isDefault);
+    if (mPlan) {
+      merchantPlanName = mPlan.name;
+      merchantFee = mPlan.governorateFees?.[governorate] ?? mPlan.defaultFee;
+    }
+  }
+
+  let driverFee = 1.5;
+  let driverPlanName = 'الافتراضية';
+  if (driverId) {
+    const driver = users.find((u) => u.id === driverId);
+    const dPlan =
+      pricePlans.find((p) => p.id === driver?.pricePlanId || (driver?.priceList && p.name === driver.priceList)) ||
+      pricePlans.find((p) => p.type === 'DRIVER' && p.isDefault);
+    if (dPlan) {
+      driverPlanName = dPlan.name;
+      driverFee = dPlan.governorateFees?.[governorate] ?? dPlan.defaultFee;
+    }
+  }
+
+  res.json({
+    governorate,
+    merchantFee,
+    merchantPlanName,
+    driverFee,
+    driverPlanName,
+  });
+});
 
 // -------------------------------------------------------------
 // API Endpoints
@@ -659,8 +1132,12 @@ app.post('/api/orders', (req, res) => {
     }
 
     const mColl = parseFloat(merchantCollection) || 0;
-    const dFee = parseFloat(deliveryFee) || 0;
-    const tot = totalCollection !== undefined ? parseFloat(totalCollection) : mColl + dFee;
+    const finalDeliveryFee =
+      deliveryFee !== undefined && deliveryFee !== null && deliveryFee !== ''
+        ? parseFloat(deliveryFee)
+        : getMerchantDeliveryFee(merchantId, governorate);
+    const tot = totalCollection !== undefined ? parseFloat(totalCollection) : mColl + finalDeliveryFee;
+    const calcDriverFee = driverId ? getDriverCompensationFee(driverId, governorate) : undefined;
 
     const newOrder: Order = {
       id: `ord-${Date.now()}`,
@@ -678,7 +1155,8 @@ app.post('/api/orders', (req, res) => {
       subArea: subArea || '',
       fullAddress: fullAddress || `${governorate} - ${area}`,
       merchantCollection: mColl,
-      deliveryFee: dFee,
+      deliveryFee: finalDeliveryFee,
+      driverFee: calcDriverFee,
       totalCollection: tot,
       isSettledWithMerchant: false,
       isSettledWithDriver: false,
@@ -718,7 +1196,7 @@ app.post('/api/orders/quick', (req, res) => {
       area,
       fullAddress,
       totalCollection = 20,
-      deliveryFee = 3.0,
+      deliveryFee,
       merchantId,
       notes,
     } = req.body;
@@ -727,8 +1205,11 @@ app.post('/api/orders/quick', (req, res) => {
       return res.status(400).json({ error: 'الاسم، الهاتف، المنطقة، والتاجر حقول مطلوبة للطلبية السريعة' });
     }
 
+    const fee =
+      deliveryFee !== undefined && deliveryFee !== null && deliveryFee !== ''
+        ? parseFloat(deliveryFee)
+        : getMerchantDeliveryFee(merchantId, governorate);
     const tot = parseFloat(totalCollection) || 0;
-    const fee = parseFloat(deliveryFee) || 3.0;
     const mColl = Math.max(0, tot - fee);
 
     const newOrder: Order = {
@@ -762,7 +1243,7 @@ app.post('/api/orders/quick', (req, res) => {
           orderId: `ord-${Date.now()}`,
           fromStatus: null,
           toStatus: 'PENDING',
-          note: 'تم الإنشاء عبر ميزة الطلبية السريعة',
+          note: 'تم إنشاء الطلبية السريعة بنجاح',
           createdAt: new Date().toISOString(),
         },
       ],

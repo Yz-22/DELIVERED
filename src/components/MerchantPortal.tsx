@@ -19,10 +19,13 @@ import {
   Phone,
   AlertCircle,
   Calendar,
-  Check
+  Check,
+  Store,
+  ShoppingBag
 } from 'lucide-react';
 import { User, Order, OrderStatus } from '../types/logistics';
 import { GOVERNORATES, JORDAN_AREAS_MAP, STANDARD_DELIVERY_FEES } from '../utils/logisticsHelpers';
+import { MerchantPos } from './MerchantPos';
 
 interface MerchantPortalProps {
   merchants: User[];
@@ -44,7 +47,7 @@ export const MerchantPortal: React.FC<MerchantPortalProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
-  const [activeTab, setActiveTab] = useState<'orders' | 'new_shipment' | 'finance'>('orders');
+  const [activeTab, setActiveTab] = useState<'pos' | 'orders' | 'new_shipment' | 'finance'>('pos');
 
   // New Shipment Form State
   const [newOrder, setNewOrder] = useState({
@@ -290,34 +293,46 @@ export const MerchantPortal: React.FC<MerchantPortalProps> = ({
       </div>
 
       {/* Tabs Navigation */}
-      <div className="flex items-center gap-2 mb-4 border-b border-slate-200 pb-3">
+      <div className="flex items-center gap-2 mb-4 border-b border-slate-200 pb-3 overflow-x-auto">
+        <button
+          onClick={() => setActiveTab('pos')}
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+            activeTab === 'pos'
+              ? 'bg-amber-500 text-slate-950 shadow-sm ring-2 ring-amber-500/30'
+              : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
+          }`}
+        >
+          <Store className="w-4 h-4 text-slate-950" />
+          <span>نقطة البيع والكاشير POS (بيع بالمحل + أونلاين)</span>
+        </button>
+
         <button
           onClick={() => setActiveTab('orders')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
             activeTab === 'orders'
               ? 'bg-slate-900 text-white shadow-sm'
               : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
           }`}
         >
           <Package className="w-4 h-4" />
-          <span>شحنات المتجر ({merchantOrders.length})</span>
+          <span>شحنات التوصيل ({merchantOrders.length})</span>
         </button>
 
         <button
           onClick={() => setActiveTab('new_shipment')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
             activeTab === 'new_shipment'
               ? 'bg-amber-500 text-slate-950 shadow-sm'
               : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
           }`}
         >
           <PlusCircle className="w-4 h-4" />
-          <span>إضافة شحنة وطباعة البوليصة</span>
+          <span>إضافة شحنة يدوية</span>
         </button>
 
         <button
           onClick={() => setActiveTab('finance')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
             activeTab === 'finance'
               ? 'bg-emerald-700 text-white shadow-sm'
               : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
@@ -327,6 +342,18 @@ export const MerchantPortal: React.FC<MerchantPortalProps> = ({
           <span>المحفظة المالية وكشوفات الصرف</span>
         </button>
       </div>
+
+      {/* Tab 0: Integrated Merchant Point of Sale (POS) */}
+      {activeTab === 'pos' && (
+        <MerchantPos
+          currentMerchant={currentMerchant}
+          onOpenWaybill={onOpenWaybill}
+          onOrderCreated={() => {
+            fetchMerchantOrders();
+            onOrderCreated?.();
+          }}
+        />
+      )}
 
       {/* Tab 1: Orders List */}
       {activeTab === 'orders' && (

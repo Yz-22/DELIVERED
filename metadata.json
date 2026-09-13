@@ -1,6 +1,6 @@
 {
   "name": "نظام العمليات اللوجستية والتوصيل | TMS Logistics",
-  "description": "لوحة تحكم متقدمة لإدارة عمليات شركات التوصيل وإدارة الطلبيات والسائقين والمستلمين مستوحاة من أنظمة Odoo ERP اللوجستية",
-  "requestFramePermissions": [],
+  "description": "لوحة تحكم متقدمة لإدارة عمليات شركات التوصيل وإدارة الطلبيات والسائقين والمستلمين ونقطة البيع والكاشير",
+  "requestFramePermissions": ["camera"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

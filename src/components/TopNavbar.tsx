@@ -23,6 +23,10 @@ import {
   FileSpreadsheet,
   Briefcase,
   CheckCircle2,
+  Store,
+  LayoutGrid,
+  Settings,
+  Check,
 } from 'lucide-react';
 import { User, Role } from '../types/logistics';
 
@@ -35,7 +39,8 @@ export type AppSection =
   | 'driver_portal'
   | 'merchant_portal'
   | 'settlements'
-  | 'reverse_logistics';
+  | 'reverse_logistics'
+  | 'settings';
 
 interface TopNavbarProps {
   activeSection: AppSection;
@@ -69,6 +74,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
   const handleRoleSwitch = onSwitchRoleQuick || onQuickRoleSwitch;
   const [isManifestsOpen, setIsManifestsOpen] = useState(false);
   const [isUsersDropdownOpen, setIsUsersDropdownOpen] = useState(false);
+  const [isAppLauncherOpen, setIsAppLauncherOpen] = useState(false);
 
   const role = currentUser?.role || 'ADMIN';
 
@@ -153,31 +159,145 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
       {/* 2. Main Navigation Bar */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-15">
-          {/* Brand Logo (Matching ERP images with yellow square and 'التوصيل') */}
-          <div
-            className="flex items-center gap-2.5 cursor-pointer shrink-0"
-            onClick={() => {
-              if (role === 'MERCHANT') onChangeSection('merchant_portal');
-              else if (role === 'DRIVER') onChangeSection('driver_portal');
-              else if (role === 'OPERATOR') onChangeSection('staff_portal');
-              else onChangeSection('operations_grid');
-            }}
-          >
-            <div className="w-9 h-9 rounded-xl bg-amber-500 flex items-center justify-center text-slate-950 font-black shadow-sm">
-              <Truck className="w-5 h-5 text-slate-950" />
+          {/* Brand Logo & ERP 9-Dots Launcher (Matching Screenshot 1 & 2) */}
+          <div className="flex items-center gap-2 shrink-0">
+            {/* 9-Dots ERP Apps Launcher Dropdown */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setIsAppLauncherOpen(!isAppLauncherOpen)}
+                className="w-9 h-9 rounded-xl bg-amber-500 hover:bg-amber-400 active:scale-95 flex items-center justify-center text-slate-950 font-black shadow-md transition-all cursor-pointer"
+                title="قائمة تطبيقات ومنظومة ERP (الإعدادات، التسعير، التوصيل، الحسابات)"
+              >
+                <LayoutGrid className="w-5 h-5 text-slate-950 stroke-[2.4]" />
+              </button>
+
+              {isAppLauncherOpen && (
+                <div className="absolute right-0 mt-2 w-60 bg-white border border-slate-200 rounded-2xl shadow-2xl p-2 z-50 text-slate-800 animate-in fade-in slide-in-from-top-2">
+                  <div className="px-3 py-1.5 text-[10px] font-bold text-slate-400 border-b border-slate-100 mb-1 flex items-center justify-between">
+                    <span>منظومات النظام (ERP)</span>
+                    <span className="font-mono text-amber-600 font-bold">v-rc-next</span>
+                  </div>
+
+                  {/* التوصيل */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onChangeSection('operations_grid');
+                      setIsAppLauncherOpen(false);
+                    }}
+                    className={`w-full text-right px-3 py-2 rounded-xl flex items-center justify-between transition-colors cursor-pointer ${
+                      activeSection === 'operations_grid' || activeSection === 'operations'
+                        ? 'bg-amber-50 text-amber-900 font-bold'
+                        : 'hover:bg-slate-50 text-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Truck className="w-4 h-4 text-amber-600" />
+                      <span className="text-xs">التوصيل والعمليات</span>
+                    </div>
+                    {(activeSection === 'operations_grid' || activeSection === 'operations') && (
+                      <Check className="w-3.5 h-3.5 text-amber-600" />
+                    )}
+                  </button>
+
+                  {/* بوالص باركود */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onChangeSection('manifests');
+                      setIsAppLauncherOpen(false);
+                    }}
+                    className={`w-full text-right px-3 py-2 rounded-xl flex items-center justify-between transition-colors cursor-pointer ${
+                      activeSection === 'manifests'
+                        ? 'bg-amber-50 text-amber-900 font-bold'
+                        : 'hover:bg-slate-50 text-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <FileSpreadsheet className="w-4 h-4 text-indigo-600" />
+                      <span className="text-xs">بوالص باركود وكشوفات</span>
+                    </div>
+                    {activeSection === 'manifests' && (
+                      <Check className="w-3.5 h-3.5 text-amber-600" />
+                    )}
+                  </button>
+
+                  {/* الإعدادات والتسعير - Matching Screenshot 1 & 2 */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onChangeSection('settings');
+                      setIsAppLauncherOpen(false);
+                    }}
+                    className={`w-full text-right px-3 py-2 rounded-xl flex items-center justify-between transition-colors cursor-pointer ${
+                      activeSection === 'settings'
+                        ? 'bg-amber-500 text-slate-950 font-bold ring-1 ring-amber-400'
+                        : 'hover:bg-amber-50/70 text-slate-800'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Settings className="w-4 h-4 text-slate-900" />
+                      <div className="text-right">
+                        <span className="text-xs block font-bold">الإعدادات</span>
+                        <span className={`text-[10px] block ${activeSection === 'settings' ? 'text-slate-900 font-medium' : 'text-amber-700'}`}>
+                          التسعير وقوائم الأسعار، المناطق
+                        </span>
+                      </div>
+                    </div>
+                    {activeSection === 'settings' && (
+                      <Check className="w-3.5 h-3.5 text-slate-950" />
+                    )}
+                  </button>
+
+                  {/* الحسابات والتسويات */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onChangeSection('settlements');
+                      setIsAppLauncherOpen(false);
+                    }}
+                    className={`w-full text-right px-3 py-2 rounded-xl flex items-center justify-between transition-colors cursor-pointer ${
+                      activeSection === 'settlements'
+                        ? 'bg-amber-50 text-amber-900 font-bold'
+                        : 'hover:bg-slate-50 text-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Receipt className="w-4 h-4 text-emerald-600" />
+                      <span className="text-xs">الحسابات والتسويات</span>
+                    </div>
+                    {activeSection === 'settlements' && (
+                      <Check className="w-3.5 h-3.5 text-amber-600" />
+                    )}
+                  </button>
+                </div>
+              )}
             </div>
-            <div>
-              <div className="flex items-center gap-1.5">
-                <span className="font-extrabold text-base tracking-wide text-white">
-                  التوصيل
-                </span>
-                <span className="text-[10px] bg-amber-500/20 text-amber-300 font-bold px-1.5 py-0.2 rounded border border-amber-500/30">
-                  TMS ERP
-                </span>
+
+            {/* Brand Logo */}
+            <div
+              className="flex items-center gap-2 cursor-pointer shrink-0"
+              onClick={() => {
+                if (role === 'MERCHANT') onChangeSection('merchant_portal');
+                else if (role === 'DRIVER') onChangeSection('driver_portal');
+                else if (role === 'OPERATOR') onChangeSection('staff_portal');
+                else onChangeSection('operations_grid');
+              }}
+            >
+              <div>
+                <div className="flex items-center gap-1.5">
+                  <span className="font-extrabold text-base tracking-wide text-white">
+                    {activeSection === 'settings' ? 'الإعدادات' : 'التوصيل'}
+                  </span>
+                  <span className="text-[10px] bg-amber-500/20 text-amber-300 font-bold px-1.5 py-0.2 rounded border border-amber-500/30">
+                    TMS ERP
+                  </span>
+                </div>
+                <p className="text-[10px] text-slate-400 leading-tight">
+                  {activeSection === 'settings' ? 'قوائم الأسعار وإعدادات المنظومة' : 'منظومة إدارة الشحنات والعمليات'}
+                </p>
               </div>
-              <p className="text-[10px] text-slate-400 leading-tight">
-                منظومة إدارة الشحنات والعمليات
-              </p>
             </div>
           </div>
 
@@ -274,6 +394,31 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                 >
                   بوابة الموظف
                 </button>
+
+                <button
+                  onClick={() => onChangeSection('merchant_portal')}
+                  className={`px-2.5 py-1.5 rounded-lg text-amber-300 hover:text-white hover:bg-slate-700/50 text-[11px] flex items-center gap-1 ${
+                    activeSection === 'merchant_portal' ? 'bg-amber-500 text-slate-950 font-bold' : ''
+                  }`}
+                  title="عرض كاشير التاجر ونقطة البيع وبوابة المتجر"
+                >
+                  <Store className="w-3 h-3" />
+                  <span>نقطة البيع (POS)</span>
+                </button>
+
+                {/* الإعدادات والتسعير - Matching Screenshot 1 & 2 */}
+                <button
+                  onClick={() => onChangeSection('settings')}
+                  className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all ${
+                    activeSection === 'settings'
+                      ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
+                      : 'text-amber-400 hover:text-white hover:bg-slate-700/50'
+                  }`}
+                  title="الإعدادات، قائمة الأسعار، والمناطق"
+                >
+                  <Settings className="w-3.5 h-3.5 text-amber-400" />
+                  <span>الإعدادات والتسعير</span>
+                </button>
               </>
             )}
 
@@ -337,12 +482,12 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                   onClick={() => onChangeSection('merchant_portal')}
                   className={`px-4 py-1.5 rounded-lg flex items-center gap-1.5 transition-all ${
                     activeSection === 'merchant_portal'
-                      ? 'bg-indigo-600 text-white font-bold shadow-xs'
+                      ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
                       : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
                   }`}
                 >
-                  <Building2 className="w-3.5 h-3.5" />
-                  <span>بوابة المتجر وطلبياتي</span>
+                  <Store className="w-3.5 h-3.5" />
+                  <span>نقطة البيع والكاشير (POS) والمتجر</span>
                 </button>
 
                 <button
@@ -516,6 +661,14 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                 }`}
               >
                 المستخدمون
+              </button>
+              <button
+                onClick={() => onChangeSection('settings')}
+                className={`px-2.5 py-1 rounded-lg shrink-0 ${
+                  activeSection === 'settings' ? 'bg-amber-500 text-slate-950 font-bold' : 'text-amber-400'
+                }`}
+              >
+                الإعدادات والتسعير
               </button>
             </>
           )}

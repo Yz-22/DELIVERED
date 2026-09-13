@@ -26,6 +26,7 @@ import { UsersManagement } from './components/UsersManagement';
 import { ManifestsStatements } from './components/ManifestsStatements';
 import { StaffPortal } from './components/StaffPortal';
 import { AccessDeniedView } from './components/AccessDeniedView';
+import { AdminSettings } from './components/AdminSettings';
 import { Order, OrderStatus, User, Role, OrdersQueryResponse } from './types/logistics';
 import { CheckCircle2, AlertCircle, X } from 'lucide-react';
 
@@ -59,6 +60,7 @@ export default function App() {
             'merchant_portal',
             'settlements',
             'reverse_logistics',
+            'settings',
           ] as AppSection[],
           canManageUsers: true,
           canAccessReverseLogistics: true,
@@ -142,6 +144,8 @@ export default function App() {
         return 'التسويات والحسابات المالية';
       case 'reverse_logistics':
         return 'اللوجستيات العكسية ومستودع المرتجعات';
+      case 'settings':
+        return 'الإعدادات، قوائم الأسعار، والمناطق';
       default:
         return 'البوابة الرئيسية';
     }
@@ -275,7 +279,7 @@ export default function App() {
     }
   };
 
-  const handleAddUser = async (newUserData: Partial<User>) => {
+  const handleAddUser = async (newUserData: Partial<User>): Promise<User | null> => {
     try {
       const res = await fetch('/api/users', {
         method: 'POST',
@@ -283,8 +287,16 @@ export default function App() {
         body: JSON.stringify(newUserData),
       });
       if (res.ok) {
-        await fetchUsers();
-        showToast('تمت إضافة المستخدم وتحديد الصلاحية وقائمة الأسعار بنجاح');
+        const createdUser: User = await res.json();
+        setAllUsers((prev) => [createdUser, ...prev.filter((u) => u.id !== createdUser.id)]);
+        if (createdUser.role === 'MERCHANT') {
+          setMerchants((prev) => [createdUser, ...prev.filter((m) => m.id !== createdUser.id)]);
+        }
+        if (createdUser.role === 'DRIVER') {
+          setDrivers((prev) => [createdUser, ...prev.filter((d) => d.id !== createdUser.id)]);
+        }
+        showToast(`تمت إضافة ${createdUser.commercialName || createdUser.name} بنجاح`);
+        return createdUser;
       } else {
         const fallbackNew: User = {
           id: `u-${Date.now()}`,
@@ -305,10 +317,12 @@ export default function App() {
         if (fallbackNew.role === 'MERCHANT') setMerchants((prev) => [fallbackNew, ...prev]);
         if (fallbackNew.role === 'DRIVER') setDrivers((prev) => [fallbackNew, ...prev]);
         showToast('تمت إضافة المستخدم بنجاح');
+        return fallbackNew;
       }
     } catch (e) {
       console.error(e);
       showToast('خطأ في إضافة المستخدم', 'error');
+      return null;
     }
   };
 
@@ -909,6 +923,26 @@ export default function App() {
         )
       )}
 
+      {/* 11. Admin Settings & Pricing - STRICTLY ADMIN ONLY (Matching user screenshot) */}
+      {activeSection === 'settings' && (
+        currentRole === 'ADMIN' ? (
+          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5">
+            <AdminSettings
+              merchants={merchants}
+              onOpenIntegrations={() => setIsIntegrationsOpen(true)}
+            />
+          </main>
+        ) : (
+          <AccessDeniedView
+            sectionTitle="إعدادات النظام، التسعير والمناطق"
+            requiredRole="مدير العمليات والنظام (ADMIN)"
+            currentRole={currentRole}
+            onNavigateHome={() => setActiveSection(permissions.allowedSections[0])}
+            homeSectionName={getSectionTitle(permissions.allowedSections[0])}
+          />
+        )
+      )}
+
       {/* Floating Toast Notification */}
       {toastMessage && (
         <div className="fixed bottom-5 left-5 z-50 flex items-center gap-2 px-4 py-2.5 rounded-xl shadow-lg bg-slate-900 text-white text-xs font-bold border border-slate-800 animate-in fade-in slide-in-from-bottom-2">
@@ -931,6 +965,7 @@ export default function App() {
         onSubmit={handleCreateOrder}
         merchants={merchants}
         drivers={drivers}
+        onAddNewMerchant={handleAddUser}
       />
 
       <QuickOrderModal
@@ -938,6 +973,7 @@ export default function App() {
         onClose={() => setIsQuickModalOpen(false)}
         onSubmit={handleQuickOrder}
         merchants={merchants}
+        onAddNewMerchant={handleAddUser}
       />
 
       <BatchImportModal
