@@ -223,17 +223,18 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
           </div>
 
           {/* Center Navigation Menus - Dynamically Filtered by Role */}
-          <div className="hidden lg:flex items-center gap-1 bg-slate-800/80 p-1 rounded-xl border border-slate-700/60 text-xs font-semibold">
+          <div className="hidden lg:flex items-center gap-0.5 bg-slate-950/60 p-1 rounded-xl border border-slate-800 shadow-inner text-xs font-semibold backdrop-blur-xs">
             {/* ADMIN Role Menus */}
             {role === 'ADMIN' && (
               <>
-                {/* لوحة العمليات (Grid from screenshots 3 & 4) */}
+                {/* لوحة العمليات */}
                 <button
+                  type="button"
                   onClick={() => onChangeSection('operations_grid')}
-                  className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all ${
+                  className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
                     activeSection === 'operations_grid'
                       ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
-                      : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
                   }`}
                 >
                   <BarChart3 className="w-3.5 h-3.5" />
@@ -242,37 +243,40 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
 
                 {/* جدول الطلبيات */}
                 <button
+                  type="button"
                   onClick={() => onChangeSection('operations')}
-                  className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all ${
+                  className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
                     activeSection === 'operations'
                       ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
-                      : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
                   }`}
                 >
                   <ListOrdered className="w-3.5 h-3.5" />
                   <span>الطلبيات</span>
                 </button>
 
-                {/* كشوفات (Manifests & Statements from screenshot 1) */}
+                {/* كشوفات التوزيع */}
                 <button
+                  type="button"
                   onClick={() => onChangeSection('manifests')}
-                  className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all ${
+                  className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
                     activeSection === 'manifests'
                       ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
-                      : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
                   }`}
                 >
                   <FileSpreadsheet className="w-3.5 h-3.5" />
                   <span>كشوفات</span>
                 </button>
 
-                {/* المستخدمون (Users from screenshots 1 & 2) */}
+                {/* المستخدمون */}
                 <button
+                  type="button"
                   onClick={() => onChangeSection('users')}
-                  className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all ${
+                  className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
                     activeSection === 'users'
                       ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
-                      : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
                   }`}
                 >
                   <Users className="w-3.5 h-3.5" />
@@ -281,77 +285,59 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
 
                 {/* التسويات المالية */}
                 <button
+                  type="button"
                   onClick={() => onChangeSection('settlements')}
-                  className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all ${
+                  className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
                     activeSection === 'settlements'
                       ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
-                      : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
                   }`}
                 >
                   <Receipt className="w-3.5 h-3.5" />
                   <span>التسويات المالية</span>
                 </button>
 
-                {/* المرتجعات والرفوف */}
+                {/* المرتجعات */}
                 <button
+                  type="button"
                   onClick={() => onChangeSection('reverse_logistics')}
-                  className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all ${
+                  className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
                     activeSection === 'reverse_logistics'
                       ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
-                      : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
                   }`}
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
                   <span>المرتجعات</span>
                 </button>
 
-                {/* بوابات الموظف / الكابتن / المتجر السريعة للإدارة */}
+                {/* الإعدادات والتسعير */}
                 <button
-                  onClick={() => onChangeSection('staff_portal')}
-                  className={`px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700/50 text-[11px] ${
-                    activeSection === 'staff_portal' ? 'bg-slate-700 text-white font-bold' : ''
-                  }`}
-                  title="عرض واجهة موظف المستودع"
-                >
-                  بوابة الموظف
-                </button>
-
-                <button
-                  onClick={() => onChangeSection('merchant_portal')}
-                  className={`px-2.5 py-1.5 rounded-lg text-amber-300 hover:text-white hover:bg-slate-700/50 text-[11px] flex items-center gap-1 ${
-                    activeSection === 'merchant_portal' ? 'bg-amber-500 text-slate-950 font-bold' : ''
-                  }`}
-                  title="عرض كاشير التاجر ونقطة البيع وبوابة المتجر"
-                >
-                  <Store className="w-3 h-3" />
-                  <span>نقطة البيع (POS)</span>
-                </button>
-
-                {/* الإعدادات والتسعير - Matching Screenshot 1 & 2 */}
-                <button
+                  type="button"
                   onClick={() => onChangeSection('settings')}
-                  className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all ${
+                  className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
                     activeSection === 'settings'
                       ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
-                      : 'text-amber-400 hover:text-white hover:bg-slate-700/50'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
                   }`}
                   title="الإعدادات، قائمة الأسعار، والمناطق"
                 >
-                  <Settings className="w-3.5 h-3.5 text-amber-400" />
+                  <Settings className="w-3.5 h-3.5" />
                   <span>الإعدادات والتسعير</span>
                 </button>
               </>
             )}
 
-            {/* OPERATOR / STAFF Role Menus (الموظفون ومسؤولو الفرز) */}
+            {/* OPERATOR / STAFF Role Menus */}
             {role === 'OPERATOR' && (
               <>
                 <button
+                  type="button"
                   onClick={() => onChangeSection('staff_portal')}
-                  className={`px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-all ${
+                  className={`px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
                     activeSection === 'staff_portal'
-                      ? 'bg-blue-600 text-white font-bold shadow-xs'
-                      : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                      ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
                   }`}
                 >
                   <PackageCheck className="w-3.5 h-3.5" />
@@ -359,11 +345,12 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                 </button>
 
                 <button
+                  type="button"
                   onClick={() => onChangeSection('operations')}
-                  className={`px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-all ${
+                  className={`px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
                     activeSection === 'operations'
-                      ? 'bg-blue-600 text-white font-bold shadow-xs'
-                      : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                      ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
                   }`}
                 >
                   <ListOrdered className="w-3.5 h-3.5" />
@@ -371,11 +358,12 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                 </button>
 
                 <button
+                  type="button"
                   onClick={() => onChangeSection('manifests')}
-                  className={`px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-all ${
+                  className={`px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
                     activeSection === 'manifests'
-                      ? 'bg-blue-600 text-white font-bold shadow-xs'
-                      : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                      ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
                   }`}
                 >
                   <FileSpreadsheet className="w-3.5 h-3.5" />
@@ -383,11 +371,12 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                 </button>
 
                 <button
+                  type="button"
                   onClick={() => onChangeSection('reverse_logistics')}
-                  className={`px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-all ${
+                  className={`px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
                     activeSection === 'reverse_logistics'
-                      ? 'bg-blue-600 text-white font-bold shadow-xs'
-                      : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                      ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
                   }`}
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
@@ -396,15 +385,16 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
               </>
             )}
 
-            {/* MERCHANT Role Menus (التجار) */}
+            {/* MERCHANT Role Menus */}
             {role === 'MERCHANT' && (
               <>
                 <button
+                  type="button"
                   onClick={() => onChangeSection('merchant_portal')}
-                  className={`px-4 py-1.5 rounded-lg flex items-center gap-1.5 transition-all ${
+                  className={`px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
                     activeSection === 'merchant_portal'
                       ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
-                      : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
                   }`}
                 >
                   <Store className="w-3.5 h-3.5" />
@@ -412,11 +402,12 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                 </button>
 
                 <button
+                  type="button"
                   onClick={() => onChangeSection('settlements')}
-                  className={`px-4 py-1.5 rounded-lg flex items-center gap-1.5 transition-all ${
+                  className={`px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
                     activeSection === 'settlements'
-                      ? 'bg-indigo-600 text-white font-bold shadow-xs'
-                      : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                      ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
                   }`}
                 >
                   <Receipt className="w-3.5 h-3.5" />
@@ -425,8 +416,9 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
 
                 {onOpenIntegrations && (
                   <button
+                    type="button"
                     onClick={onOpenIntegrations}
-                    className="px-4 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-700/50 flex items-center gap-1.5"
+                    className="px-3.5 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800/70 flex items-center gap-1.5 transition-all cursor-pointer"
                   >
                     <Code2 className="w-3.5 h-3.5 text-amber-400" />
                     <span>الربط البرمجي لمتجري</span>
@@ -435,28 +427,32 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
               </>
             )}
 
-            {/* DRIVER Role Menus (الكباتن) */}
+            {/* DRIVER Role Menus */}
             {role === 'DRIVER' && (
               <>
                 <button
+                  type="button"
                   onClick={() => onChangeSection('driver_portal')}
-                  className={`px-4 py-1.5 rounded-lg flex items-center gap-1.5 transition-all ${
+                  className={`px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
                     activeSection === 'driver_portal'
-                      ? 'bg-emerald-600 text-white font-bold shadow-xs'
-                      : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                      ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
                   }`}
                 >
                   <Car className="w-3.5 h-3.5" />
                   <span>بوابة الكابتن وطلبيات الرحلة</span>
                 </button>
 
-                <button
-                  onClick={onOpenRouteOptimizer}
-                  className="px-4 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-700/50 flex items-center gap-1.5"
-                >
-                  <Navigation className="w-3.5 h-3.5 text-blue-400" />
-                  <span>المسار والخرائط</span>
-                </button>
+                {onOpenRouteOptimizer && (
+                  <button
+                    type="button"
+                    onClick={onOpenRouteOptimizer}
+                    className="px-3.5 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800/70 flex items-center gap-1.5 transition-all cursor-pointer"
+                  >
+                    <Navigation className="w-3.5 h-3.5 text-amber-400" />
+                    <span>المسار والخرائط</span>
+                  </button>
+                )}
               </>
             )}
           </div>
