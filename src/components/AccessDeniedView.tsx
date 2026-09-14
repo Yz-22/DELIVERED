@@ -18,10 +18,15 @@ export const AccessDeniedView: React.FC<AccessDeniedViewProps> = ({
   homeSectionName = 'الرئيسية المصرح بها',
 }) => {
   const roleDisplayNames: Record<Role, { label: string; color: string; badge: string }> = {
+    SUPER_ADMIN: {
+      label: 'المدير العام للنظام (Super Admin)',
+      color: 'text-purple-700 bg-purple-50 border-purple-200',
+      badge: 'التحكم الشامل',
+    },
     ADMIN: {
       label: 'مدير العمليات (Admin)',
       color: 'text-amber-700 bg-amber-50 border-amber-200',
-      badge: 'إدارة عليا',
+      badge: 'إدارة العمليات',
     },
     OPERATOR: {
       label: 'موظف العمليات والفرز (Operator)',
@@ -37,6 +42,21 @@ export const AccessDeniedView: React.FC<AccessDeniedViewProps> = ({
       label: 'كابتن توصيل (Driver)',
       color: 'text-emerald-700 bg-emerald-50 border-emerald-200',
       badge: 'مندوب ميداني',
+    },
+    CASHIER: {
+      label: 'موظف كاشير ونقاط بيع (Cashier)',
+      color: 'text-teal-700 bg-teal-50 border-teal-200',
+      badge: 'نقطة بيع',
+    },
+    ACCOUNTANT: {
+      label: 'محاسب مالي (Accountant)',
+      color: 'text-emerald-700 bg-emerald-50 border-emerald-200',
+      badge: 'شؤون مالية',
+    },
+    STAFF: {
+      label: 'موظف فرعي (Staff)',
+      color: 'text-slate-700 bg-slate-50 border-slate-200',
+      badge: 'فريق عمل',
     },
   };
 

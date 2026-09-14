@@ -21,11 +21,17 @@ import {
   Calendar,
   Check,
   Store,
-  ShoppingBag
+  ShoppingBag,
+  Boxes,
+  Calculator,
+  Receipt
 } from 'lucide-react';
 import { User, Order, OrderStatus } from '../types/logistics';
 import { GOVERNORATES, JORDAN_AREAS_MAP, STANDARD_DELIVERY_FEES } from '../utils/logisticsHelpers';
 import { MerchantPos } from './MerchantPos';
+import { MerchantWarehouse } from './MerchantWarehouse';
+import { MerchantInvoices } from './MerchantInvoices';
+import { MerchantAccounting } from './MerchantAccounting';
 
 interface MerchantPortalProps {
   merchants: User[];
@@ -53,7 +59,9 @@ export const MerchantPortal: React.FC<MerchantPortalProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
-  const [activeTab, setActiveTab] = useState<'pos' | 'orders' | 'new_shipment' | 'finance'>('pos');
+  const [activeTab, setActiveTab] = useState<
+    'pos' | 'invoices' | 'warehouse' | 'accounting' | 'orders' | 'finance' | 'new_shipment'
+  >('pos');
 
   // New Shipment Form State
   const [newOrder, setNewOrder] = useState({
@@ -209,143 +217,198 @@ export const MerchantPortal: React.FC<MerchantPortalProps> = ({
         </div>
       )}
 
-      {/* Merchant Header & Store Selector */}
-      <div className="bg-gradient-to-l from-slate-900 via-slate-800 to-slate-900 rounded-3xl p-5 sm:p-6 text-white shadow-xl border border-slate-700/60 mb-6">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="flex items-center gap-4">
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-amber-500 to-amber-400 text-slate-950 flex items-center justify-center font-black text-2xl shadow-md">
-              <Building2 className="w-7 h-7" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs bg-amber-500/20 text-amber-300 font-bold px-2.5 py-0.5 rounded-full border border-amber-500/30">
-                  بوابة الخدمة الذاتية للتجار
-                </span>
-                <span className="text-xs text-slate-400">DarGo Merchant Portal</span>
+      {/* Merchant Header & Store Selector (Hidden in POS Cashier mode for maximum focus and zero distraction) */}
+      {activeTab !== 'pos' && (
+        <div className="bg-gradient-to-l from-slate-900 via-slate-800 to-slate-900 rounded-3xl p-5 sm:p-6 text-white shadow-xl border border-slate-700/60 mb-6">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex items-center gap-4">
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-amber-500 to-amber-400 text-slate-950 flex items-center justify-center font-black text-2xl shadow-md">
+                <Building2 className="w-7 h-7" />
               </div>
-              <h1 className="text-xl sm:text-2xl font-black text-white mt-1">
-                {currentMerchant?.commercialName || currentMerchant?.name}
-              </h1>
-              <p className="text-xs text-slate-300">
-                {currentMerchant?.commercialType} | هاتف: {currentMerchant?.phone} | {currentMerchant?.city}
-              </p>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs bg-amber-500/20 text-amber-300 font-bold px-2.5 py-0.5 rounded-full border border-amber-500/30">
+                    بوابة الخدمة الذاتية للتجار
+                  </span>
+                  <span className="text-xs text-slate-400">DarGo Merchant Portal</span>
+                </div>
+                <h1 className="text-xl sm:text-2xl font-black text-white mt-1">
+                  {currentMerchant?.commercialName || currentMerchant?.name}
+                </h1>
+                <p className="text-xs text-slate-300">
+                  {currentMerchant?.commercialType} | هاتف: {currentMerchant?.phone} | {currentMerchant?.city}
+                </p>
+              </div>
+            </div>
+
+            {/* Quick POS Cashier Launcher & Store Account Badge */}
+            <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto justify-between md:justify-end">
+              <button
+                onClick={() => setActiveTab('pos')}
+                className="px-4 py-2.5 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-400 text-slate-950 font-black text-xs sm:text-sm flex items-center gap-2 shadow-lg shadow-amber-500/20 hover:scale-105 active:scale-95 transition-all cursor-pointer border border-amber-300"
+              >
+                <Store className="w-4 h-4" />
+                <span>⚡ فتح الكاشير السريع (POS)</span>
+              </button>
+
+              <div className="bg-slate-800/80 px-4 py-2 rounded-2xl border border-slate-700/80 text-right flex items-center gap-3">
+                <div>
+                  <div className="text-[10px] text-slate-400">حساب المتجر المعتمد</div>
+                  <div className="text-xs font-bold text-emerald-400 flex items-center gap-1.5 justify-end">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span>نشط ومعتمد</span>
+                  </div>
+                </div>
+                <div className="w-8 h-8 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 shrink-0">
+                  <Store className="w-4 h-4" />
+                </div>
+              </div>
             </div>
           </div>
 
-          {/* Verified Store Account Badge */}
-          <div className="bg-slate-800/80 px-4 py-2.5 rounded-2xl border border-slate-700/80 text-right w-full md:w-auto flex items-center justify-between md:justify-end gap-3">
-            <div>
-              <div className="text-[11px] text-slate-400">حساب المتجر المعتمد</div>
-              <div className="text-xs font-bold text-emerald-400 flex items-center gap-1.5 justify-end">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span>نشط ومعتمد</span>
+          {/* Merchant Financial & Operations Metrics */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-6 pt-5 border-t border-slate-700/60">
+            <div className="bg-slate-800/60 rounded-2xl p-3.5 border border-slate-700/40">
+              <div className="text-[11px] text-slate-400 flex items-center justify-between">
+                <span>إجمالي شحنات المتجر</span>
+                <Package className="w-3.5 h-3.5 text-amber-400" />
+              </div>
+              <div className="text-xl font-black text-white mt-1">{totalShipments}</div>
+              <div className="text-[10px] text-slate-400 mt-0.5">{activeShipments.length} شحنة جارية</div>
+            </div>
+
+            <div className="bg-slate-800/60 rounded-2xl p-3.5 border border-slate-700/40">
+              <div className="text-[11px] text-emerald-400 flex items-center justify-between">
+                <span>تم التسليم بنجاح</span>
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+              </div>
+              <div className="text-xl font-black text-emerald-400 mt-1">{deliveredShipments.length}</div>
+              <div className="text-[10px] text-slate-400 mt-0.5">
+                نسبة النجاح: {totalShipments > 0 ? Math.round((deliveredShipments.length / totalShipments) * 100) : 0}%
               </div>
             </div>
-            <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 shrink-0">
-              <Store className="w-5 h-5" />
+
+            <div className="bg-slate-800/60 rounded-2xl p-3.5 border border-slate-700/40">
+              <div className="text-[11px] text-rose-400 flex items-center justify-between">
+                <span>مرتجع / ملغي</span>
+                <RotateCcw className="w-3.5 h-3.5 text-rose-400" />
+              </div>
+              <div className="text-xl font-black text-rose-400 mt-1">{returnedShipments.length}</div>
+              <div className="text-[10px] text-slate-400 mt-0.5">بانتظار الإرجاع للمتجر</div>
+            </div>
+
+            <div className="bg-emerald-500/10 rounded-2xl p-3.5 border border-emerald-500/30">
+              <div className="text-[11px] text-emerald-300 font-bold flex items-center justify-between">
+                <span>رصيدك المستحق في المحفظة</span>
+                <DollarSign className="w-3.5 h-3.5 text-emerald-400" />
+              </div>
+              <div className="text-2xl font-black text-emerald-400 mt-1">
+                {netDueToMerchant.toFixed(2)}{' '}
+                <span className="text-xs font-normal text-slate-200">د.أ</span>
+              </div>
+              <div className="text-[10px] text-emerald-300 mt-0.5">
+                صافي جاهز للتحويل الفوري
+              </div>
             </div>
           </div>
         </div>
+      )}
 
-        {/* Merchant Financial & Operations Metrics */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-6 pt-5 border-t border-slate-700/60">
-          <div className="bg-slate-800/60 rounded-2xl p-3.5 border border-slate-700/40">
-            <div className="text-[11px] text-slate-400 flex items-center justify-between">
-              <span>إجمالي شحنات المتجر</span>
-              <Package className="w-3.5 h-3.5 text-amber-400" />
-            </div>
-            <div className="text-xl font-black text-white mt-1">{totalShipments}</div>
-            <div className="text-[10px] text-slate-400 mt-0.5">{activeShipments.length} شحنة جارية</div>
-          </div>
-
-          <div className="bg-slate-800/60 rounded-2xl p-3.5 border border-slate-700/40">
-            <div className="text-[11px] text-emerald-400 flex items-center justify-between">
-              <span>تم التسليم بنجاح</span>
-              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-            </div>
-            <div className="text-xl font-black text-emerald-400 mt-1">{deliveredShipments.length}</div>
-            <div className="text-[10px] text-slate-400 mt-0.5">
-              نسبة النجاح: {totalShipments > 0 ? Math.round((deliveredShipments.length / totalShipments) * 100) : 0}%
-            </div>
-          </div>
-
-          <div className="bg-slate-800/60 rounded-2xl p-3.5 border border-slate-700/40">
-            <div className="text-[11px] text-rose-400 flex items-center justify-between">
-              <span>مرتجع / ملغي</span>
-              <RotateCcw className="w-3.5 h-3.5 text-rose-400" />
-            </div>
-            <div className="text-xl font-black text-rose-400 mt-1">{returnedShipments.length}</div>
-            <div className="text-[10px] text-slate-400 mt-0.5">بانتظار الإرجاع للمتجر</div>
-          </div>
-
-          <div className="bg-emerald-500/10 rounded-2xl p-3.5 border border-emerald-500/30">
-            <div className="text-[11px] text-emerald-300 font-bold flex items-center justify-between">
-              <span>رصيدك المستحق في المحفظة</span>
-              <DollarSign className="w-3.5 h-3.5 text-emerald-400" />
-            </div>
-            <div className="text-2xl font-black text-emerald-400 mt-1">
-              {netDueToMerchant.toFixed(2)}{' '}
-              <span className="text-xs font-normal text-slate-200">د.أ</span>
-            </div>
-            <div className="text-[10px] text-emerald-300 mt-0.5">
-              صافي جاهز للتحويل الفوري
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Tabs Navigation */}
-      <div className="flex items-center gap-2 mb-4 border-b border-slate-200 pb-3 overflow-x-auto">
+      {/* Tabs Navigation - Prioritizing POS & Operational Workflow */}
+      <div className="flex items-center gap-2 mb-6 border-b border-slate-200 pb-3 overflow-x-auto scrollbar-none">
+        {/* 1. POS Cashier (Primary Priority) */}
         <button
           onClick={() => setActiveTab('pos')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+          className={`px-4 py-2.5 rounded-2xl text-xs font-black transition-all flex items-center gap-2 whitespace-nowrap cursor-pointer shadow-xs ${
             activeTab === 'pos'
-              ? 'bg-amber-500 text-slate-950 shadow-sm ring-2 ring-amber-500/30'
+              ? 'bg-gradient-to-r from-amber-500 to-amber-400 text-slate-950 ring-2 ring-amber-500/40 shadow-amber-500/20'
+              : 'bg-amber-50 text-amber-900 hover:bg-amber-100 border border-amber-200'
+          }`}
+        >
+          <Store className="w-4 h-4" />
+          <span>كاشير ونقاط البيع POS</span>
+        </button>
+
+        {/* 2. Invoices & Billing */}
+        <button
+          onClick={() => setActiveTab('invoices')}
+          className={`px-4 py-2.5 rounded-2xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+            activeTab === 'invoices'
+              ? 'bg-slate-900 text-white shadow-sm'
               : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
           }`}
         >
-          <Store className="w-4 h-4 text-slate-950" />
-          <span>نقطة البيع والكاشير POS (بيع بالمحل + أونلاين)</span>
+          <FileText className="w-4 h-4 text-blue-500" />
+          <span>إدخال الفواتير والمبيعات</span>
         </button>
 
+        {/* 3. Warehouse & Inventory */}
+        <button
+          onClick={() => setActiveTab('warehouse')}
+          className={`px-4 py-2.5 rounded-2xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+            activeTab === 'warehouse'
+              ? 'bg-slate-900 text-white shadow-sm'
+              : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
+          }`}
+        >
+          <Boxes className="w-4 h-4 text-emerald-500" />
+          <span>المستودع والمخزن والتصنيفات</span>
+        </button>
+
+        {/* 4. Accounting & P&L */}
+        <button
+          onClick={() => setActiveTab('accounting')}
+          className={`px-4 py-2.5 rounded-2xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+            activeTab === 'accounting'
+              ? 'bg-slate-900 text-white shadow-sm'
+              : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
+          }`}
+        >
+          <Calculator className="w-4 h-4 text-indigo-500" />
+          <span>نظام المحاسبة والأرباح P&L</span>
+        </button>
+
+        {/* 5. DarGo Delivery Orders */}
         <button
           onClick={() => setActiveTab('orders')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+          className={`px-4 py-2.5 rounded-2xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
             activeTab === 'orders'
               ? 'bg-slate-900 text-white shadow-sm'
               : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
           }`}
         >
-          <Package className="w-4 h-4" />
-          <span>شحنات التوصيل ({merchantOrders.length})</span>
+          <Package className="w-4 h-4 text-amber-500" />
+          <span>شحنات دارجو ({merchantOrders.length})</span>
         </button>
 
-        <button
-          onClick={() => setActiveTab('new_shipment')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
-            activeTab === 'new_shipment'
-              ? 'bg-amber-500 text-slate-950 shadow-sm'
-              : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
-          }`}
-        >
-          <PlusCircle className="w-4 h-4" />
-          <span>إضافة شحنة يدوية</span>
-        </button>
-
+        {/* 6. Financial Settlement & Wallet */}
         <button
           onClick={() => setActiveTab('finance')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+          className={`px-4 py-2.5 rounded-2xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
             activeTab === 'finance'
               ? 'bg-emerald-700 text-white shadow-sm'
               : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
           }`}
         >
-          <CreditCard className="w-4 h-4" />
-          <span>المحفظة المالية وكشوفات الصرف</span>
+          <CreditCard className="w-4 h-4 text-emerald-600" />
+          <span>المحفظة والمستحقات</span>
+        </button>
+
+        {/* 7. New Manual Shipment */}
+        <button
+          onClick={() => setActiveTab('new_shipment')}
+          className={`px-4 py-2.5 rounded-2xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+            activeTab === 'new_shipment'
+              ? 'bg-slate-900 text-white shadow-sm'
+              : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
+          }`}
+        >
+          <PlusCircle className="w-4 h-4 text-slate-500" />
+          <span>إضافة شحنة يدوية</span>
         </button>
       </div>
 
-      {/* Tab 0: Integrated Merchant Point of Sale (POS) */}
+      {/* Tab 1: Integrated Merchant Point of Sale (POS) */}
       {activeTab === 'pos' && (
         <MerchantPos
           currentMerchant={currentMerchant}
@@ -355,6 +418,34 @@ export const MerchantPortal: React.FC<MerchantPortalProps> = ({
             onOrderCreated?.();
           }}
         />
+      )}
+
+      {/* Tab 2: Merchant Invoices & Billing */}
+      {activeTab === 'invoices' && (
+        <MerchantInvoices
+          currentMerchant={currentMerchant}
+          onOpenWaybill={onOpenWaybill}
+          onRefreshOrders={() => {
+            fetchMerchantOrders();
+            onOrderCreated?.();
+          }}
+        />
+      )}
+
+      {/* Tab 3: Merchant Warehouse & Inventory */}
+      {activeTab === 'warehouse' && (
+        <MerchantWarehouse
+          currentMerchant={currentMerchant}
+          onRefreshOrders={() => {
+            fetchMerchantOrders();
+            onOrderCreated?.();
+          }}
+        />
+      )}
+
+      {/* Tab 4: Merchant Accounting & P&L */}
+      {activeTab === 'accounting' && (
+        <MerchantAccounting currentMerchant={currentMerchant} />
       )}
 
       {/* Tab 1: Orders List */}

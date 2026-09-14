@@ -19,8 +19,11 @@ import {
   MessageCircle,
   KeyRound,
   Filter,
+  Sliders,
+  Database,
 } from 'lucide-react';
 import { User, Role } from '../types/logistics';
+import { PermissionsManager } from './PermissionsManager';
 
 interface UsersManagementProps {
   users: User[];
@@ -35,7 +38,7 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
   onUpdateUser,
   onSelectUserToSimulate,
 }) => {
-  const [activeTab, setActiveTab] = useState<'ALL' | 'STAFF' | 'MERCHANT' | 'DRIVER'>('ALL');
+  const [activeTab, setActiveTab] = useState<'ALL' | 'STAFF' | 'MERCHANT' | 'DRIVER' | 'HIERARCHY_RBAC'>('HIERARCHY_RBAC');
   const [searchQuery, setSearchQuery] = useState('');
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
@@ -44,6 +47,7 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
   const [formData, setFormData] = useState({
     name: '',
     email: '',
+    password: '',
     phone: '',
     role: 'MERCHANT' as Role,
     roleName: 'صلاحية التاجر',
@@ -79,6 +83,7 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
     setFormData({
       name: '',
       email: '',
+      password: '',
       phone: '',
       role: 'MERCHANT',
       roleName: 'صلاحية التاجر',
@@ -99,9 +104,10 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
     setFormData({
       name: user.name,
       email: user.email,
+      password: user.password || '',
       phone: user.phone,
       role: user.role,
-      roleName: user.roleName || (user.role === 'ADMIN' ? 'صلاحية الإدارة العليا' : user.role === 'OPERATOR' ? 'صلاحية الموظف' : user.role === 'MERCHANT' ? 'صلاحية التاجر' : 'صلاحية السائق'),
+      roleName: user.roleName || (user.role === 'SUPER_ADMIN' ? 'المدير العام للنظام' : user.role === 'ADMIN' ? 'صلاحية الإدارة العليا' : user.role === 'OPERATOR' ? 'صلاحية الموظف' : user.role === 'MERCHANT' ? 'صلاحية التاجر' : 'صلاحية السائق'),
       commercialName: user.commercialName || '',
       commercialType: user.commercialType || '',
       priceList: user.priceList || 'جميع المملكة 2',
@@ -152,9 +158,25 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
         </button>
       </div>
 
-      {/* Tabs Filter Bar (Matching ERP screenshot: جميع المستخدمين، الموظفون، تاجر، السائق) */}
+      {/* Tabs Filter Bar (Matching ERP screenshot: جميع المستخدمين، الموظفون، تاجر، السائق + هرم الصلاحيات) */}
       <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-100 p-2 rounded-xl border border-slate-200">
-        <div className="inline-flex rounded-lg bg-white p-1 border border-slate-300 shadow-2xs">
+        <div className="inline-flex flex-wrap gap-1 rounded-lg bg-white p-1 border border-slate-300 shadow-2xs">
+          <button
+            type="button"
+            onClick={() => setActiveTab('HIERARCHY_RBAC')}
+            className={`px-3.5 py-1.5 text-xs font-bold rounded-md transition-all flex items-center gap-1.5 ${
+              activeTab === 'HIERARCHY_RBAC'
+                ? 'bg-gradient-to-r from-indigo-900 to-indigo-700 text-white shadow-xs'
+                : 'text-indigo-900 hover:bg-indigo-50 font-black'
+            }`}
+          >
+            <Shield className="w-3.5 h-3.5 text-indigo-400" />
+            <span>هرم الصلاحيات و Supabase (10K Users)</span>
+            <span className="bg-emerald-400 text-slate-950 text-[10px] px-1.5 py-0.2 rounded font-black">
+              RBAC
+            </span>
+          </button>
+
           <button
             type="button"
             onClick={() => setActiveTab('ALL')}
@@ -177,7 +199,7 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
             }`}
           >
             <Briefcase className="w-3.5 h-3.5" />
-            <span>الموظفون والعمليات ({users.filter((u) => u.role === 'ADMIN' || u.role === 'OPERATOR').length})</span>
+            <span>الموظفون والعمليات ({users.filter((u) => u.role === 'ADMIN' || u.role === 'OPERATOR' || u.role === 'SUPER_ADMIN').length})</span>
           </button>
 
           <button
@@ -208,22 +230,35 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
         </div>
 
         {/* Search */}
-        <div className="relative min-w-[240px]">
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="بحث بالاسم، الهاتف، أو المتجر..."
-            className="w-full bg-white border border-slate-300 rounded-xl px-3 py-1.5 pr-9 text-xs text-slate-800 placeholder-slate-400 focus:outline-hidden focus:ring-2 focus:ring-amber-500"
-          />
-          <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
-        </div>
+        {activeTab !== 'HIERARCHY_RBAC' && (
+          <div className="relative min-w-[240px]">
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="بحث بالاسم، الهاتف، أو المتجر..."
+              className="w-full bg-white border border-slate-300 rounded-xl px-3 py-1.5 pr-9 text-xs text-slate-800 placeholder-slate-400 focus:outline-hidden focus:ring-2 focus:ring-amber-500"
+            />
+            <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
+          </div>
+        )}
       </div>
 
-      {/* Users Table / Grid */}
-      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
-        <div className="overflow-x-auto">
-          <table className="w-full text-right text-xs">
+      {/* Render Permissions Manager or Regular Table */}
+      {activeTab === 'HIERARCHY_RBAC' ? (
+        <PermissionsManager
+          users={users}
+          onUpdateUserPermissions={(userId, permissions, maxAllowed) => {
+            onUpdateUser(userId, { permissions, maxAllowedPermissions: maxAllowed });
+          }}
+          onAddSubUser={(subUser) => {
+            onAddUser(subUser);
+          }}
+        />
+      ) : (
+        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
+          <div className="overflow-x-auto">
+            <table className="w-full text-right text-xs">
             <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold">
               <tr>
                 <th className="p-3.5">المستخدم</th>
@@ -363,6 +398,7 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
           </table>
         </div>
       </div>
+      )}
 
       {/* User Create / Edit Modal (Matching Screenshots 1 & 2) */}
       {isCreateModalOpen && (
@@ -435,28 +471,39 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
                         ...formData,
                         role: newRole,
                         roleName:
-                          newRole === 'ADMIN'
-                            ? 'صلاحية الإدارة العليا'
+                          newRole === 'SUPER_ADMIN'
+                            ? 'المدير العام للنظام (Super Admin)'
+                            : newRole === 'ADMIN'
+                            ? 'مدير العمليات (Admin)'
                             : newRole === 'OPERATOR'
-                            ? 'صلاحية موظف العمليات والفرز'
+                            ? 'موظف العمليات والمستودع'
                             : newRole === 'MERCHANT'
-                            ? 'صلاحية التاجر'
-                            : 'صلاحية السائق',
+                            ? 'حساب التاجر (Merchant)'
+                            : newRole === 'DRIVER'
+                            ? 'كابتن التوصيل (Driver)'
+                            : newRole === 'CASHIER'
+                            ? 'موظف الكاشير'
+                            : newRole === 'ACCOUNTANT'
+                            ? 'محاسب مالي'
+                            : 'موظف فرعي',
                       });
                     }}
                     className="w-full text-xs font-bold bg-slate-50 border border-slate-300 rounded-xl p-2.5 text-slate-900 focus:bg-white focus:ring-2 focus:ring-amber-500"
                   >
+                    <option value="SUPER_ADMIN">المدير العام للنظام (Super Admin)</option>
                     <option value="ADMIN">مدير العمليات (Admin)</option>
                     <option value="OPERATOR">موظف العمليات والمستودع (Operator)</option>
                     <option value="MERCHANT">حساب التاجر (Merchant)</option>
                     <option value="DRIVER">كابتن التوصيل (Driver)</option>
+                    <option value="CASHIER">موظف الكاشير (Cashier)</option>
+                    <option value="ACCOUNTANT">محاسب مالي (Accountant)</option>
                   </select>
                 </div>
 
                 {/* اسم الصلاحية */}
                 <div>
                   <label className="text-xs font-bold text-slate-800 block mb-1">
-                    اسم الصلاحية:
+                    اسم المسمى الوظيفي:
                   </label>
                   <input
                     type="text"
@@ -469,7 +516,7 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
                 {/* اسم المستخدم الكامل */}
                 <div>
                   <label className="text-xs font-bold text-slate-800 block mb-1">
-                    اسم المستخدم:
+                    اسم المستخدم الكامل:
                   </label>
                   <input
                     type="text"
@@ -499,13 +546,27 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
                 {/* البريد الإلكتروني */}
                 <div>
                   <label className="text-xs font-bold text-slate-800 block mb-1">
-                    البريد الإلكتروني:
+                    البريد الإلكتروني (لتسجيل الدخول):
                   </label>
                   <input
                     type="email"
                     value={formData.email}
                     onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                    placeholder="user@domain.com"
+                    placeholder="user@dargo-tms.io"
+                    className="w-full text-xs font-mono bg-slate-50 border border-slate-300 rounded-xl p-2.5 text-slate-900 focus:bg-white focus:ring-2 focus:ring-amber-500"
+                  />
+                </div>
+
+                {/* كلمة المرور */}
+                <div>
+                  <label className="text-xs font-bold text-slate-800 block mb-1">
+                    كلمة المرور (Password):
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.password}
+                    onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                    placeholder={editingUser ? 'اتركه فارغاً للإبقاء على الحالية' : '123456 أو admin123'}
                     className="w-full text-xs font-mono bg-slate-50 border border-slate-300 rounded-xl p-2.5 text-slate-900 focus:bg-white focus:ring-2 focus:ring-amber-500"
                   />
                 </div>

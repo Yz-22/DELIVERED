@@ -17,9 +17,12 @@ import {
   RefreshCw,
   Search,
   ShieldAlert,
-  Wallet
+  Wallet,
+  Scale,
+  BookOpen
 } from 'lucide-react';
 import { User, Order } from '../types/logistics';
+import { GeneralAccounting } from './GeneralAccounting';
 
 interface MerchantSettlementData {
   merchant: User;
@@ -45,7 +48,7 @@ interface DriverSettlementData {
 }
 
 export const FinancialSettlements: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'merchants' | 'drivers'>('merchants');
+  const [activeTab, setActiveTab] = useState<'merchants' | 'drivers' | 'general_accounting'>('merchants');
   const [merchantData, setMerchantData] = useState<MerchantSettlementData[]>([]);
   const [driverData, setDriverData] = useState<DriverSettlementData[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -224,136 +227,155 @@ export const FinancialSettlements: React.FC = () => {
             <Wallet className="w-4 h-4" />
             <span>إغلاق عهدة الكباتن ({driverData.length})</span>
           </button>
+          <button
+            onClick={() => setActiveTab('general_accounting')}
+            className={`px-4 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-2 ${
+              activeTab === 'general_accounting'
+                ? 'bg-amber-500 text-slate-950 font-black shadow-sm'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Scale className="w-4 h-4" />
+            <span>النظام المحاسبي العام وشجرة الحسابات</span>
+          </button>
         </div>
       </div>
 
-      {/* KPI Cards Banner */}
-      {activeTab === 'merchants' ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-sm">
-            <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
-              <span>إجمالي ثمن البضاعة المحصل</span>
-              <DollarSign className="w-4 h-4 text-emerald-600" />
-            </div>
-            <div className="text-2xl font-black text-slate-900">
-              {totalPendingGoods.toFixed(2)}{' '}
-              <span className="text-xs font-normal text-slate-500">د.أ</span>
-            </div>
-            <div className="text-[11px] text-slate-500 mt-1">
-              عن {totalPendingParcelsCount} طرد مسلّم بانتظار التسوية
-            </div>
-          </div>
+      {/* Render General Accounting when selected */}
+      {activeTab === 'general_accounting' && <GeneralAccounting />}
 
-          <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-sm">
-            <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
-              <span>خصم أجور التوصيل للشركة</span>
-              <Receipt className="w-4 h-4 text-amber-600" />
-            </div>
-            <div className="text-2xl font-black text-amber-600">
-              {totalPendingFees.toFixed(2)}{' '}
-              <span className="text-xs font-normal text-slate-500">د.أ</span>
-            </div>
-            <div className="text-[11px] text-slate-500 mt-1">
-              أجور الشحن المستحقة لـ DarGo
-            </div>
-          </div>
+      {/* KPI Cards & Search Bar (only for merchants & drivers tabs) */}
+      {activeTab !== 'general_accounting' && (
+        <>
+          {/* KPI Cards Banner */}
+          {activeTab === 'merchants' ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+              <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-sm">
+                <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
+                  <span>إجمالي ثمن البضاعة المحصل</span>
+                  <DollarSign className="w-4 h-4 text-emerald-600" />
+                </div>
+                <div className="text-2xl font-black text-slate-900">
+                  {totalPendingGoods.toFixed(2)}{' '}
+                  <span className="text-xs font-normal text-slate-500">د.أ</span>
+                </div>
+                <div className="text-[11px] text-slate-500 mt-1">
+                  عن {totalPendingParcelsCount} طرد مسلّم بانتظار التسوية
+                </div>
+              </div>
 
-          <div className="bg-emerald-950 text-white rounded-2xl p-4 border border-emerald-800 shadow-md">
-            <div className="flex items-center justify-between text-xs text-emerald-300 mb-1">
-              <span>صافي المستحق للمتاجر (Net Payable)</span>
-              <TrendingUp className="w-4 h-4 text-emerald-400" />
-            </div>
-            <div className="text-2xl font-black text-emerald-400">
-              {totalNetPayableToMerchants.toFixed(2)}{' '}
-              <span className="text-xs font-normal text-emerald-200">د.أ</span>
-            </div>
-            <div className="text-[11px] text-emerald-300 mt-1">
-              جاهز للتحويل الفوري عبر كليك أو البنك
-            </div>
-          </div>
+              <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-sm">
+                <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
+                  <span>خصم أجور التوصيل للشركة</span>
+                  <Receipt className="w-4 h-4 text-amber-600" />
+                </div>
+                <div className="text-2xl font-black text-amber-600">
+                  {totalPendingFees.toFixed(2)}{' '}
+                  <span className="text-xs font-normal text-slate-500">د.أ</span>
+                </div>
+                <div className="text-[11px] text-slate-500 mt-1">
+                  أجور الشحن المستحقة لـ DarGo
+                </div>
+              </div>
 
-          <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-sm">
-            <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
-              <span>متاجر بحاجة لتسوية</span>
-              <Building2 className="w-4 h-4 text-indigo-600" />
-            </div>
-            <div className="text-2xl font-black text-slate-900">
-              {merchantData.filter((m) => m.pendingCount > 0).length} / {merchantData.length}
-            </div>
-            <div className="text-[11px] text-slate-500 mt-1">
-              متاجر لديها رصيد جاهز للصرف
-            </div>
-          </div>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-          <div className="bg-amber-950 text-white rounded-2xl p-4 border border-amber-800 shadow-md">
-            <div className="flex items-center justify-between text-xs text-amber-300 mb-1">
-              <span>إجمالي عهدة الكاش بالسيارات حالياً</span>
-              <Wallet className="w-4 h-4 text-amber-400" />
-            </div>
-            <div className="text-2xl font-black text-amber-400">
-              {totalCashInDriversHand.toFixed(2)}{' '}
-              <span className="text-xs font-normal text-amber-200">د.أ</span>
-            </div>
-            <div className="text-[11px] text-amber-300 mt-1">
-              مبالغ نقدية محصلة لم يقم الكباتن بتوريدها للصندوق
-            </div>
-          </div>
+              <div className="bg-emerald-950 text-white rounded-2xl p-4 border border-emerald-800 shadow-md">
+                <div className="flex items-center justify-between text-xs text-emerald-300 mb-1">
+                  <span>صافي المستحق للمتاجر (Net Payable)</span>
+                  <TrendingUp className="w-4 h-4 text-emerald-400" />
+                </div>
+                <div className="text-2xl font-black text-emerald-400">
+                  {totalNetPayableToMerchants.toFixed(2)}{' '}
+                  <span className="text-xs font-normal text-emerald-200">د.أ</span>
+                </div>
+                <div className="text-[11px] text-emerald-300 mt-1">
+                  جاهز للتحويل الفوري عبر كليك أو البنك
+                </div>
+              </div>
 
-          <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-sm">
-            <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
-              <span>عدد الطرود المسلّمة غير المغلقة</span>
-              <Receipt className="w-4 h-4 text-slate-600" />
+              <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-sm">
+                <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
+                  <span>متاجر بحاجة لتسوية</span>
+                  <Building2 className="w-4 h-4 text-indigo-600" />
+                </div>
+                <div className="text-2xl font-black text-slate-900">
+                  {merchantData.filter((m) => m.pendingCount > 0).length} / {merchantData.length}
+                </div>
+                <div className="text-[11px] text-slate-500 mt-1">
+                  متاجر لديها رصيد جاهز للصرف
+                </div>
+              </div>
             </div>
-            <div className="text-2xl font-black text-slate-900">
-              {totalDriverPendingCount} طرد
-            </div>
-            <div className="text-[11px] text-slate-500 mt-1">
-              تحتاج لتأكيد استلام وتصفير عهدة السائق
-            </div>
-          </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+              <div className="bg-amber-950 text-white rounded-2xl p-4 border border-amber-800 shadow-md">
+                <div className="flex items-center justify-between text-xs text-amber-300 mb-1">
+                  <span>إجمالي عهدة الكاش بالسيارات حالياً</span>
+                  <Wallet className="w-4 h-4 text-amber-400" />
+                </div>
+                <div className="text-2xl font-black text-amber-400">
+                  {totalCashInDriversHand.toFixed(2)}{' '}
+                  <span className="text-xs font-normal text-amber-200">د.أ</span>
+                </div>
+                <div className="text-[11px] text-amber-300 mt-1">
+                  مبالغ نقدية محصلة لم يقم الكباتن بتوريدها للصندوق
+                </div>
+              </div>
 
-          <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-sm">
-            <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
-              <span>كباتن معهم عهدة نقدية مفتوحة</span>
-              <UserCheck className="w-4 h-4 text-emerald-600" />
+              <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-sm">
+                <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
+                  <span>عدد الطرود المسلّمة غير المغلقة</span>
+                  <Receipt className="w-4 h-4 text-slate-600" />
+                </div>
+                <div className="text-2xl font-black text-slate-900">
+                  {totalDriverPendingCount} طرد
+                </div>
+                <div className="text-[11px] text-slate-500 mt-1">
+                  تحتاج لتأكيد استلام وتصفير عهدة السائق
+                </div>
+              </div>
+
+              <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-sm">
+                <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
+                  <span>كباتن معهم عهدة نقدية مفتوحة</span>
+                  <UserCheck className="w-4 h-4 text-emerald-600" />
+                </div>
+                <div className="text-2xl font-black text-slate-900">
+                  {driverData.filter((d) => d.pendingCashInHand > 0).length} كابتن
+                </div>
+                <div className="text-[11px] text-slate-500 mt-1">
+                  من أصل {driverData.length} كابتن نشطين
+                </div>
+              </div>
             </div>
-            <div className="text-2xl font-black text-slate-900">
-              {driverData.filter((d) => d.pendingCashInHand > 0).length} كابتن
+          )}
+
+          {/* Search Bar */}
+          <div className="bg-white rounded-xl p-3 border border-slate-200 shadow-sm mb-4 flex items-center justify-between gap-3">
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 absolute right-3 top-2.5 text-slate-400" />
+              <input
+                type="text"
+                placeholder={
+                  activeTab === 'merchants'
+                    ? 'ابحث باسم المتجر، أو رقم الهاتف، أو اسم المالك...'
+                    : 'ابحث باسم الكابتن أو رقم الهاتف...'
+                }
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pr-9 pl-4 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+              />
             </div>
-            <div className="text-[11px] text-slate-500 mt-1">
-              من أصل {driverData.length} كابتن نشطين
-            </div>
+
+            <button
+              onClick={fetchSettlements}
+              className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-all"
+              title="تحديث البيانات"
+            >
+              <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+            </button>
           </div>
-        </div>
+        </>
       )}
-
-      {/* Search Bar */}
-      <div className="bg-white rounded-xl p-3 border border-slate-200 shadow-sm mb-4 flex items-center justify-between gap-3">
-        <div className="relative flex-1">
-          <Search className="w-4 h-4 absolute right-3 top-2.5 text-slate-400" />
-          <input
-            type="text"
-            placeholder={
-              activeTab === 'merchants'
-                ? 'ابحث باسم المتجر، أو رقم الهاتف، أو اسم المالك...'
-                : 'ابحث باسم الكابتن أو رقم الهاتف...'
-            }
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pr-9 pl-4 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
-          />
-        </div>
-
-        <button
-          onClick={fetchSettlements}
-          className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-all"
-          title="تحديث البيانات"
-        >
-          <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
-        </button>
-      </div>
 
       {/* Tab 1: Merchants Ledger Table */}
       {activeTab === 'merchants' && (

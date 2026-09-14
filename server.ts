@@ -3,6 +3,16 @@ import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import { Order, OrderStatus, User, ApiKey, NotificationLog, PricePlan } from './src/types/logistics';
+import {
+  Account,
+  JournalEntry,
+  JournalEntryLine,
+  Voucher,
+  MerchantProduct,
+  StockMovement,
+  MerchantInvoice,
+  MerchantExpense,
+} from './src/types/accounting';
 
 const app = express();
 const PORT = 3000;
@@ -25,170 +35,83 @@ app.use((req, res, next) => {
   next();
 });
 
-// In-Memory Realistic Logistics Database
-let apiKeys: ApiKey[] = [
-  {
-    id: 'key-1',
-    merchantId: 'u-mer-1',
-    name: 'متجر سحر الشرق - شوبيفاي',
-    key: 'dg_live_sh_9238479238',
-    secret: 'sec_live_9f82348a0f98b',
-    createdAt: new Date(Date.now() - 86400000 * 5).toISOString(),
-    lastUsedAt: new Date(Date.now() - 3600000 * 2).toISOString(),
-    platform: 'SHOPIFY',
-  },
-  {
-    id: 'key-2',
-    merchantId: 'u-mer-2',
-    name: 'تيك زون - ووكومرس',
-    key: 'dg_live_wc_1092830192',
-    secret: 'sec_live_4a1239c09d812',
-    createdAt: new Date(Date.now() - 86400000 * 2).toISOString(),
-    platform: 'WOOCOMMERCE',
-  },
-];
-
+// In-Memory Database (Clean Production Ready)
+let apiKeys: ApiKey[] = [];
 let notificationLogs: NotificationLog[] = [];
+
 let users: User[] = [
   {
-    id: 'u-admin-1',
-    name: 'باسل البلبيسي',
-    email: 'operations@dargo-tms.io',
-    phone: '0795551234',
-    role: 'ADMIN',
-    roleName: 'صلاحية الإدارة العليا',
-    priceList: 'جميع المملكة 2 (2.0 د.أ / 3.0 د.أ)',
-    branch: 'فرع عمان الرئيسي',
-    accountManager: 'باسل البلبيسي',
+    id: 'u-super-1',
+    name: 'المدير العام للنظام (Super Admin)',
+    email: 'admin@dargo-tms.io',
+    phone: '0790000001',
+    role: 'SUPER_ADMIN',
+    roleName: 'المدير العام للنظام (Super Admin)',
+    branch: 'المقر الرئيسي للمملكة',
     city: 'عمان',
     isActive: true,
-  },
-  {
-    id: 'u-op-1',
-    name: 'أنس الرواشدة (مسؤول الفرز والمستودع)',
-    email: 'anas@dargo-tms.io',
-    phone: '0791112233',
-    role: 'OPERATOR',
-    roleName: 'صلاحية موظف العمليات والفرز',
-    priceList: 'جميع المملكة 2',
-    branch: 'فرع عمان الرئيسي',
-    accountManager: 'باسل البلبيسي',
-    city: 'عمان',
-    isActive: true,
-  },
-  {
-    id: 'u-mer-1',
-    name: 'متجر سحر الشرق للأزياء',
-    email: 'sahar@orient-fashion.com',
-    phone: '0788123456',
-    role: 'MERCHANT',
-    roleName: 'صلاحية التاجر',
-    commercialName: 'سحر الشرق فاشن',
-    commercialType: 'ألبسة واكسسوارات',
-    pricePlanId: 'pp-mer-std',
-    priceList: 'جميع المملكة 2 (القياسية)',
-    branch: 'فرع عمان الرئيسي',
-    accountManager: 'باسل البلبيسي',
-    city: 'عمان',
-    address: 'الصويفية، شارع الوكالات',
-    isActive: true,
-  },
-  {
-    id: 'u-mer-2',
-    name: 'تيك زون للإلكترونيات',
-    email: 'sales@techzone-jo.com',
-    phone: '0799988776',
-    role: 'MERCHANT',
-    roleName: 'صلاحية التاجر',
-    commercialName: 'تيك زون الأردن',
-    commercialType: 'إلكترونيات وهواتف',
-    pricePlanId: 'pp-mer-vip',
-    priceList: 'عمان الكبرى VIP (كبار العملاء)',
-    branch: 'فرع عمان الرئيسي',
-    accountManager: 'باسل البلبيسي',
-    city: 'عمان',
-    address: 'الجبيهة، شارع الجامعة',
-    isActive: true,
-  },
-  {
-    id: 'u-mer-3',
-    name: 'عطور دار الفخامة',
-    email: 'luxury@fakhamaperfumes.jo',
-    phone: '0777441122',
-    role: 'MERCHANT',
-    commercialName: 'دار الفخامة للعطور',
-    commercialType: 'عطور ومستحضرات تجميل',
-    pricePlanId: 'pp-mer-flat',
-    priceList: 'تسعيرة المتاجر الناشئة (سعر مخفض)',
-    city: 'الزرقاء',
-    address: 'الزرقاء الجديدة، شارع 36',
-    isActive: true,
-  },
-  {
-    id: 'u-mer-4',
-    name: 'مكتبة ومستلزمات القلم الذهبي',
-    email: 'qalam@goldenpen.com',
-    phone: '0785112233',
-    role: 'MERCHANT',
-    commercialName: 'القلم الذهبي',
-    commercialType: 'قرطاسية وهدايا',
-    pricePlanId: 'pp-mer-std',
-    priceList: 'جميع المملكة 2 (القياسية)',
-    city: 'إربد',
-    address: 'إربد، شارع الجامعة',
-    isActive: true,
-  },
-  {
-    id: 'u-drv-1',
-    name: 'محمد الزعبي (كابتن عمان الغربية)',
-    email: 'm.zoubi@dargo-driver.com',
-    phone: '0791234567',
-    role: 'DRIVER',
-    city: 'عمان',
-    pricePlanId: 'pp-drv-std',
-    priceList: 'تسعيرة عمولة كباتن العاصمة والوسط',
-    vehicleType: 'سيارة تويوتا بريوس',
-    vehiclePlate: '12-98432',
-    isActive: true,
-  },
-  {
-    id: 'u-drv-2',
-    name: 'أحمد الكردي (كابتن عمان الشرقية)',
-    email: 'a.kurdi@dargo-driver.com',
-    phone: '0786543210',
-    role: 'DRIVER',
-    city: 'عمان',
-    pricePlanId: 'pp-drv-express',
-    priceList: 'تسعيرة كباتن التوصيل السريع VIP',
-    vehicleType: 'هيونداي أفانتي',
-    vehiclePlate: '44-11890',
-    isActive: true,
-  },
-  {
-    id: 'u-drv-3',
-    name: 'عمر الخلايلة (كابتن الزرقاء والرصيفة)',
-    email: 'o.khalayleh@dargo-driver.com',
-    phone: '0775556677',
-    role: 'DRIVER',
-    city: 'الزرقاء',
-    pricePlanId: 'pp-drv-std',
-    priceList: 'تسعيرة عمولة كباتن العاصمة والوسط',
-    vehicleType: 'كيا سيفيا',
-    vehiclePlate: '31-40291',
-    isActive: true,
-  },
-  {
-    id: 'u-drv-4',
-    name: 'حمزة البطاينة (كابتن إربد والشمال)',
-    email: 'h.batayneh@dargo-driver.com',
-    phone: '0798765432',
-    role: 'DRIVER',
-    city: 'إربد',
-    pricePlanId: 'pp-drv-outskirts',
-    priceList: 'تسعيرة خطوط المحافظات البعيدة والأطراف',
-    vehicleType: 'ميتسوبيشي لانسر',
-    vehiclePlate: '18-55209',
-    isActive: true,
+    permissions: [
+      'manage_system_settings',
+      'manage_operations_admins',
+      'view_financial_audit_logs',
+      'export_database_backup',
+      'pos_full_access',
+      'pos_apply_discount',
+      'pos_issue_refund',
+      'pos_view_all_sales',
+      'pos_manage_inventory',
+      'ops_create_orders',
+      'ops_assign_drivers',
+      'ops_bulk_dispatch',
+      'ops_cancel_orders',
+      'ops_manage_hubs',
+      'warehouse_scan_in',
+      'warehouse_scan_out',
+      'warehouse_manage_racks',
+      'warehouse_stocktake',
+      'acc_view_ledgers',
+      'acc_post_vouchers',
+      'acc_driver_custody_close',
+      'acc_merchant_settlement',
+      'acc_reports_export',
+      'drivers_onboard',
+      'drivers_rate_cards',
+      'drivers_wallet_adjust',
+      'merchants_approve',
+      'merchants_rate_cards',
+      'merchants_portal_admin',
+    ],
+    maxAllowedPermissions: [
+      'manage_system_settings',
+      'manage_operations_admins',
+      'view_financial_audit_logs',
+      'export_database_backup',
+      'pos_full_access',
+      'pos_apply_discount',
+      'pos_issue_refund',
+      'pos_view_all_sales',
+      'pos_manage_inventory',
+      'ops_create_orders',
+      'ops_assign_drivers',
+      'ops_bulk_dispatch',
+      'ops_cancel_orders',
+      'ops_manage_hubs',
+      'warehouse_scan_in',
+      'warehouse_scan_out',
+      'warehouse_manage_racks',
+      'warehouse_stocktake',
+      'acc_view_ledgers',
+      'acc_post_vouchers',
+      'acc_driver_custody_close',
+      'acc_merchant_settlement',
+      'acc_reports_export',
+      'drivers_onboard',
+      'drivers_rate_cards',
+      'drivers_wallet_adjust',
+      'merchants_approve',
+      'merchants_rate_cards',
+      'merchants_portal_admin',
+    ],
   },
 ];
 
@@ -378,292 +301,62 @@ let pricePlans: PricePlan[] = [
   },
 ];
 
-let orders: Order[] = [
-  {
-    id: 'ord-101',
-    sequence: 'ORD-2026-1001',
-    referenceNumber: 'REF-7801',
-    status: 'OUT_FOR_DELIVERY',
-    paymentType: 'COD',
-    merchantId: 'u-mer-1',
-    driverId: 'u-drv-1',
-    recipientName: 'رانية القاسم',
-    recipientPhone: '0796112233',
-    governorate: 'عمان',
-    area: 'خلدا',
-    subArea: 'قرب إشارات البنك العربي',
-    fullAddress: 'عمان، خلدا، شارع وصفي التل، بناية 42، الطابق 2',
-    merchantCollection: 35.0,
-    deliveryFee: 3.0,
-    totalCollection: 38.0,
-    isSettledWithMerchant: false,
-    isSettledWithDriver: false,
-    packageType: 'ملابس نسائية',
-    piecesCount: 2,
-    deliveryAttempts: 1,
-    notes: 'التسليم بعد الساعة 4 عصراً، يرجى الرن قبل الوصول',
-    createdAt: new Date(Date.now() - 3600 * 1000 * 4).toISOString(),
-    updatedAt: new Date(Date.now() - 3600 * 1000 * 2).toISOString(),
-    statusLogs: [
-      {
-        id: 'log-1',
-        orderId: 'ord-101',
-        fromStatus: null,
-        toStatus: 'PENDING',
-        note: 'تم إنشاء الطلبية بنجاح عبر النظام',
-        createdAt: new Date(Date.now() - 3600 * 1000 * 4).toISOString(),
-      },
-      {
-        id: 'log-2',
-        orderId: 'ord-101',
-        fromStatus: 'PENDING',
-        toStatus: 'OUT_FOR_DELIVERY',
-        note: 'تم تعيين الكابتن محمد الزعبي وخروج الشحنة للتوصيل',
-        createdAt: new Date(Date.now() - 3600 * 1000 * 2).toISOString(),
-      },
-    ],
-  },
-  {
-    id: 'ord-102',
-    sequence: 'ORD-2026-1002',
-    referenceNumber: 'REF-7802',
-    status: 'DELIVERED',
-    paymentType: 'COD',
-    merchantId: 'u-mer-2',
-    driverId: 'u-drv-1',
-    recipientName: 'سامي عبد الرحمن',
-    recipientPhone: '0789004455',
-    governorate: 'عمان',
-    area: 'عبدون',
-    subArea: 'قرب السفارة البريطانية',
-    fullAddress: 'عمان، عبدون الشمالي، فيلا رقم 14',
-    merchantCollection: 120.0,
-    deliveryFee: 3.0,
-    totalCollection: 123.0,
-    isSettledWithMerchant: true,
-    isSettledWithDriver: true,
-    packageType: 'سماعات بلوتوث + شاحن',
-    piecesCount: 1,
-    deliveryAttempts: 1,
-    notes: 'الدفع كاش كامل مع الفكة',
-    deliveredAt: new Date(Date.now() - 3600 * 1000 * 1).toISOString(),
-    createdAt: new Date(Date.now() - 3600 * 1000 * 8).toISOString(),
-    updatedAt: new Date(Date.now() - 3600 * 1000 * 1).toISOString(),
-    statusLogs: [
-      {
-        id: 'log-3',
-        orderId: 'ord-102',
-        fromStatus: 'OUT_FOR_DELIVERY',
-        toStatus: 'DELIVERED',
-        note: 'تم تسليم الطرد للمستلم واستلام كامل المبلغ 123 د.أ',
-        createdAt: new Date(Date.now() - 3600 * 1000 * 1).toISOString(),
-      },
-    ],
-  },
-  {
-    id: 'ord-103',
-    sequence: 'ORD-2026-1003',
-    referenceNumber: 'REF-7803',
-    status: 'PENDING',
-    paymentType: 'COD',
-    merchantId: 'u-mer-3',
-    driverId: null,
-    recipientName: 'منى الحداد',
-    recipientPhone: '0778899001',
-    governorate: 'الزرقاء',
-    area: 'الزرقاء الجديدة',
-    subArea: 'شارع مكة، حي البتراوي',
-    fullAddress: 'الزرقاء، الزرقاء الجديدة، عمارة الأمل، طابق 3',
-    merchantCollection: 45.0,
-    deliveryFee: 2.5,
-    totalCollection: 47.5,
-    isSettledWithMerchant: false,
-    isSettledWithDriver: false,
-    packageType: 'عطر فرنسي فاخر',
-    piecesCount: 1,
-    deliveryAttempts: 0,
-    notes: 'بانتظار تعيين مندوب لاستلام الشحنة من المتجر',
-    createdAt: new Date(Date.now() - 3600 * 1000 * 3).toISOString(),
-    updatedAt: new Date(Date.now() - 3600 * 1000 * 3).toISOString(),
-    statusLogs: [
-      {
-        id: 'log-4',
-        orderId: 'ord-103',
-        fromStatus: null,
-        toStatus: 'PENDING',
-        note: 'بوليصة مسجلة من لوحة تحكم التاجر',
-        createdAt: new Date(Date.now() - 3600 * 1000 * 3).toISOString(),
-      },
-    ],
-  },
-  {
-    id: 'ord-104',
-    sequence: 'ORD-2026-1004',
-    referenceNumber: 'REF-7804',
-    status: 'PICKING',
-    paymentType: 'COD',
-    merchantId: 'u-mer-4',
-    driverId: 'u-drv-4',
-    recipientName: 'إبراهيم غنيم',
-    recipientPhone: '0795432198',
-    governorate: 'إربد',
-    area: 'الحي الشرقي',
-    subArea: 'قرب مجمع عمان القديم',
-    fullAddress: 'إربد، الحي الشرقي، شارع القدس، منزل 19',
-    merchantCollection: 22.0,
-    deliveryFee: 2.5,
-    totalCollection: 24.5,
-    isSettledWithMerchant: false,
-    isSettledWithDriver: false,
-    packageType: 'مجموعة دفاتر وروايات',
-    piecesCount: 3,
-    deliveryAttempts: 0,
-    notes: 'المندوب متوجه للمستودع لاستلام الشحنة',
-    createdAt: new Date(Date.now() - 3600 * 1000 * 5).toISOString(),
-    updatedAt: new Date(Date.now() - 3600 * 1000 * 2).toISOString(),
-    statusLogs: [],
-  },
-  {
-    id: 'ord-105',
-    sequence: 'ORD-2026-1005',
-    referenceNumber: 'REF-7805',
-    status: 'POSTPONED',
-    paymentType: 'COD',
-    merchantId: 'u-mer-1',
-    driverId: 'u-drv-2',
-    recipientName: 'هبة العجلوني',
-    recipientPhone: '0780123987',
-    governorate: 'عمان',
-    area: 'طبربور',
-    subArea: 'قرب مجمع مشاغل الأمن العام',
-    fullAddress: 'عمان، طبربور، إسكان المعلمين، عمارة 8',
-    merchantCollection: 55.0,
-    deliveryFee: 3.0,
-    totalCollection: 58.0,
-    isSettledWithMerchant: false,
-    isSettledWithDriver: false,
-    packageType: 'فستان مناسبات',
-    piecesCount: 1,
-    deliveryAttempts: 1,
-    notes: 'العميل خارج المنزل، طلب التأجيل للغد صباحاً',
-    cancellationReason: 'تأجيل بناء على طلب المستلم (خارج المحافظة حالياً)',
-    createdAt: new Date(Date.now() - 3600 * 1000 * 14).toISOString(),
-    updatedAt: new Date(Date.now() - 3600 * 1000 * 3).toISOString(),
-    statusLogs: [],
-  },
-  {
-    id: 'ord-106',
-    sequence: 'ORD-2026-1006',
-    referenceNumber: 'REF-7806',
-    status: 'CANCELLED',
-    paymentType: 'COD',
-    merchantId: 'u-mer-2',
-    driverId: 'u-drv-2',
-    recipientName: 'خالد مبيضين',
-    recipientPhone: '0776541230',
-    governorate: 'عمان',
-    area: 'ضاحية الياسمين',
-    subArea: 'قرب دوار الياسمين',
-    fullAddress: 'عمان، ضاحية الياسمين، شارع بطحاء قريش، شقة 5',
-    merchantCollection: 18.0,
-    deliveryFee: 3.0,
-    totalCollection: 21.0,
-    isSettledWithMerchant: false,
-    isSettledWithDriver: false,
-    packageType: 'كابلات وشاحن سيارة',
-    piecesCount: 1,
-    deliveryAttempts: 2,
-    notes: 'العميل رفض الاستلام لعدم توفر المبلغ',
-    cancellationReason: 'رفض الاستلام من قبل العميل',
-    createdAt: new Date(Date.now() - 3600 * 1000 * 18).toISOString(),
-    updatedAt: new Date(Date.now() - 3600 * 1000 * 5).toISOString(),
-    statusLogs: [],
-  },
-  {
-    id: 'ord-107',
-    sequence: 'ORD-2026-1007',
-    referenceNumber: 'REF-7807',
-    status: 'OUT_FOR_DELIVERY',
-    paymentType: 'COD',
-    merchantId: 'u-mer-3',
-    driverId: 'u-drv-3',
-    recipientName: 'سوسن التميمي',
-    recipientPhone: '0799881122',
-    governorate: 'الزرقاء',
-    area: 'الرصيفة',
-    subArea: 'حي الرشيد',
-    fullAddress: 'الرصيفة، حي الرشيد، بجانب صيدلية الشفاء',
-    merchantCollection: 70.0,
-    deliveryFee: 2.5,
-    totalCollection: 72.5,
-    isSettledWithMerchant: false,
-    isSettledWithDriver: false,
-    packageType: 'باكج بخور ودهن عود',
-    piecesCount: 2,
-    deliveryAttempts: 1,
-    notes: 'يرجى تسليم الطرد للوالدة في حال عدم التواجد',
-    createdAt: new Date(Date.now() - 3600 * 1000 * 6).toISOString(),
-    updatedAt: new Date(Date.now() - 3600 * 1000 * 2).toISOString(),
-    statusLogs: [],
-  },
-  {
-    id: 'ord-108',
-    sequence: 'ORD-2026-1008',
-    referenceNumber: 'REF-7808',
-    status: 'DELIVERED',
-    paymentType: 'COD',
-    merchantId: 'u-mer-1',
-    driverId: 'u-drv-1',
-    recipientName: 'علاء النجار',
-    recipientPhone: '0785544332',
-    governorate: 'عمان',
-    area: 'الصويفية',
-    subArea: 'قرب مجمع البركة مول',
-    fullAddress: 'عمان، الصويفية، شارع باريس، عمارة 12',
-    merchantCollection: 60.0,
-    deliveryFee: 3.0,
-    totalCollection: 63.0,
-    isSettledWithMerchant: false,
-    isSettledWithDriver: true,
-    packageType: 'قميص وبنطال جينز',
-    piecesCount: 2,
-    deliveryAttempts: 1,
-    notes: 'تم الدفع كاش بنجاح',
-    deliveredAt: new Date(Date.now() - 3600 * 1000 * 2).toISOString(),
-    createdAt: new Date(Date.now() - 3600 * 1000 * 10).toISOString(),
-    updatedAt: new Date(Date.now() - 3600 * 1000 * 2).toISOString(),
-    statusLogs: [],
-  },
-  {
-    id: 'ord-109',
-    sequence: 'ORD-2026-1009',
-    referenceNumber: 'REF-7809',
-    status: 'PENDING',
-    paymentType: 'COD',
-    merchantId: 'u-mer-2',
-    driverId: null,
-    recipientName: 'نور الدين منصور',
-    recipientPhone: '0793210987',
-    governorate: 'عمان',
-    area: 'مرج الحمام',
-    subArea: 'دوار الباشا',
-    fullAddress: 'عمان، مرج الحمام، إسكان الضباط، فيلا 7',
-    merchantCollection: 88.0,
-    deliveryFee: 3.0,
-    totalCollection: 91.0,
-    isSettledWithMerchant: false,
-    isSettledWithDriver: false,
-    packageType: 'ماوس وكيبورد ميكانيكي',
-    piecesCount: 2,
-    deliveryAttempts: 0,
-    notes: 'الطلب بحاجة لمندوب استلام سريع',
-    createdAt: new Date(Date.now() - 3600 * 1000 * 1).toISOString(),
-    updatedAt: new Date(Date.now() - 3600 * 1000 * 1).toISOString(),
-    statusLogs: [],
-  },
+// =============================================================
+// Accounting System Global State (Chart of Accounts, Ledger, Vouchers)
+// =============================================================
+let accounts: Account[] = [
+  { id: 'acc-1010', code: '1010', name: 'الصندوق الرئيسي (الخزينة النقدية)', type: 'ASSET', category: 'الأصول المتداولة والنقدية', balance: 0.0, isDebitNormal: true, description: 'المبالغ النقدية المتوفرة في الخزينة المركزية' },
+  { id: 'acc-1020', code: '1020', name: 'بنك الاتحاد - الحساب التشغيلي الرئيسي', type: 'ASSET', category: 'الأصول المتداولة والنقدية', balance: 0.0, isDebitNormal: true, description: 'حساب بنك الاتحاد للحوالات والعمليات' },
+  { id: 'acc-1030', code: '1030', name: 'محفظة كليك الرقمية CliQ', type: 'ASSET', category: 'الأصول المتداولة والنقدية', balance: 0.0, isDebitNormal: true, description: 'مخصص التسويات الفورية للتجار والكباتن' },
+  { id: 'acc-1040', code: '1040', name: 'عهد ومحافظ الكباتن النقدية (تحصيلات الميدان)', type: 'ASSET', category: 'الأصول المتداولة والنقدية', balance: 0.0, isDebitNormal: true, description: 'مبالغ COD النقدية بحوزة السائقين قبل توريدها' },
+  { id: 'acc-1050', code: '1050', name: 'ذمم التجار المدينة (رسوم توصيل مستحقة)', type: 'ASSET', category: 'الذمم المدينة', balance: 0.0, isDebitNormal: true, description: 'رسوم توصيل آجلة تحت التحصيل' },
+  { id: 'acc-1060', code: '1060', name: 'مخزون بضائع المتاجر بالمستودع (Inventory Asset)', type: 'ASSET', category: 'الأصول المتداولة والمخزون', balance: 0.0, isDebitNormal: true, description: 'إجمالي القيمة الدفترية للأصناف المتوفرة في المخازن' },
+  { id: 'acc-1070', code: '1070', name: 'ذمم العملاء والزبائن التجارية (Accounts Receivable)', type: 'ASSET', category: 'الذمم المدينة', balance: 0.0, isDebitNormal: true, description: 'مبيعات وفواتير العملاء غير المسددة (البيع بالآجل)' },
+  { id: 'acc-2010', code: '2010', name: 'أمانات تحصيل التجار الدائنة COD Payable', type: 'LIABILITY', category: 'الخصوم المتداولة', balance: 0.0, isDebitNormal: false, description: 'صافي أثمان البضائع المحصلة لصالح المتاجر بانتظار التحويل' },
+  { id: 'acc-2020', code: '2020', name: 'مستحقات وعمولات الكباتن المعلقة', type: 'LIABILITY', category: 'الخصوم المتداولة', balance: 0.0, isDebitNormal: false, description: 'أجور التوصيل المستحقة للسائقين قبل الصرف' },
+  { id: 'acc-2030', code: '2030', name: 'ذمم الموردين التجارية (Accounts Payable)', type: 'LIABILITY', category: 'الخصوم المتداولة', balance: 0.0, isDebitNormal: false, description: 'فواتير مشتريات البضاعة الآجلة المستحقة للموردين' },
+  { id: 'acc-3010', code: '3010', name: 'رأس مال المنظومة التشغيلي', type: 'EQUITY', category: 'حقوق الملكية', balance: 0.0, isDebitNormal: false, description: 'رأس المال المخصص للعمليات' },
+  { id: 'acc-3020', code: '3020', name: 'الأرباح المدورة والمحتجزة', type: 'EQUITY', category: 'حقوق الملكية', balance: 0.0, isDebitNormal: false, description: 'أرباح الدورات التشغيلية السابقة' },
+  { id: 'acc-4010', code: '4010', name: 'إيرادات أجور التوصيل والشحن', type: 'REVENUE', category: 'الإيرادات التشغيلية', balance: 0.0, isDebitNormal: false, description: 'رسوم الشحن المحققة من الطرود المسلمة' },
+  { id: 'acc-4020', code: '4020', name: 'رسوم خدمات التحصيل والدفع الإلكتروني', type: 'REVENUE', category: 'الإيرادات التشغيلية', balance: 0.0, isDebitNormal: false, description: 'عمولات خدمات الدفع السريع والتحصيل' },
+  { id: 'acc-4030', code: '4030', name: 'إيرادات مبيعات بضائع المتاجر', type: 'REVENUE', category: 'الإيرادات التشغيلية', balance: 0.0, isDebitNormal: false, description: 'إجمالي المبيعات المحققة من فواتير الأصناف والمنتجات' },
+  { id: 'acc-5010', code: '5010', name: 'تكاليف وعمولات كباتن التوصيل', type: 'EXPENSE', category: 'تكاليف التشغيل المباشرة', balance: 0.0, isDebitNormal: true, description: 'عمولات السائقين المعتمدة عن كل طرد' },
+  { id: 'acc-5020', code: '5020', name: 'مصاريف المحروقات والوقود', type: 'EXPENSE', category: 'مصروفات تشغيلية', balance: 0.0, isDebitNormal: true, description: 'فواتير ديزل وبنزين مركبات الشحن' },
+  { id: 'acc-5030', code: '5030', name: 'مصاريف صيانة وغيار زيت المركبات', type: 'EXPENSE', category: 'مصروفات تشغيلية', balance: 0.0, isDebitNormal: true, description: 'صيانة دورية للسيارات والدراجات' },
+  { id: 'acc-5040', code: '5040', name: 'مصاريف الرسائل النصية وبوابات SMS', type: 'EXPENSE', category: 'مصروفات إدارية وتشغيلية', balance: 0.0, isDebitNormal: true, description: 'تكلفة إشعارات التتبع ورموز OTP' },
+  { id: 'acc-5050', code: '5050', name: 'إيجار المستودعات والمكاتب المركزية', type: 'EXPENSE', category: 'مصروفات عمومية', balance: 0.0, isDebitNormal: true, description: 'إيجار مستودع الفرز الرئيسي' },
+  { id: 'acc-5060', code: '5060', name: 'تكلفة البضاعة المباعة للمتاجر (COGS)', type: 'EXPENSE', category: 'تكاليف التشغيل والمخزون', balance: 0.0, isDebitNormal: true, description: 'التكلفة الدفترية للأصناف والبضائع التي تم بيعها وصرفها من المخزن' },
 ];
 
-let nextSequenceNumber = 1010;
+let journalEntries: JournalEntry[] = [];
+let vouchers: Voucher[] = [];
+
+// =============================================================
+// Merchant Warehouse, Inventory, Invoices, and Expenses State
+// =============================================================
+const DEFAULT_SYSTEM_CATEGORIES = [
+  'ألبسة نسائية',
+  'عبايات وجلابيات',
+  'ألبسة رجالية',
+  'ألبسة أطفال',
+  'حقائب وأحذية',
+  'إكسسوارات',
+  'شالات وإيشاربات',
+  'عطور وتجميل',
+  'ساعات ومجوهرات',
+  'إلكترونيات وهواتف',
+  'أدوات منزلية',
+  'أخرى',
+];
+
+let merchantCategories: Record<string, string[]> = {};
+let merchantProducts: MerchantProduct[] = [];
+let stockMovements: StockMovement[] = [];
+let merchantInvoices: MerchantInvoice[] = [];
+let merchantExpenses: MerchantExpense[] = [];
+let orders: Order[] = [];
+
+let nextSequenceNumber = 1001;
 
 // Helper: Get fee for merchant based on assigned price plan and governorate
 function getMerchantDeliveryFee(merchantId: string, governorate: string): number {
@@ -731,6 +424,14 @@ function saveDatabase() {
       apiKeys,
       notificationLogs,
       nextSequenceNumber,
+      accounts,
+      journalEntries,
+      vouchers,
+      merchantProducts,
+      stockMovements,
+      merchantInvoices,
+      merchantExpenses,
+      merchantCategories,
       savedAt: new Date().toISOString(),
     };
     fs.writeFileSync(DB_FILE, JSON.stringify(payload, null, 2), 'utf-8');
@@ -744,50 +445,95 @@ function loadDatabase() {
     if (fs.existsSync(DB_FILE)) {
       const raw = fs.readFileSync(DB_FILE, 'utf-8');
       const data = JSON.parse(raw);
-      if (Array.isArray(data.orders) && data.orders.length > 0) orders = data.orders;
-      if (Array.isArray(data.users) && data.users.length > 0) users = data.users;
+      if (Array.isArray(data.orders)) orders = data.orders;
+      if (Array.isArray(data.users) && data.users.length > 0) {
+        users = data.users;
+      }
       if (Array.isArray(data.pricePlans) && data.pricePlans.length > 0) pricePlans = data.pricePlans;
-      if (Array.isArray(data.apiKeys) && data.apiKeys.length > 0) apiKeys = data.apiKeys;
+      if (Array.isArray(data.apiKeys)) apiKeys = data.apiKeys;
       if (Array.isArray(data.notificationLogs)) notificationLogs = data.notificationLogs;
       if (typeof data.nextSequenceNumber === 'number') nextSequenceNumber = data.nextSequenceNumber;
+      if (Array.isArray(data.accounts) && data.accounts.length > 0) accounts = data.accounts;
+      if (Array.isArray(data.journalEntries)) journalEntries = data.journalEntries;
+      if (Array.isArray(data.vouchers)) vouchers = data.vouchers;
+      if (Array.isArray(data.merchantProducts)) merchantProducts = data.merchantProducts;
+      if (Array.isArray(data.stockMovements)) stockMovements = data.stockMovements;
+      if (Array.isArray(data.merchantInvoices)) merchantInvoices = data.merchantInvoices;
+      if (Array.isArray(data.merchantExpenses)) merchantExpenses = data.merchantExpenses;
+      if (data.merchantCategories && typeof data.merchantCategories === 'object') {
+        merchantCategories = data.merchantCategories;
+      }
 
-      // Ensure every merchant and driver has a pricePlanId
-      users.forEach((u) => {
-        if (!u.pricePlanId) {
-          const match = pricePlans.find((p) => p.name === u.priceList);
-          if (match) {
-            u.pricePlanId = match.id;
-          } else if (u.role === 'MERCHANT') {
-            u.pricePlanId = 'pp-mer-std';
-            u.priceList = u.priceList || 'جميع المملكة 2 (القياسية)';
-          } else if (u.role === 'DRIVER') {
-            u.pricePlanId = 'pp-drv-std';
-            u.priceList = u.priceList || 'تسعيرة عمولة كباتن العاصمة والوسط';
-          }
-        }
-      });
+      // Ensure Super Admin always exists in database
+      const hasSuperAdmin = users.some((u) => u.role === 'SUPER_ADMIN');
+      if (!hasSuperAdmin) {
+        users.unshift({
+          id: 'u-super-1',
+          name: 'المدير العام للنظام (Super Admin)',
+          email: 'admin@dargo-tms.io',
+          phone: '0790000001',
+          password: 'admin123',
+          role: 'SUPER_ADMIN',
+          roleName: 'المدير العام للنظام (Super Admin)',
+          branch: 'المقر الرئيسي للمملكة',
+          city: 'عمان',
+          isActive: true,
+          permissions: ['manage_system_settings', 'manage_operations_admins', 'view_financial_audit_logs', 'export_database_backup'],
+          maxAllowedPermissions: ['manage_system_settings', 'manage_operations_admins', 'view_financial_audit_logs', 'export_database_backup'],
+        });
+        saveDatabase();
+      }
 
-      console.log(`[DarGo DB] Loaded ${orders.length} orders, ${users.length} users, and ${pricePlans.length} price plans from persistent storage.`);
+      console.log(`[DarGo DB] Loaded ${orders.length} orders, ${users.length} users, ${accounts.length} accounts, and ${merchantProducts.length} merchant products from persistent storage.`);
     } else {
       saveDatabase();
     }
   } catch (err) {
-    console.error('Failed to read dargo_db.json, using seeded defaults:', err);
+    console.error('Failed to read dargo_db.json, using clean defaults:', err);
   }
 }
 
-// Initialize and ensure OTPs
-loadDatabase();
-orders.forEach((o, idx) => {
-  if (!o.deliveryOtp) {
-    o.deliveryOtp = (4100 + idx).toString();
+// Ensure database file is initialized with clean state
+if (fs.existsSync(DB_FILE)) {
+  try {
+    const raw = fs.readFileSync(DB_FILE, 'utf-8');
+    const parsed = JSON.parse(raw);
+    // If the saved db file still contains mock orders or users with u-admin-1, purge them
+    if (Array.isArray(parsed.orders) && parsed.orders.some((o: any) => o.id === 'ord-101' || o.id === 'ord-102')) {
+      saveDatabase();
+    } else {
+      loadDatabase();
+    }
+  } catch {
+    saveDatabase();
   }
-});
-saveDatabase();
+} else {
+  saveDatabase();
+}
 
 // -------------------------------------------------------------
 // API Endpoints
 // -------------------------------------------------------------
+
+// Clean Database / Reset to Fresh Production State Endpoint
+app.post('/api/system/clean-database', (req, res) => {
+  orders = [];
+  merchantProducts = [];
+  stockMovements = [];
+  merchantInvoices = [];
+  merchantExpenses = [];
+  journalEntries = [];
+  vouchers = [];
+  apiKeys = [];
+  notificationLogs = [];
+  merchantCategories = {};
+  nextSequenceNumber = 1001;
+  accounts.forEach((acc) => {
+    acc.balance = 0.0;
+  });
+  saveDatabase();
+  res.json({ success: true, message: 'تم تصفير جميع البيانات الوهمية وتجهيز قاعدة البيانات للبيانات الحقيقية بنجاح' });
+});
 
 // Price Plans & Rate Cards Endpoints (قوائم وتسعيرات التوصيل للتاجر والسائق)
 // -------------------------------------------------------------
@@ -1681,6 +1427,9 @@ app.post('/api/settlements/merchants/:merchantId/settle', (req, res) => {
   const { merchantId } = req.params;
   const { paymentMethod = 'CLIQ', reference = '', notes = '' } = req.body;
 
+  const merchant = users.find((u) => u.id === merchantId);
+  const merchantName = merchant ? merchant.storeName || merchant.name : 'متجر';
+
   let count = 0;
   let settledAmount = 0;
 
@@ -1691,11 +1440,70 @@ app.post('/api/settlements/merchants/:merchantId/settle', (req, res) => {
       return {
         ...o,
         isSettledWithMerchant: true,
+        settlementStatus: 'SETTLED',
         updatedAt: new Date().toISOString(),
       };
     }
     return o;
   });
+
+  if (settledAmount > 0) {
+    const vNumber = `V-PAY-2026-${String(vouchers.filter((v) => v.type === 'PAYMENT').length + 1).padStart(4, '0')}`;
+    const newVoucher: Voucher = {
+      id: `v-${Date.now()}`,
+      voucherNumber: vNumber,
+      type: 'PAYMENT',
+      date: new Date().toISOString().split('T')[0],
+      amount: settledAmount,
+      beneficiaryOrPayer: merchantName,
+      paymentMethod: (paymentMethod.toUpperCase() as any) || 'CLIQ',
+      referenceNumber: reference || 'CLIQ-TX',
+      accountId: 'acc-2010', // أمانات تحصيل التجار COD
+      contraAccountId: paymentMethod === 'CASH' ? 'acc-1010' : 'acc-1030', // الصندوق أو حساب كليك
+      notes: `تسوية مستحقات ${count} شحنة لـ (${merchantName})${notes ? ' - ' + notes : ''}`,
+      status: 'POSTED',
+      createdAt: new Date().toISOString(),
+    };
+    vouchers.push(newVoucher);
+
+    const codAcc = accounts.find((a) => a.id === 'acc-2010');
+    const payAcc = accounts.find((a) => a.id === (paymentMethod === 'CASH' ? 'acc-1010' : 'acc-1030'));
+    if (codAcc) codAcc.balance -= settledAmount;
+    if (payAcc) payAcc.balance -= settledAmount;
+
+    journalEntries.push({
+      id: `je-${Date.now()}`,
+      entryNumber: `JE-2026-${String(journalEntries.length + 1).padStart(4, '0')}`,
+      date: new Date().toISOString(),
+      description: `قيد صرف تسوية مستحقات التاجر [${merchantName}] - سند صرف ${vNumber}`,
+      referenceType: 'SETTLEMENT',
+      referenceId: newVoucher.id,
+      lines: [
+        {
+          accountId: 'acc-2010',
+          accountCode: '2010',
+          accountName: 'أمانات تحصيل التجار COD',
+          debit: settledAmount,
+          credit: 0,
+          note: `تسوية ${count} طلبية`,
+        },
+        {
+          accountId: payAcc?.id || 'acc-1030',
+          accountCode: payAcc?.code || '1030',
+          accountName: payAcc?.name || 'حساب كليك البنكي (CliQ)',
+          debit: 0,
+          credit: settledAmount,
+          note: `تحويل بنكي / كليك مرجع: ${reference || 'CliQ'}`,
+        },
+      ],
+      totalDebit: settledAmount,
+      totalCredit: settledAmount,
+      createdByName: 'نظام دارجو المحاسبي',
+      createdAt: new Date().toISOString(),
+    });
+
+    saveDatabase();
+  }
 
   res.json({
     success: true,
@@ -1710,6 +1518,9 @@ app.post('/api/settlements/merchants/:merchantId/settle', (req, res) => {
 app.post('/api/settlements/drivers/:driverId/close-cash', (req, res) => {
   const { driverId } = req.params;
   const { notes = '' } = req.body;
+
+  const driver = users.find((u) => u.id === driverId);
+  const driverName = driver ? driver.name : 'كابتن';
 
   let count = 0;
   let cashClosed = 0;
@@ -1726,6 +1537,64 @@ app.post('/api/settlements/drivers/:driverId/close-cash', (req, res) => {
     }
     return o;
   });
+
+  if (cashClosed > 0) {
+    const vNumber = `V-REC-2026-${String(vouchers.filter((v) => v.type === 'RECEIPT').length + 1).padStart(4, '0')}`;
+    const newVoucher: Voucher = {
+      id: `v-${Date.now()}`,
+      voucherNumber: vNumber,
+      type: 'RECEIPT',
+      date: new Date().toISOString().split('T')[0],
+      amount: cashClosed,
+      beneficiaryOrPayer: `الكابتن ${driverName}`,
+      paymentMethod: 'CASH',
+      referenceNumber: 'CASH-CLOSE',
+      accountId: 'acc-1010', // الصندوق الرئيسي
+      contraAccountId: 'acc-1040', // عهد ومحافظ الكباتن
+      notes: `إغلاق وتوريد عهدة نقدية عن ${count} طرد من الكابتن ${driverName}${notes ? ' - ' + notes : ''}`,
+      status: 'POSTED',
+      createdAt: new Date().toISOString(),
+    };
+    vouchers.push(newVoucher);
+
+    const mainCash = accounts.find((a) => a.id === 'acc-1010');
+    const driverCustody = accounts.find((a) => a.id === 'acc-1040');
+    if (mainCash) mainCash.balance += cashClosed;
+    if (driverCustody) driverCustody.balance -= cashClosed;
+
+    journalEntries.push({
+      id: `je-${Date.now()}`,
+      entryNumber: `JE-2026-${String(journalEntries.length + 1).padStart(4, '0')}`,
+      date: new Date().toISOString(),
+      description: `قيد قبض وتوريد عهدة الكابتن [${driverName}] - سند قبض ${vNumber}`,
+      referenceType: 'VOUCHER',
+      referenceId: newVoucher.id,
+      lines: [
+        {
+          accountId: 'acc-1010',
+          accountCode: '1010',
+          accountName: 'الصندوق النقدي الرئيسي (خزينة دارجو)',
+          debit: cashClosed,
+          credit: 0,
+          note: `استلام نقدي بالصندوق`,
+        },
+        {
+          accountId: 'acc-1040',
+          accountCode: '1040',
+          accountName: 'عهد ومحافظ الكباتن المعلقة',
+          debit: 0,
+          credit: cashClosed,
+          note: `إغلاق عهدة الكابتن ${driverName}`,
+        },
+      ],
+      totalDebit: cashClosed,
+      totalCredit: cashClosed,
+      createdByName: 'نظام دارجو المحاسبي',
+      createdAt: new Date().toISOString(),
+    });
+
+    saveDatabase();
+  }
 
   res.json({
     success: true,
@@ -2080,22 +1949,42 @@ app.post('/api/webhooks/shopify', (req, res) => {
   }
 });
 
-// 26. POST /api/auth/login: User Authentication & Role Switching
+// 26. POST /api/auth/login: User Authentication by Email/Phone & Password (managed by Super Admin)
 app.post('/api/auth/login', (req, res) => {
-  const { userId, email, phone, role } = req.body;
-  let user = null;
-  if (userId) {
-    user = users.find((u) => u.id === userId);
-  } else if (email) {
-    user = users.find((u) => u.email.toLowerCase() === email.toLowerCase());
-  } else if (phone) {
-    user = users.find((u) => u.phone === phone);
-  } else if (role) {
-    user = users.find((u) => u.role === role);
+  const { email, phone, password } = req.body;
+  let user: User | undefined = undefined;
+
+  const identifier = email || phone;
+  if (!identifier || !identifier.toString().trim()) {
+    return res.status(400).json({ error: 'يرجى إدخال البريد الإلكتروني أو رقم الهاتف' });
   }
 
+  const cleanId = identifier.toString().trim().toLowerCase();
+  user = users.find(
+    (u) =>
+      (u.email && u.email.trim().toLowerCase() === cleanId) ||
+      (u.phone && u.phone.trim() === cleanId)
+  );
+
   if (!user) {
-    return res.status(401).json({ error: 'بيانات الحساب أو المستخدم غير موجودة' });
+    return res.status(401).json({
+      error: 'البريد الإلكتروني أو رقم الهاتف غير مسجل في النظام. يرجى التواصل مع المدير العام (Super Admin) لإنشاء حسابك.',
+    });
+  }
+
+  if (user.isActive === false) {
+    return res.status(403).json({
+      error: 'تم تعطيل هذا الحساب من قبل إدارة النظام. يرجى مراجعة المسؤول.',
+    });
+  }
+
+  const inputPass = password ? password.toString().trim() : '';
+  const expectedPass = user.password || (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN' ? 'admin123' : '123456');
+
+  if (inputPass !== expectedPass) {
+    return res.status(401).json({
+      error: 'كلمة المرور غير صحيحة، يرجى التحقق والمحاولة مرة أخرى.',
+    });
   }
 
   res.json({
@@ -2103,6 +1992,366 @@ app.post('/api/auth/login', (req, res) => {
     user,
     token: `dargo_jwt_${user.id}_${Date.now()}`,
     message: `مرحباً بك يا ${user.name}`,
+  });
+});
+
+// 26.0 POST /api/auth/verify: Verify session token and current user
+app.post('/api/auth/verify', (req, res) => {
+  const { userId } = req.body;
+  if (!userId) {
+    return res.status(400).json({ error: 'معرف المستخدم مطلوب' });
+  }
+
+  const user = users.find((u) => u.id === userId);
+  if (!user) {
+    return res.status(404).json({ error: 'المستخدم غير موجود' });
+  }
+
+  if (!user.isActive) {
+    return res.status(403).json({ error: 'الحساب غير نشط' });
+  }
+
+  res.json({ success: true, user });
+});
+
+// 26.1 GET /api/users: List Users with RBAC Hierarchy
+app.get('/api/users', (req, res) => {
+  const role = req.query.role as string;
+  const parentUserId = req.query.parentUserId as string;
+
+  let filtered = [...users];
+  if (role && role !== 'ALL') {
+    filtered = filtered.filter((u) => u.role === role);
+  }
+  if (parentUserId) {
+    filtered = filtered.filter((u) => u.parentUserId === parentUserId);
+  }
+
+  res.json(filtered);
+});
+
+// 26.2 POST /api/users: Create User with Hierarchy, Password and Permissions
+app.post('/api/users', (req, res) => {
+  try {
+    const {
+      name,
+      email,
+      password,
+      phone,
+      role = 'OPERATOR',
+      roleName,
+      parentUserId,
+      permissions = [],
+      maxAllowedPermissions = [],
+      commercialName,
+      commercialType,
+      priceList,
+      pricePlanId,
+      branch,
+      city,
+      accountManager,
+      department,
+      vehicleType,
+      vehiclePlate,
+      isActive = true,
+    } = req.body;
+
+    if (!name || !phone) {
+      return res.status(400).json({ error: 'الاسم ورقم الهاتف مطلوبان' });
+    }
+
+    const cleanEmail = email && email.trim() ? email.trim().toLowerCase() : `${phone.replace(/\D/g, '')}@dargo-tms.io`;
+
+    // Check duplicate email
+    const duplicate = users.find((u) => u.email && u.email.toLowerCase() === cleanEmail);
+    if (duplicate) {
+      return res.status(400).json({ error: `البريد الإلكتروني (${cleanEmail}) مسجل مسبقاً لمستخدم آخر` });
+    }
+
+    const assignedPassword = password && password.trim() ? password.trim() : (role === 'SUPER_ADMIN' || role === 'ADMIN' ? 'admin123' : '123456');
+
+    const newUser: User = {
+      id: `u-${role.toLowerCase().slice(0, 3)}-${Date.now()}`,
+      name: name.trim(),
+      email: cleanEmail,
+      password: assignedPassword,
+      phone: phone.trim(),
+      role,
+      roleName: roleName || (role === 'SUPER_ADMIN' ? 'المدير العام للنظام' : role === 'ADMIN' ? 'مدير العمليات' : role === 'MERCHANT' ? 'حساب التاجر' : role === 'DRIVER' ? 'كابتن التوصيل' : role === 'CASHIER' ? 'موظف الكاشير' : role === 'ACCOUNTANT' ? 'محاسب مالي' : 'موظف العمليات'),
+      parentUserId: parentUserId || null,
+      permissions: Array.isArray(permissions) ? permissions : [],
+      maxAllowedPermissions: Array.isArray(maxAllowedPermissions) ? maxAllowedPermissions : [],
+      commercialName: commercialName?.trim(),
+      commercialType: commercialType?.trim(),
+      priceList: priceList || 'جميع المملكة (القياسية)',
+      pricePlanId: pricePlanId || (role === 'DRIVER' ? 'pp-drv-std' : 'pp-mer-std'),
+      branch: branch || 'فرع عمان الرئيسي',
+      city: city || 'عمان',
+      accountManager: accountManager || 'باسل البلبيسي',
+      department: department?.trim(),
+      vehicleType,
+      vehiclePlate,
+      isActive: Boolean(isActive),
+    };
+
+    users.push(newUser);
+    saveDatabase();
+
+    res.status(201).json({
+      success: true,
+      message: 'تم إنشاء المستخدم بنجاح وتعيين الصلاحيات وكلمة المرور',
+      user: newUser,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 26.3 PATCH /api/users/:id: Update User, Password and Granular RBAC Permissions
+app.patch('/api/users/:id', (req, res) => {
+  const user = users.find((u) => u.id === req.params.id);
+  if (!user) {
+    return res.status(404).json({ error: 'المستخدم غير موجود' });
+  }
+
+  // If updating email, check duplicate
+  if (req.body.email) {
+    const cleanEmail = req.body.email.trim().toLowerCase();
+    const duplicate = users.find((u) => u.id !== user.id && u.email && u.email.toLowerCase() === cleanEmail);
+    if (duplicate) {
+      return res.status(400).json({ error: `البريد الإلكتروني (${cleanEmail}) مسجل مسبقاً لمستخدم آخر` });
+    }
+  }
+
+  const allowedUpdates = [
+    'name',
+    'email',
+    'password',
+    'phone',
+    'role',
+    'roleName',
+    'parentUserId',
+    'permissions',
+    'maxAllowedPermissions',
+    'commercialName',
+    'commercialType',
+    'priceList',
+    'pricePlanId',
+    'branch',
+    'city',
+    'accountManager',
+    'department',
+    'vehicleType',
+    'vehiclePlate',
+    'isActive',
+    'address',
+    'subscriptionPlan',
+    'subscriptionPlanName',
+    'subscriptionStatus',
+    'subscriptionStartDate',
+    'subscriptionEndDate',
+    'maxMonthlyOrders',
+    'maxUsers',
+    'monthlyOrdersUsed',
+    'subscriptionPrice',
+    'subscriptionBillingCycle',
+    'suspendedReason',
+    'enabledModules',
+    'companyName',
+    'customDomain',
+    'notes',
+  ];
+
+  for (const key of allowedUpdates) {
+    if (req.body[key] !== undefined) {
+      (user as any)[key] = req.body[key];
+    }
+  }
+
+  saveDatabase();
+
+  res.json({
+    success: true,
+    message: 'تم تحديث بيانات وصلاحيات المستخدم والاشتراك بنجاح',
+    user,
+  });
+});
+
+// 26.4 DELETE /api/users/:id: Delete User Account
+app.delete('/api/users/:id', (req, res) => {
+  const index = users.findIndex((u) => u.id === req.params.id);
+  if (index === -1) {
+    return res.status(404).json({ error: 'المستخدم غير موجود' });
+  }
+
+  if (users[index].role === 'SUPER_ADMIN') {
+    return res.status(400).json({ error: 'لا يمكن حذف حساب المدير العام للنظام (Super Admin)' });
+  }
+
+  const deletedUser = users.splice(index, 1)[0];
+  saveDatabase();
+
+  res.json({
+    success: true,
+    message: `تم حذف حساب المستخدم (${deletedUser.name}) بنجاح`,
+  });
+});
+
+// -------------------------------------------------------------
+// SaaS Super Admin Master Subscription & Tenant Management
+// -------------------------------------------------------------
+
+// 26.5 GET /api/superadmin/metrics: SaaS Business & Licensing KPIs
+app.get('/api/superadmin/metrics', (req, res) => {
+  const allTenants = users.filter((u) => u.role === 'ADMIN' || u.role === 'MERCHANT' || u.role === 'SUPER_ADMIN');
+  const activeTenants = users.filter((u) => u.isActive && u.subscriptionStatus !== 'SUSPENDED');
+  const suspendedTenants = users.filter((u) => !u.isActive || u.subscriptionStatus === 'SUSPENDED');
+  
+  const mrrTotal = users.reduce((sum, u) => {
+    if (u.subscriptionStatus === 'ACTIVE' && u.subscriptionPrice) {
+      return sum + (u.subscriptionBillingCycle === 'ANNUAL' ? u.subscriptionPrice / 12 : u.subscriptionPrice);
+    }
+    return sum;
+  }, 0);
+
+  const totalOrdersCount = orders.length;
+
+  // Plan distribution
+  const planDistribution: Record<string, number> = {
+    ENTERPRISE: users.filter((u) => u.subscriptionPlan === 'ENTERPRISE').length,
+    PROFESSIONAL: users.filter((u) => u.subscriptionPlan === 'PROFESSIONAL').length,
+    GROWTH: users.filter((u) => u.subscriptionPlan === 'GROWTH').length,
+    TRIAL: users.filter((u) => u.subscriptionPlan === 'TRIAL').length,
+  };
+
+  res.json({
+    totalUsers: users.length,
+    totalTenants: allTenants.length,
+    activeTenantsCount: activeTenants.length,
+    suspendedTenantsCount: suspendedTenants.length,
+    mrrTotal: Math.round(mrrTotal),
+    totalOrdersCount,
+    planDistribution,
+    serverTime: new Date().toISOString(),
+  });
+});
+
+// 26.6 POST /api/superadmin/subscriptions/renew: Renew or Extend User Subscription
+app.post('/api/superadmin/subscriptions/renew', (req, res) => {
+  const { userId, daysToAdd = 30, newEndDate, planId, billingCycle = 'MONTHLY', price } = req.body;
+  const user = users.find((u) => u.id === userId);
+  if (!user) {
+    return res.status(404).json({ error: 'المستخدم غير موجود' });
+  }
+
+  let finalEndDate: string;
+  if (newEndDate) {
+    finalEndDate = new Date(newEndDate).toISOString();
+  } else {
+    const currentEnd = user.subscriptionEndDate ? new Date(user.subscriptionEndDate) : new Date();
+    const baseDate = currentEnd > new Date() ? currentEnd : new Date();
+    baseDate.setDate(baseDate.getDate() + Number(daysToAdd));
+    finalEndDate = baseDate.toISOString();
+  }
+
+  user.subscriptionEndDate = finalEndDate;
+  user.subscriptionStatus = 'ACTIVE';
+  user.isActive = true;
+  user.suspendedReason = undefined;
+
+  if (planId) {
+    user.subscriptionPlan = planId;
+    if (planId === 'ENTERPRISE') {
+      user.subscriptionPlanName = 'الباقة الماسية والمؤسسية (Enterprise)';
+      user.maxMonthlyOrders = 0;
+      user.maxUsers = 50;
+    } else if (planId === 'PROFESSIONAL') {
+      user.subscriptionPlanName = 'الباقة الذهبية للمحترفين (Gold Pro)';
+      user.maxMonthlyOrders = 10000;
+      user.maxUsers = 15;
+    } else if (planId === 'GROWTH') {
+      user.subscriptionPlanName = 'الباقة الفضية للنمو (Silver)';
+      user.maxMonthlyOrders = 2500;
+      user.maxUsers = 5;
+    } else if (planId === 'TRIAL') {
+      user.subscriptionPlanName = 'الاشتراك التجريبي المجاني (14 يوم)';
+      user.maxMonthlyOrders = 100;
+      user.maxUsers = 3;
+    }
+  }
+
+  if (price !== undefined) {
+    user.subscriptionPrice = Number(price);
+  }
+  if (billingCycle) {
+    user.subscriptionBillingCycle = billingCycle;
+  }
+
+  saveDatabase();
+
+  res.json({
+    success: true,
+    message: `تم تفعيل وتجديد اشتراك (${user.name}) بنجاح حتى تاريخ: ${finalEndDate.split('T')[0]}`,
+    user,
+  });
+});
+
+// 26.7 POST /api/superadmin/subscriptions/toggle-status: Suspend / Activate Account
+app.post('/api/superadmin/subscriptions/toggle-status', (req, res) => {
+  const { userId, status, reason } = req.body;
+  const user = users.find((u) => u.id === userId);
+  if (!user) {
+    return res.status(404).json({ error: 'المستخدم غير موجود' });
+  }
+
+  if (user.role === 'SUPER_ADMIN') {
+    return res.status(400).json({ error: 'لا يمكن تجميد حساب المدير العام للنظام (Super Admin)' });
+  }
+
+  const isSuspending = status === 'SUSPENDED';
+  user.subscriptionStatus = status;
+  user.isActive = !isSuspending;
+  user.suspendedReason = isSuspending ? (reason || 'تم تعليق الحساب مؤقتاً من قبل إدارة المنظومة') : undefined;
+
+  saveDatabase();
+
+  res.json({
+    success: true,
+    message: isSuspending
+      ? `تم تجميد وتعطيل حساب (${user.name}) بنجاح`
+      : `تم فك التجميد وتفعيل حساب (${user.name}) بنجاح`,
+    user,
+  });
+});
+
+// 26.8 POST /api/superadmin/subscriptions/toggle-module: Toggle Module Permission
+app.post('/api/superadmin/subscriptions/toggle-module', (req, res) => {
+  const { userId, moduleKey, enabled } = req.body;
+  const user = users.find((u) => u.id === userId);
+  if (!user) {
+    return res.status(404).json({ error: 'المستخدم غير موجود' });
+  }
+
+  if (!user.enabledModules) {
+    user.enabledModules = {
+      tmsDelivery: true,
+      posCashier: true,
+      merchantWms: true,
+      accountingSettlements: true,
+      apiIntegrations: true,
+      aiRouteOptimizer: true,
+      whatsappTracking: true,
+      customDomain: true,
+    };
+  }
+
+  user.enabledModules[moduleKey] = Boolean(enabled);
+  saveDatabase();
+
+  res.json({
+    success: true,
+    message: `تم ${enabled ? 'تفعيل' : 'إيقاف'} نظام (${moduleKey}) لحساب (${user.name}) بنجاح`,
+    user,
   });
 });
 
@@ -2178,6 +2427,1130 @@ app.post('/api/database/restore', (req, res) => {
   } catch (err: any) {
     res.status(400).json({ error: 'فشل في استعادة البيانات: ' + err.message });
   }
+});
+
+// =============================================================
+// Accounting Suite Endpoints (General Logistics & Company ERP)
+// =============================================================
+
+// GET /api/accounting/overview
+app.get('/api/accounting/overview', (req, res) => {
+  let totalDebit = 0;
+  let totalCredit = 0;
+  const trialBalance = accounts.map((acc) => {
+    let debitBalance = 0;
+    let creditBalance = 0;
+    if (acc.isDebitNormal) {
+      if (acc.balance >= 0) {
+        debitBalance = acc.balance;
+      } else {
+        creditBalance = Math.abs(acc.balance);
+      }
+    } else {
+      if (acc.balance >= 0) {
+        creditBalance = acc.balance;
+      } else {
+        debitBalance = Math.abs(acc.balance);
+      }
+    }
+    totalDebit += debitBalance;
+    totalCredit += creditBalance;
+    return {
+      id: acc.id,
+      code: acc.code,
+      name: acc.name,
+      type: acc.type,
+      category: acc.category,
+      debitBalance,
+      creditBalance,
+    };
+  });
+
+  const revenueAccounts = accounts.filter((a) => a.type === 'REVENUE');
+  const expenseAccounts = accounts.filter((a) => a.type === 'EXPENSE');
+  const totalRevenues = revenueAccounts.reduce((sum, a) => sum + Math.max(0, a.balance), 0);
+  const totalExpenses = expenseAccounts.reduce((sum, a) => sum + Math.max(0, a.balance), 0);
+  const netOperatingProfit = totalRevenues - totalExpenses;
+
+  const totalAssets = accounts.filter((a) => a.type === 'ASSET').reduce((sum, a) => sum + a.balance, 0);
+  const totalLiabilities = accounts.filter((a) => a.type === 'LIABILITY').reduce((sum, a) => sum + a.balance, 0);
+  const totalEquity = accounts.filter((a) => a.type === 'EQUITY').reduce((sum, a) => sum + a.balance, 0);
+
+  res.json({
+    accounts,
+    trialBalance: {
+      rows: trialBalance,
+      totalDebit,
+      totalCredit,
+      isBalanced: Math.abs(totalDebit - totalCredit) < 0.01,
+    },
+    incomeStatement: {
+      revenueAccounts,
+      expenseAccounts,
+      totalRevenues,
+      totalExpenses,
+      netOperatingProfit,
+      marginPercent: totalRevenues > 0 ? (netOperatingProfit / totalRevenues) * 100 : 0,
+    },
+    balanceSheet: {
+      totalAssets,
+      totalLiabilities,
+      totalEquity,
+    },
+    recentJournalEntries: journalEntries.slice(-10).reverse(),
+    recentVouchers: vouchers.slice(-10).reverse(),
+  });
+});
+
+// GET /api/accounting/journal-entries
+app.get('/api/accounting/journal-entries', (req, res) => {
+  res.json({ entries: [...journalEntries].reverse() });
+});
+
+// POST /api/accounting/journal-entries
+app.post('/api/accounting/journal-entries', (req, res) => {
+  try {
+    const { date, description, lines, referenceType, referenceId, createdByName } = req.body;
+    if (!Array.isArray(lines) || lines.length < 2) {
+      return res.status(400).json({ error: 'يجب أن يحتوي القيد على طرفين على الأقل (مدين ودائن)' });
+    }
+
+    let sumDebit = 0;
+    let sumCredit = 0;
+    const validatedLines = lines.map((l: any) => {
+      const acc = accounts.find((a) => a.id === l.accountId || a.code === l.accountCode);
+      const debit = Number(l.debit) || 0;
+      const credit = Number(l.credit) || 0;
+      sumDebit += debit;
+      sumCredit += credit;
+      return {
+        accountId: acc ? acc.id : l.accountId,
+        accountCode: acc ? acc.code : l.accountCode,
+        accountName: acc ? acc.name : l.accountName || 'حساب غير معروف',
+        debit,
+        credit,
+        note: l.note || '',
+      };
+    });
+
+    if (Math.abs(sumDebit - sumCredit) > 0.01) {
+      return res.status(400).json({ error: `القيد غير متوازن! مجموع المدين (${sumDebit.toFixed(2)}) لا يساوي مجموع الدائن (${sumCredit.toFixed(2)})` });
+    }
+
+    validatedLines.forEach((vl) => {
+      const acc = accounts.find((a) => a.id === vl.accountId);
+      if (acc) {
+        if (acc.isDebitNormal) {
+          acc.balance += vl.debit - vl.credit;
+        } else {
+          acc.balance += vl.credit - vl.debit;
+        }
+      }
+    });
+
+    const newEntry: JournalEntry = {
+      id: `je-${Date.now()}`,
+      entryNumber: `JE-2026-${String(journalEntries.length + 1).padStart(4, '0')}`,
+      date: date || new Date().toISOString(),
+      description: description || 'قيد محاسبي يدوي',
+      referenceType: referenceType || 'MANUAL',
+      referenceId: referenceId || undefined,
+      lines: validatedLines,
+      totalDebit: sumDebit,
+      totalCredit: sumCredit,
+      createdByName: createdByName || 'المدير المالي',
+      createdAt: new Date().toISOString(),
+    };
+
+    journalEntries.push(newEntry);
+    saveDatabase();
+
+    res.json({ success: true, entry: newEntry });
+  } catch (err: any) {
+    res.status(500).json({ error: 'فشل في حفظ القيد: ' + err.message });
+  }
+});
+
+// GET /api/accounting/vouchers
+app.get('/api/accounting/vouchers', (req, res) => {
+  res.json({ vouchers: [...vouchers].reverse() });
+});
+
+// POST /api/accounting/vouchers
+app.post('/api/accounting/vouchers', (req, res) => {
+  try {
+    const {
+      type,
+      date,
+      amount,
+      beneficiaryOrPayer,
+      paymentMethod,
+      referenceNumber,
+      accountId,
+      contraAccountId,
+      notes,
+    } = req.body;
+
+    const numAmount = Number(amount);
+    if (!numAmount || numAmount <= 0) {
+      return res.status(400).json({ error: 'المبلغ غير صالح' });
+    }
+
+    const mainAcc = accounts.find((a) => a.id === accountId) || accounts[0];
+    const contraAcc = accounts.find((a) => a.id === contraAccountId) || accounts[1];
+
+    const count = vouchers.filter((v) => v.type === type).length + 1;
+    const prefix = type === 'RECEIPT' ? 'V-REC' : 'V-PAY';
+    const voucherNumber = `${prefix}-2026-${String(count).padStart(4, '0')}`;
+
+    const newVoucher: Voucher = {
+      id: `v-${Date.now()}`,
+      voucherNumber,
+      type,
+      date: date || new Date().toISOString().split('T')[0],
+      amount: numAmount,
+      beneficiaryOrPayer: beneficiaryOrPayer || (type === 'RECEIPT' ? 'عميل' : 'مستفيد'),
+      paymentMethod: paymentMethod || 'CASH',
+      referenceNumber: referenceNumber || '',
+      accountId: mainAcc.id,
+      contraAccountId: contraAcc.id,
+      notes: notes || '',
+      status: 'POSTED',
+      createdAt: new Date().toISOString(),
+    };
+
+    vouchers.push(newVoucher);
+
+    const isReceipt = type === 'RECEIPT';
+    const debitAcc = isReceipt ? mainAcc : contraAcc;
+    const creditAcc = isReceipt ? contraAcc : mainAcc;
+
+    const jeLines = [
+      {
+        accountId: debitAcc.id,
+        accountCode: debitAcc.code,
+        accountName: debitAcc.name,
+        debit: numAmount,
+        credit: 0,
+        note: `سند ${isReceipt ? 'قبض' : 'صرف'} رقم ${voucherNumber}`,
+      },
+      {
+        accountId: creditAcc.id,
+        accountCode: creditAcc.code,
+        accountName: creditAcc.name,
+        debit: 0,
+        credit: numAmount,
+        note: `سند ${isReceipt ? 'قبض' : 'صرف'} رقم ${voucherNumber}`,
+      },
+    ];
+
+    if (debitAcc.isDebitNormal) {
+      debitAcc.balance += numAmount;
+    } else {
+      debitAcc.balance -= numAmount;
+    }
+
+    if (creditAcc.isDebitNormal) {
+      creditAcc.balance -= numAmount;
+    } else {
+      creditAcc.balance += numAmount;
+    }
+
+    const autoJE: JournalEntry = {
+      id: `je-${Date.now()}`,
+      entryNumber: `JE-2026-${String(journalEntries.length + 1).padStart(4, '0')}`,
+      date: new Date().toISOString(),
+      description: `توليد آلي لسند ${isReceipt ? 'قبض' : 'صرف'} [${voucherNumber}] - ${beneficiaryOrPayer}`,
+      referenceType: 'VOUCHER',
+      referenceId: newVoucher.id,
+      lines: jeLines,
+      totalDebit: numAmount,
+      totalCredit: numAmount,
+      createdByName: 'نظام دارجو المحاسبي',
+      createdAt: new Date().toISOString(),
+    };
+
+    journalEntries.push(autoJE);
+    saveDatabase();
+
+    res.json({ success: true, voucher: newVoucher, journalEntry: autoJE });
+  } catch (err: any) {
+    res.status(500).json({ error: 'فشل في حفظ السند: ' + err.message });
+  }
+});
+
+// POST /api/accounting/accounts
+app.post('/api/accounting/accounts', (req, res) => {
+  try {
+    const { code, name, type, category, isDebitNormal, description } = req.body;
+    if (!code || !name || !type) {
+      return res.status(400).json({ error: 'كود الحساب واسمه ونوعه مطلوبة' });
+    }
+    const newAcc: Account = {
+      id: `acc-${Date.now()}`,
+      code: String(code),
+      name: String(name),
+      type,
+      category: category || 'عام',
+      balance: 0,
+      isDebitNormal: typeof isDebitNormal === 'boolean' ? isDebitNormal : ['ASSET', 'EXPENSE'].includes(type),
+      description: description || '',
+    };
+    accounts.push(newAcc);
+    saveDatabase();
+    res.json({ success: true, account: newAcc });
+  } catch (err: any) {
+    res.status(500).json({ error: 'فشل في إنشاء الحساب: ' + err.message });
+  }
+});
+
+// =============================================================
+// Merchant Warehouse & Inventory Management Endpoints
+// =============================================================
+
+// GET /api/merchants/:merchantId/warehouse
+app.get('/api/merchants/:merchantId/warehouse', (req, res) => {
+  const { merchantId } = req.params;
+  const products = merchantProducts.filter((p) => p.merchantId === merchantId);
+  const movements = stockMovements.filter((m) => m.merchantId === merchantId);
+
+  const totalSkus = products.length;
+  const totalQuantity = products.reduce((sum, p) => sum + (p.stockQuantity || 0), 0);
+  const totalCostValue = products.reduce((sum, p) => sum + (p.costPrice || 0) * (p.stockQuantity || 0), 0);
+  const totalRetailValue = products.reduce((sum, p) => sum + (p.sellingPrice || 0) * (p.stockQuantity || 0), 0);
+  const potentialGrossProfit = totalRetailValue - totalCostValue;
+  const lowStockProducts = products.filter((p) => (p.stockQuantity || 0) <= (p.minStockAlert || 5));
+
+  res.json({
+    products,
+    movements: [...movements].reverse(),
+    stats: {
+      totalSkus,
+      totalQuantity,
+      totalCostValue,
+      totalRetailValue,
+      potentialGrossProfit,
+      marginPercent: totalRetailValue > 0 ? (potentialGrossProfit / totalRetailValue) * 100 : 0,
+      lowStockCount: lowStockProducts.length,
+      lowStockProducts,
+    },
+  });
+});
+
+// =============================================================
+// Merchant Categories Endpoints (Persistent Category Management)
+// =============================================================
+
+// GET /api/merchants/:merchantId/categories
+app.get('/api/merchants/:merchantId/categories', (req, res) => {
+  const { merchantId } = req.params;
+  const custom = merchantCategories[merchantId] || [];
+  const set = new Set<string>([...DEFAULT_SYSTEM_CATEGORIES, ...custom]);
+
+  // Also include any categories assigned to existing products
+  merchantProducts
+    .filter((p) => p.merchantId === merchantId && p.category)
+    .forEach((p) => {
+      if (p.category && p.category.trim()) {
+        set.add(p.category.trim());
+      }
+    });
+
+  res.json({ success: true, categories: Array.from(set) });
+});
+
+// POST /api/merchants/:merchantId/categories
+app.post('/api/merchants/:merchantId/categories', (req, res) => {
+  try {
+    const { merchantId } = req.params;
+    const { name } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'اسم التصنيف مطلوب' });
+    }
+    const cleanName = name.trim();
+    if (!merchantCategories[merchantId]) {
+      merchantCategories[merchantId] = [...DEFAULT_SYSTEM_CATEGORIES];
+    }
+    if (!merchantCategories[merchantId].includes(cleanName)) {
+      merchantCategories[merchantId].push(cleanName);
+    }
+    saveDatabase();
+
+    const set = new Set<string>([...DEFAULT_SYSTEM_CATEGORIES, ...merchantCategories[merchantId]]);
+    merchantProducts
+      .filter((p) => p.merchantId === merchantId && p.category)
+      .forEach((p) => {
+        if (p.category && p.category.trim()) {
+          set.add(p.category.trim());
+        }
+      });
+
+    res.json({ success: true, category: cleanName, categories: Array.from(set) });
+  } catch (err: any) {
+    res.status(500).json({ error: 'فشل في حفظ التصنيف: ' + err.message });
+  }
+});
+
+// DELETE /api/merchants/:merchantId/categories/:categoryName
+app.delete('/api/merchants/:merchantId/categories/:categoryName', (req, res) => {
+  try {
+    const { merchantId, categoryName } = req.params;
+    const decoded = decodeURIComponent(categoryName);
+    if (merchantCategories[merchantId]) {
+      merchantCategories[merchantId] = merchantCategories[merchantId].filter((c) => c !== decoded);
+      saveDatabase();
+    }
+    const set = new Set<string>([...DEFAULT_SYSTEM_CATEGORIES, ...(merchantCategories[merchantId] || [])]);
+    res.json({ success: true, categories: Array.from(set) });
+  } catch (err: any) {
+    res.status(500).json({ error: 'فشل في إزالة التصنيف: ' + err.message });
+  }
+});
+
+// POST /api/merchants/:merchantId/products (and alias /warehouse/products)
+const handleCreateMerchantProduct = (req: any, res: any) => {
+  try {
+    const { merchantId } = req.params;
+    const {
+      name,
+      sku,
+      barcode,
+      category,
+      costPrice,
+      sellingPrice,
+      stockQuantity,
+      minStockAlert,
+      unit,
+      locationRack,
+      notes,
+    } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ error: 'اسم الصنف مطلوب' });
+    }
+
+    // Auto-save category to merchant saved categories if not already present
+    if (category && category.trim()) {
+      const cleanCat = category.trim();
+      if (!merchantCategories[merchantId]) {
+        merchantCategories[merchantId] = [...DEFAULT_SYSTEM_CATEGORIES];
+      }
+      if (!merchantCategories[merchantId].includes(cleanCat)) {
+        merchantCategories[merchantId].push(cleanCat);
+      }
+    }
+
+    const newProd: MerchantProduct = {
+      id: `prod-${Date.now()}`,
+      merchantId,
+      name,
+      sku: sku || `SKU-${Math.floor(1000 + Math.random() * 9000)}`,
+      barcode: barcode || `${Math.floor(6280000 + Math.random() * 9999)}`,
+      category: category || 'عام',
+      costPrice: Number(costPrice) || 0,
+      sellingPrice: Number(sellingPrice) || 0,
+      stockQuantity: Number(stockQuantity) || 0,
+      minStockAlert: Number(minStockAlert) || 5,
+      unit: unit || 'قطعة',
+      locationRack: locationRack || '',
+      notes: notes || '',
+      updatedAt: new Date().toISOString(),
+    };
+
+    merchantProducts.push(newProd);
+
+    if (newProd.stockQuantity > 0) {
+      stockMovements.push({
+        id: `sm-${Date.now()}`,
+        merchantId,
+        productId: newProd.id,
+        productName: newProd.name,
+        type: 'IN_PURCHASE',
+        quantity: newProd.stockQuantity,
+        previousStock: 0,
+        newStock: newProd.stockQuantity,
+        unitPrice: newProd.costPrice,
+        referenceNumber: 'INITIAL-STOCK',
+        notes: 'إدخال رصيد افتتاحي عند تعريف الصنف',
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    saveDatabase();
+    res.json({ success: true, product: newProd });
+  } catch (err: any) {
+    res.status(500).json({ error: 'فشل في إنشاء الصنف: ' + err.message });
+  }
+};
+
+app.post('/api/merchants/:merchantId/products', handleCreateMerchantProduct);
+app.post('/api/merchants/:merchantId/warehouse/products', handleCreateMerchantProduct);
+
+// PUT /api/merchants/:merchantId/products/:productId
+app.put('/api/merchants/:merchantId/products/:productId', (req, res) => {
+  const { merchantId, productId } = req.params;
+  const prod = merchantProducts.find((p) => p.id === productId && p.merchantId === merchantId);
+  if (!prod) return res.status(404).json({ error: 'الصنف غير موجود' });
+
+  Object.assign(prod, req.body, { updatedAt: new Date().toISOString() });
+  saveDatabase();
+  res.json({ success: true, product: prod });
+});
+
+// DELETE /api/merchants/:merchantId/products/:productId
+app.delete('/api/merchants/:merchantId/products/:productId', (req, res) => {
+  const { merchantId, productId } = req.params;
+  const index = merchantProducts.findIndex((p) => p.id === productId && p.merchantId === merchantId);
+  if (index === -1) return res.status(404).json({ error: 'الصنف غير موجود' });
+
+  merchantProducts.splice(index, 1);
+  saveDatabase();
+  res.json({ success: true, message: 'تم حذف الصنف بنجاح' });
+});
+
+// POST /api/merchants/:merchantId/stock-adjustments (and alias /warehouse/stock-adjustment)
+const handleStockAdjustment = (req: any, res: any) => {
+  try {
+    const { merchantId } = req.params;
+    const { productId, quantityChange, type, referenceNumber, notes } = req.body;
+    const prod = merchantProducts.find((p) => p.id === productId && p.merchantId === merchantId);
+    if (!prod) return res.status(404).json({ error: 'الصنف غير موجود' });
+
+    const change = Number(quantityChange);
+    if (isNaN(change) || change === 0) {
+      return res.status(400).json({ error: 'قيمة التعديل غير صالحة' });
+    }
+
+    const prev = prod.stockQuantity;
+    prod.stockQuantity = Math.max(0, prev + change);
+    prod.updatedAt = new Date().toISOString();
+
+    const movement: StockMovement = {
+      id: `sm-${Date.now()}`,
+      merchantId,
+      productId: prod.id,
+      productName: prod.name,
+      type: type || (change > 0 ? 'ADJUSTMENT' : 'OUT_SALE'),
+      quantity: change,
+      previousStock: prev,
+      newStock: prod.stockQuantity,
+      unitPrice: prod.costPrice,
+      referenceNumber: referenceNumber || 'ADJ-MANUAL',
+      notes: notes || 'تعديل جرد يدوي بالمستودع',
+      createdAt: new Date().toISOString(),
+    };
+
+    stockMovements.push(movement);
+    saveDatabase();
+
+    res.json({ success: true, product: prod, movement });
+  } catch (err: any) {
+    res.status(500).json({ error: 'فشل في تعديل المخزون: ' + err.message });
+  }
+};
+
+app.post('/api/merchants/:merchantId/stock-adjustments', handleStockAdjustment);
+app.post('/api/merchants/:merchantId/warehouse/stock-adjustment', handleStockAdjustment);
+app.post('/api/merchants/:merchantId/warehouse/stock-adjustments', handleStockAdjustment);
+
+// =============================================================
+// Merchant Invoices & Billing Endpoints
+// =============================================================
+
+// GET /api/merchants/:merchantId/invoices
+app.get('/api/merchants/:merchantId/invoices', (req, res) => {
+  const { merchantId } = req.params;
+  const invoices = merchantInvoices.filter((i) => i.merchantId === merchantId);
+  res.json({ invoices: [...invoices].reverse() });
+});
+
+// POST /api/merchants/:merchantId/invoices
+app.post('/api/merchants/:merchantId/invoices', (req, res) => {
+  try {
+    const {
+      merchantId,
+      type,
+      date,
+      partyName,
+      partyPhone,
+      partyAddress,
+      items,
+      subtotal,
+      taxAmount,
+      discountAmount,
+      deliveryFee,
+      grandTotal,
+      paymentMethod,
+      paymentStatus,
+      notes,
+      createDeliveryOrder,
+      deliveryGovernorate,
+      deliveryArea,
+      deliveryFullAddress,
+    } = req.body;
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'يجب أن تحتوي الفاتورة على صنف واحد على الأقل' });
+    }
+
+    const count = merchantInvoices.filter((i) => i.merchantId === merchantId && i.type === type).length + 1;
+    const prefix = type === 'SALES' ? 'INV-S' : type === 'PURCHASE' ? 'INV-P' : 'INV-R';
+    const invoiceNumber = `${prefix}-2026-${String(count).padStart(4, '0')}`;
+
+    let createdOrder: Order | undefined = undefined;
+
+    if (type === 'SALES' && createDeliveryOrder) {
+      const orderSeq = `ORD-2026-${String(nextSequenceNumber++).padStart(4, '0')}`;
+      const delFee = Number(deliveryFee) || 2.0;
+      const gTotal = Number(grandTotal) || 0;
+      const merchColl = Math.max(0, gTotal - delFee);
+
+      createdOrder = {
+        id: `ord-${Date.now()}`,
+        sequence: orderSeq,
+        referenceNumber: invoiceNumber,
+        status: 'PENDING',
+        paymentType: paymentMethod === 'COD' ? 'COD' : 'PREPAID',
+        merchantId,
+        recipientName: partyName || 'عميل المتجر',
+        recipientPhone: partyPhone || '0790000000',
+        governorate: deliveryGovernorate || 'عمان',
+        area: deliveryArea || 'عمان',
+        subArea: '',
+        fullAddress: deliveryFullAddress || partyAddress || 'عمان',
+        merchantCollection: merchColl,
+        deliveryFee: delFee,
+        totalCollection: gTotal,
+        isSettledWithMerchant: false,
+        isSettledWithDriver: false,
+        packageType: 'طرود وبضائع المتجر',
+        piecesCount: items.reduce((sum: number, it: any) => sum + (Number(it.quantity) || 1), 0),
+        deliveryAttempts: 0,
+        notes: `تم إنشاء الشحنة تلقائياً من فاتورة المبيعات [${invoiceNumber}] | ${items.map((it: any) => `${it.productName} (${it.quantity})`).join(', ')}`,
+        statusLogs: [
+          {
+            id: `log-${Date.now()}`,
+            orderId: `ord-${Date.now()}`,
+            fromStatus: null,
+            toStatus: 'PENDING',
+            note: `إنشاء طلبية شحن وتوصيل من فاتورة المبيعات ${invoiceNumber}`,
+            createdAt: new Date().toISOString(),
+          },
+        ],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      orders.unshift(createdOrder);
+    }
+
+    const newInvoice: MerchantInvoice = {
+      id: `inv-${Date.now()}`,
+      merchantId,
+      invoiceNumber,
+      type,
+      date: date || new Date().toISOString().split('T')[0],
+      partyName: partyName || (type === 'PURCHASE' ? 'المورد' : 'العميل'),
+      partyPhone,
+      partyAddress,
+      items: items.map((it: any) => ({
+        productId: it.productId,
+        productName: it.productName,
+        barcode: it.barcode,
+        quantity: Number(it.quantity) || 1,
+        unitPrice: Number(it.unitPrice) || 0,
+        costPrice: Number(it.costPrice) || 0,
+        total: Number(it.total) || (Number(it.quantity) || 1) * (Number(it.unitPrice) || 0),
+      })),
+      subtotal: Number(subtotal) || 0,
+      taxAmount: Number(taxAmount) || 0,
+      discountAmount: Number(discountAmount) || 0,
+      deliveryFee: Number(deliveryFee) || 0,
+      grandTotal: Number(grandTotal) || 0,
+      paymentMethod: paymentMethod || 'CASH',
+      paymentStatus: paymentStatus || 'PAID',
+      shippingOrderId: createdOrder ? createdOrder.id : undefined,
+      shippingTrackingNumber: createdOrder ? createdOrder.sequence : undefined,
+      notes: notes || '',
+      createdAt: new Date().toISOString(),
+    };
+
+    merchantInvoices.push(newInvoice);
+
+    let totalInvoiceCogs = 0;
+
+    newInvoice.items.forEach((item) => {
+      let prod = merchantProducts.find((p) => p.id === item.productId && p.merchantId === merchantId);
+      if (!prod && item.barcode) {
+        prod = merchantProducts.find((p) => p.barcode === item.barcode && p.merchantId === merchantId);
+      }
+      if (!prod && item.productName) {
+        prod = merchantProducts.find(
+          (p) => p.name.trim().toLowerCase() === item.productName.trim().toLowerCase() && p.merchantId === merchantId
+        );
+      }
+
+      const itemCostUnit = item.costPrice > 0 ? item.costPrice : (prod?.costPrice || 0);
+      const lineCogs = itemCostUnit * item.quantity;
+      totalInvoiceCogs += lineCogs;
+
+      if (type === 'PURCHASE') {
+        if (prod) {
+          const prev = prod.stockQuantity;
+          prod.stockQuantity += item.quantity;
+          if (item.unitPrice > 0) prod.costPrice = item.unitPrice;
+          prod.updatedAt = new Date().toISOString();
+
+          stockMovements.push({
+            id: `sm-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+            merchantId,
+            productId: prod.id,
+            productName: prod.name,
+            type: 'IN_PURCHASE',
+            quantity: item.quantity,
+            previousStock: prev,
+            newStock: prod.stockQuantity,
+            unitPrice: item.unitPrice,
+            referenceNumber: invoiceNumber,
+            notes: `توريد بموجب فاتورة مشتريات من [${partyName || 'مورد'}]`,
+            createdAt: new Date().toISOString(),
+          });
+        } else {
+          const autoProd: MerchantProduct = {
+            id: `prod-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+            merchantId,
+            name: item.productName,
+            sku: `SKU-${Math.floor(1000 + Math.random() * 9000)}`,
+            barcode: item.barcode || `${Math.floor(6280000 + Math.random() * 9999)}`,
+            category: 'مشتريات جديدة',
+            costPrice: item.unitPrice,
+            sellingPrice: item.unitPrice * 1.5,
+            stockQuantity: item.quantity,
+            minStockAlert: 5,
+            unit: 'قطعة',
+            notes: `تم إنشاؤه تلقائياً من فاتورة المشتريات ${invoiceNumber}`,
+            updatedAt: new Date().toISOString(),
+          };
+          merchantProducts.push(autoProd);
+          stockMovements.push({
+            id: `sm-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+            merchantId,
+            productId: autoProd.id,
+            productName: autoProd.name,
+            type: 'IN_PURCHASE',
+            quantity: item.quantity,
+            previousStock: 0,
+            newStock: item.quantity,
+            unitPrice: item.unitPrice,
+            referenceNumber: invoiceNumber,
+            notes: `صنف جديد تم تسجيله من فاتورة المشتريات`,
+            createdAt: new Date().toISOString(),
+          });
+        }
+      } else if (type === 'SALES') {
+        if (prod) {
+          const prev = prod.stockQuantity;
+          prod.stockQuantity = Math.max(0, prev - item.quantity);
+          prod.updatedAt = new Date().toISOString();
+
+          stockMovements.push({
+            id: `sm-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+            merchantId,
+            productId: prod.id,
+            productName: prod.name,
+            type: createDeliveryOrder ? 'OUT_SHIPPING' : 'OUT_SALE',
+            quantity: -item.quantity,
+            previousStock: prev,
+            newStock: prod.stockQuantity,
+            unitPrice: item.unitPrice,
+            referenceNumber: invoiceNumber,
+            notes: createDeliveryOrder
+              ? `خصم مخزون آلي - شحن طلبية للزبون عبر دارجو [${createdOrder?.sequence}]`
+              : `خصم مخزون آلي - بيع مباشر بموجب فاتورة مبيعات [${invoiceNumber}]`,
+            createdAt: new Date().toISOString(),
+          });
+        } else {
+          // If item wasn't registered in warehouse, create it with 0 stock and record the sale deduction
+          const autoProd: MerchantProduct = {
+            id: `prod-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+            merchantId,
+            name: item.productName,
+            sku: `SKU-${Math.floor(1000 + Math.random() * 9000)}`,
+            barcode: item.barcode || `${Math.floor(6280000 + Math.random() * 9999)}`,
+            category: 'مبيعات مباشرة',
+            costPrice: item.costPrice || item.unitPrice * 0.7,
+            sellingPrice: item.unitPrice,
+            stockQuantity: 0,
+            minStockAlert: 5,
+            unit: 'قطعة',
+            notes: `صنف مضاف آلياً عند إصدار الفاتورة ${invoiceNumber}`,
+            updatedAt: new Date().toISOString(),
+          };
+          merchantProducts.push(autoProd);
+          stockMovements.push({
+            id: `sm-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+            merchantId,
+            productId: autoProd.id,
+            productName: autoProd.name,
+            type: createDeliveryOrder ? 'OUT_SHIPPING' : 'OUT_SALE',
+            quantity: -item.quantity,
+            previousStock: 0,
+            newStock: 0,
+            unitPrice: item.unitPrice,
+            referenceNumber: invoiceNumber,
+            notes: `خصم مخزون فوري لصنف جديد من فاتورة المبيعات [${invoiceNumber}]`,
+            createdAt: new Date().toISOString(),
+          });
+        }
+      } else if (type === 'RETURN') {
+        if (prod) {
+          const prev = prod.stockQuantity;
+          prod.stockQuantity += item.quantity;
+          prod.updatedAt = new Date().toISOString();
+
+          stockMovements.push({
+            id: `sm-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+            merchantId,
+            productId: prod.id,
+            productName: prod.name,
+            type: 'IN_RETURN',
+            quantity: item.quantity,
+            previousStock: prev,
+            newStock: prod.stockQuantity,
+            unitPrice: item.unitPrice,
+            referenceNumber: invoiceNumber,
+            notes: `إعادة للمخزن بموجب فاتورة مرتجع [${invoiceNumber}] للعميل [${partyName || 'زبون'}]`,
+            createdAt: new Date().toISOString(),
+          });
+        }
+      }
+    });
+
+    // =========================================================
+    // Automated Double-Entry Accounting Integration
+    // =========================================================
+    try {
+      const isPaid = newInvoice.paymentStatus === 'PAID';
+      const invTotal = newInvoice.grandTotal || 0;
+      const invSubtotal = newInvoice.subtotal || 0;
+      const invDelivery = newInvoice.deliveryFee || 0;
+
+      if (type === 'SALES' && invTotal > 0) {
+        const jeId = `je-inv-${Date.now()}`;
+        const lines: JournalEntryLine[] = [];
+
+        // 1. Debit Cash/Bank or Accounts Receivable
+        if (isPaid) {
+          lines.push({
+            accountId: 'acc-1010',
+            accountCode: '1010',
+            accountName: 'الصندوق الرئيسي (الخزينة النقدية)',
+            debit: invTotal,
+            credit: 0,
+            note: `تحصيل نقدي لفاتورة مبيعات [${invoiceNumber}]`,
+          });
+        } else {
+          lines.push({
+            accountId: 'acc-1070',
+            accountCode: '1070',
+            accountName: 'ذمم العملاء والزبائن التجارية (Accounts Receivable)',
+            debit: invTotal,
+            credit: 0,
+            note: `ذمة بيع آجل للعميل [${partyName}] بموجب فاتورة [${invoiceNumber}]`,
+          });
+        }
+
+        // 2. Debit Cost of Goods Sold (COGS) & Credit Inventory Asset
+        if (totalInvoiceCogs > 0) {
+          lines.push({
+            accountId: 'acc-5060',
+            accountCode: '5060',
+            accountName: 'تكلفة البضاعة المباعة للمتاجر (COGS)',
+            debit: totalInvoiceCogs,
+            credit: 0,
+            note: `إثبات تكلفة الأصناف المصروفة من المخزن للفاتورة [${invoiceNumber}]`,
+          });
+
+          lines.push({
+            accountId: 'acc-1060',
+            accountCode: '1060',
+            accountName: 'مخزون بضائع المتاجر بالمستودع (Inventory Asset)',
+            debit: 0,
+            credit: totalInvoiceCogs,
+            note: `خصم وتخفيض قيمة المخزون الدفترية للأصناف المباعة [${invoiceNumber}]`,
+          });
+        }
+
+        // 3. Credit Sales Revenue
+        lines.push({
+          accountId: 'acc-4030',
+          accountCode: '4030',
+          accountName: 'إيرادات مبيعات بضائع المتاجر',
+          debit: 0,
+          credit: invSubtotal,
+          note: `إيراد مبيعات محقق من فاتورة [${invoiceNumber}]`,
+        });
+
+        // 4. Credit Delivery Fees (if applicable)
+        if (invDelivery > 0) {
+          lines.push({
+            accountId: 'acc-4010',
+            accountCode: '4010',
+            accountName: 'إيرادات أجور التوصيل والشحن',
+            debit: 0,
+            credit: invDelivery,
+            note: `أجور شحن وتوصيل دارجو للطلبية [${invoiceNumber}]`,
+          });
+        }
+
+        const totalDebit = lines.reduce((sum, l) => sum + l.debit, 0);
+        const totalCredit = lines.reduce((sum, l) => sum + l.credit, 0);
+
+        journalEntries.unshift({
+          id: jeId,
+          entryNumber: `JE-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
+          date: newInvoice.date,
+          description: `قيد آلي: إثبات مبيعات وخصم مخزون للفاتورة [${invoiceNumber}] - العميل: ${partyName || 'نقدي'}`,
+          referenceType: 'INVOICE',
+          referenceId: newInvoice.id,
+          reference: invoiceNumber,
+          lines,
+          totalDebit,
+          totalCredit,
+          createdByName: 'نظام الربط المحاسبي والمخزني الآلي',
+          createdAt: new Date().toISOString(),
+        });
+      } else if (type === 'PURCHASE' && invTotal > 0) {
+        const lines: JournalEntryLine[] = [
+          {
+            accountId: 'acc-1060',
+            accountCode: '1060',
+            accountName: 'مخزون بضائع المتاجر بالمستودع (Inventory Asset)',
+            debit: invTotal,
+            credit: 0,
+            note: `إثبات زيادة المخزون الدفتري من فاتورة مشتريات [${invoiceNumber}]`,
+          },
+          {
+            accountId: isPaid ? 'acc-1010' : 'acc-2030',
+            accountCode: isPaid ? '1010' : '2030',
+            accountName: isPaid
+              ? 'الصندوق الرئيسي (الخزينة النقدية)'
+              : 'ذمم الموردين التجارية (Accounts Payable)',
+            debit: 0,
+            credit: invTotal,
+            note: isPaid
+              ? `سداد نقدي لمشتريات بضاعة [${invoiceNumber}]`
+              : `ذمة دائنة مستحقة للمورد [${partyName}] عن فاتورة [${invoiceNumber}]`,
+          },
+        ];
+
+        journalEntries.unshift({
+          id: `je-pur-${Date.now()}`,
+          entryNumber: `JE-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
+          date: newInvoice.date,
+          description: `قيد آلي: توريد وإثبات مخزون فاتورة مشتريات [${invoiceNumber}] - المورد: ${partyName || 'مورد'}`,
+          referenceType: 'INVOICE',
+          referenceId: newInvoice.id,
+          reference: invoiceNumber,
+          lines,
+          totalDebit: invTotal,
+          totalCredit: invTotal,
+          createdByName: 'نظام الربط المحاسبي والمخزني الآلي',
+          createdAt: new Date().toISOString(),
+        });
+      }
+    } catch (acctErr) {
+      console.error('Accounting auto-linking error:', acctErr);
+    }
+
+    saveDatabase();
+
+    res.json({
+      success: true,
+      invoice: newInvoice,
+      order: createdOrder ? populateOrder(createdOrder) : undefined,
+      inventoryUpdated: true,
+      accountingSynced: true,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'فشل في حفظ الفاتورة: ' + err.message });
+  }
+});
+
+// =============================================================
+// Merchant Full Accounting & P&L Endpoints
+// =============================================================
+
+// GET /api/merchants/:merchantId/accounting & /api/merchants/:merchantId/accounting/summary
+const handleMerchantAccounting = (req: any, res: any) => {
+  const { merchantId } = req.params;
+  const invoices = merchantInvoices.filter((i) => i.merchantId === merchantId);
+  const expenses = merchantExpenses.filter((e) => e.merchantId === merchantId);
+  const merchantVouchersList = vouchers.filter((v) => v.notes.includes(merchantId) || v.beneficiaryOrPayer.includes('سحر الشرق'));
+  const prods = merchantProducts.filter((p) => p.merchantId === merchantId);
+  const movements = stockMovements.filter((m) => m.merchantId === merchantId);
+
+  const salesInvoices = invoices.filter((i) => i.type === 'SALES');
+  const purchaseInvoices = invoices.filter((i) => i.type === 'PURCHASE');
+  const returnInvoices = invoices.filter((i) => i.type === 'RETURN');
+
+  const totalSales = salesInvoices.reduce((sum, inv) => sum + (inv.subtotal || 0), 0);
+  const totalReturns = returnInvoices.reduce((sum, inv) => sum + (inv.subtotal || 0), 0);
+  const netSales = totalSales - totalReturns;
+
+  let totalCogs = 0;
+  salesInvoices.forEach((inv) => {
+    inv.items.forEach((it) => {
+      const p = prods.find((pr) => pr.id === it.productId || (it.barcode && pr.barcode === it.barcode));
+      const cost = it.costPrice > 0 ? it.costPrice : (p?.costPrice || 0);
+      totalCogs += cost * (it.quantity || 1);
+    });
+  });
+
+  const grossProfit = netSales - totalCogs;
+  const grossMarginPercent = netSales > 0 ? (grossProfit / netSales) * 100 : 0;
+
+  const totalShippingFees = salesInvoices.reduce((sum, inv) => sum + (inv.deliveryFee || 0), 0);
+  const totalOperatingExpenses = expenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
+  const netProfit = grossProfit - totalShippingFees - totalOperatingExpenses;
+
+  const accountsReceivable = salesInvoices
+    .filter((i) => i.paymentStatus !== 'PAID')
+    .reduce((sum, i) => sum + (i.grandTotal || 0), 0);
+
+  const accountsPayable = purchaseInvoices
+    .filter((i) => i.paymentStatus !== 'PAID')
+    .reduce((sum, i) => sum + (i.grandTotal || 0), 0);
+
+  const merchantOrders = orders.filter((o) => o.merchantId === merchantId);
+  const deliveredOrders = merchantOrders.filter((o) => o.status === 'DELIVERED');
+  const collectedByDarGo = deliveredOrders.reduce((sum, o) => sum + o.merchantCollection, 0);
+  const settledOrders = deliveredOrders.filter((o) => o.isSettledWithMerchant);
+  const settledByDarGo = settledOrders.reduce((sum, o) => sum + o.merchantCollection, 0);
+  const pendingDarGoPayout = Math.max(0, collectedByDarGo - settledByDarGo);
+
+  // Live Inventory Values
+  const inventoryAssetValue = prods.reduce((sum, p) => sum + (p.costPrice || 0) * (p.stockQuantity || 0), 0);
+  const inventoryRetailValue = prods.reduce((sum, p) => sum + (p.sellingPrice || 0) * (p.stockQuantity || 0), 0);
+  const totalStockItems = prods.reduce((sum, p) => sum + (p.stockQuantity || 0), 0);
+  const lowStockCount = prods.filter((p) => p.stockQuantity <= (p.minStockAlert || 5)).length;
+
+  const relatedJournalEntries = journalEntries.filter((je) => {
+    return (
+      je.referenceId?.startsWith('inv-') ||
+      je.description.includes(merchantId) ||
+      invoices.some((inv) => inv.id === je.referenceId || inv.invoiceNumber === je.reference)
+    );
+  });
+
+  const summary = {
+    merchantId,
+    totalRevenue: netSales,
+    costOfGoodsSold: totalCogs,
+    grossProfit,
+    marginPercent: grossMarginPercent,
+    deliveryFeesPaid: totalShippingFees,
+    totalExpenses: totalOperatingExpenses,
+    netProfit,
+    netMarginPercent: netSales > 0 ? (netProfit / netSales) * 100 : 0,
+    pendingSettlements: pendingDarGoPayout,
+    inventoryAssetValue,
+    inventoryRetailValue,
+    totalStockItems,
+    lowStockCount,
+    accountsReceivable,
+    accountsPayable,
+  };
+
+  res.json({
+    summary,
+    pnl: {
+      totalSales,
+      totalReturns,
+      netSales,
+      totalCogs,
+      grossProfit,
+      grossMarginPercent,
+      totalShippingFees,
+      totalOperatingExpenses,
+      netProfit,
+      netMarginPercent: netSales > 0 ? (netProfit / netSales) * 100 : 0,
+      inventoryAssetValue,
+    },
+    workingCapital: {
+      accountsReceivable,
+      accountsPayable,
+      pendingDarGoPayout,
+      collectedByDarGo,
+      settledByDarGo,
+      inventoryAssetValue,
+    },
+    inventory: {
+      assetValue: inventoryAssetValue,
+      retailValue: inventoryRetailValue,
+      totalItems: totalStockItems,
+      lowStockCount,
+    },
+    expenses: [...expenses].reverse(),
+    vouchers: [...merchantVouchersList].reverse(),
+    journalEntries: relatedJournalEntries.slice(0, 30),
+    stockMovements: [...movements].reverse().slice(0, 30),
+    salesInvoices: salesInvoices.length,
+    purchaseInvoices: purchaseInvoices.length,
+  });
+};
+
+app.get('/api/merchants/:merchantId/accounting', handleMerchantAccounting);
+app.get('/api/merchants/:merchantId/accounting/summary', handleMerchantAccounting);
+
+// GET /api/merchants/:merchantId/expenses
+app.get('/api/merchants/:merchantId/expenses', (req, res) => {
+  const { merchantId } = req.params;
+  const expenses = merchantExpenses.filter((e) => e.merchantId === merchantId);
+  res.json({ expenses: [...expenses].reverse() });
+});
+
+// POST /api/merchants/:merchantId/expenses
+app.post('/api/merchants/:merchantId/expenses', (req, res) => {
+  try {
+    const { merchantId } = req.params;
+    const { title, category, amount, date, paymentMethod, reference, notes } = req.body;
+    const numAmount = Number(amount);
+    if (!title || !numAmount || numAmount <= 0) {
+      return res.status(400).json({ error: 'عنوان المصروف والمبلغ مطلوبان' });
+    }
+
+    const newExpense: MerchantExpense = {
+      id: `me-${Date.now()}`,
+      merchantId,
+      title,
+      category: category || 'OTHER',
+      amount: numAmount,
+      date: date || new Date().toISOString().split('T')[0],
+      paymentMethod: paymentMethod || 'CASH',
+      reference: reference || '',
+      notes: notes || '',
+      createdAt: new Date().toISOString(),
+    };
+
+    merchantExpenses.push(newExpense);
+    saveDatabase();
+
+    res.json({ success: true, expense: newExpense });
+  } catch (err: any) {
+    res.status(500).json({ error: 'فشل في إضافة المصروف: ' + err.message });
+  }
+});
+
+// DELETE /api/merchants/:merchantId/expenses/:expenseId
+app.delete('/api/merchants/:merchantId/expenses/:expenseId', (req, res) => {
+  const { merchantId, expenseId } = req.params;
+  const index = merchantExpenses.findIndex((e) => e.id === expenseId && e.merchantId === merchantId);
+  if (index === -1) return res.status(404).json({ error: 'المصروف غير موجود' });
+
+  merchantExpenses.splice(index, 1);
+  saveDatabase();
+  res.json({ success: true, message: 'تم حذف المصروف بنجاح' });
 });
 
 // -------------------------------------------------------------

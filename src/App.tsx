@@ -27,6 +27,8 @@ import { ManifestsStatements } from './components/ManifestsStatements';
 import { StaffPortal } from './components/StaffPortal';
 import { AccessDeniedView } from './components/AccessDeniedView';
 import { AdminSettings } from './components/AdminSettings';
+import { LoginPage } from './components/LoginPage';
+import { SuperAdminMasterHub } from './components/SuperAdminMasterHub';
 import { Order, OrderStatus, User, Role, OrdersQueryResponse } from './types/logistics';
 import { CheckCircle2, AlertCircle, X } from 'lucide-react';
 
@@ -40,6 +42,7 @@ export default function App() {
   // Authentication & Current User Session
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isAuthChecking, setIsAuthChecking] = useState<boolean>(true);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [cliqOrder, setCliqOrder] = useState<Order | null>(null);
 
@@ -48,6 +51,20 @@ export default function App() {
 
   const permissions = useMemo(() => {
     switch (currentRole) {
+      case 'SUPER_ADMIN':
+        return {
+          allowedSections: [
+            'super_admin_hub',
+            'settings',
+          ] as AppSection[],
+          canManageUsers: true,
+          canAccessReverseLogistics: false,
+          canBulkStatusChange: false,
+          canBulkAssignDriver: false,
+          canCreateOrder: false,
+          canExportCSV: true,
+          canAccessFinancials: true,
+        };
       case 'ADMIN':
         return {
           allowedSections: [
@@ -71,6 +88,7 @@ export default function App() {
           canAccessFinancials: true,
         };
       case 'OPERATOR':
+      case 'STAFF':
         return {
           allowedSections: [
             'staff_portal',
@@ -79,21 +97,52 @@ export default function App() {
             'manifests',
             'reverse_logistics',
           ] as AppSection[],
-          canManageUsers: false, // Strict RBAC: Protected from OPERATOR
-          canAccessReverseLogistics: true, // Warehouse operator handles return shelving
+          canManageUsers: false,
+          canAccessReverseLogistics: true,
           canBulkStatusChange: true,
           canBulkAssignDriver: true,
           canCreateOrder: true,
           canExportCSV: true,
           canAccessFinancials: false,
         };
+      case 'CASHIER':
+        return {
+          allowedSections: [
+            'staff_portal',
+            'operations_grid',
+            'operations',
+          ] as AppSection[],
+          canManageUsers: false,
+          canAccessReverseLogistics: false,
+          canBulkStatusChange: true,
+          canBulkAssignDriver: false,
+          canCreateOrder: true,
+          canExportCSV: false,
+          canAccessFinancials: false,
+        };
+      case 'ACCOUNTANT':
+        return {
+          allowedSections: [
+            'settlements',
+            'operations_grid',
+            'operations',
+            'manifests',
+          ] as AppSection[],
+          canManageUsers: false,
+          canAccessReverseLogistics: false,
+          canBulkStatusChange: false,
+          canBulkAssignDriver: false,
+          canCreateOrder: false,
+          canExportCSV: true,
+          canAccessFinancials: true,
+        };
       case 'MERCHANT':
         return {
           allowedSections: ['merchant_portal', 'settlements'] as AppSection[],
-          canManageUsers: false, // Strict RBAC: Hidden from MERCHANT
-          canAccessReverseLogistics: false, // Strict RBAC: Hidden from MERCHANT
-          canBulkStatusChange: false, // Merchants cannot alter operational statuses in bulk
-          canBulkAssignDriver: false, // Merchants cannot assign drivers in bulk
+          canManageUsers: false,
+          canAccessReverseLogistics: false,
+          canBulkStatusChange: false,
+          canBulkAssignDriver: false,
           canCreateOrder: true,
           canExportCSV: true,
           canAccessFinancials: true,
@@ -101,10 +150,10 @@ export default function App() {
       case 'DRIVER':
         return {
           allowedSections: ['driver_portal'] as AppSection[],
-          canManageUsers: false, // Strict RBAC: Hidden from DRIVER
-          canAccessReverseLogistics: false, // Strict RBAC: Hidden from DRIVER
-          canBulkStatusChange: false, // Driver only changes status inside their own mobile portal
-          canBulkAssignDriver: false, // Cannot dispatch/assign drivers
+          canManageUsers: false,
+          canAccessReverseLogistics: false,
+          canBulkStatusChange: false,
+          canBulkAssignDriver: false,
           canCreateOrder: false,
           canExportCSV: false,
           canAccessFinancials: false,
@@ -215,7 +264,7 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // Fetch Users
+  // Fetch Users & Authenticate Session
   const fetchUsers = async () => {
     try {
       const res = await fetch('/api/users');
@@ -224,30 +273,56 @@ export default function App() {
         setAllUsers(data);
         setMerchants(data.filter((u) => u.role === 'MERCHANT'));
         setDrivers(data.filter((u) => u.role === 'DRIVER'));
-        if (!currentUser && data.length > 0) {
-          const admin = data.find((u) => u.role === 'ADMIN') || data[0];
-          setCurrentUser(admin);
-        }
       }
     } catch (e) {
       console.error('Error fetching users:', e);
     }
   };
 
+  const handleLoginSuccess = (user: User, token: string) => {
+    setCurrentUser(user);
+    if (user.role === 'SUPER_ADMIN') {
+      setActiveSection('super_admin_hub');
+    } else if (user.role === 'DRIVER') {
+      setActiveSection('driver_portal');
+    } else if (user.role === 'MERCHANT') {
+      setActiveSection('merchant_portal');
+    } else if (user.role === 'OPERATOR' || user.role === 'CASHIER' || user.role === 'STAFF') {
+      setActiveSection('staff_portal');
+    } else if (user.role === 'ACCOUNTANT') {
+      setActiveSection('settlements');
+    } else {
+      setActiveSection('operations_grid');
+    }
+    showToast(`مرحباً بك: ${user.name} (${user.roleName || user.role})`);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('dargo_user_session');
+    setCurrentUser(null);
+    showToast('تم تسجيل الخروج من النظام بنجاح');
+  };
+
   const handleSelectUser = (user: User) => {
     setCurrentUser(user);
-    if (user.role === 'DRIVER') {
+    if (user.role === 'SUPER_ADMIN') {
+      setActiveSection('super_admin_hub');
+      showToast(`تم التبديل إلى مركز تحكم السوبر أدمن: ${user.name}`);
+    } else if (user.role === 'DRIVER') {
       setActiveSection('driver_portal');
       showToast(`تم التبديل إلى بوابة الكابتن: ${user.name}`);
     } else if (user.role === 'MERCHANT') {
       setActiveSection('merchant_portal');
       showToast(`تم التبديل إلى بوابة التاجر: ${user.name}`);
-    } else if (user.role === 'OPERATOR') {
+    } else if (user.role === 'OPERATOR' || user.role === 'CASHIER' || user.role === 'STAFF') {
       setActiveSection('staff_portal');
       showToast(`تم التبديل إلى بوابة موظف العمليات والفرز: ${user.name}`);
+    } else if (user.role === 'ACCOUNTANT') {
+      setActiveSection('settlements');
+      showToast(`تم التبديل إلى بوابة الحسابات والتسويات: ${user.name}`);
     } else {
       setActiveSection('operations_grid');
-      showToast(`تم تسجيل الدخول بصلاحيات مدير العمليات: ${user.name}`);
+      showToast(`تم تسجيل الدخول بصلاحيات الإدارة: ${user.name}`);
     }
   };
 
@@ -406,7 +481,45 @@ export default function App() {
   ]);
 
   useEffect(() => {
-    fetchUsers();
+    const initAuthAndUsers = async () => {
+      try {
+        const res = await fetch('/api/users');
+        if (res.ok) {
+          const data: User[] = await res.json();
+          setAllUsers(data);
+          setMerchants(data.filter((u) => u.role === 'MERCHANT'));
+          setDrivers(data.filter((u) => u.role === 'DRIVER'));
+        }
+
+        const savedSession = localStorage.getItem('dargo_user_session');
+        if (savedSession) {
+          try {
+            const parsed = JSON.parse(savedSession);
+            if (parsed?.user?.id) {
+              const verifyRes = await fetch('/api/auth/verify', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId: parsed.user.id }),
+              });
+              if (verifyRes.ok) {
+                const verified = await verifyRes.json();
+                if (verified.user) {
+                  setCurrentUser(verified.user);
+                }
+              }
+            }
+          } catch (e) {
+            console.error('Session verify error:', e);
+          }
+        }
+      } catch (e) {
+        console.error('Auth init error:', e);
+      } finally {
+        setIsAuthChecking(false);
+      }
+    };
+
+    initAuthAndUsers();
   }, []);
 
   useEffect(() => {
@@ -633,6 +746,39 @@ export default function App() {
     showToast('تم تصدير ملف CSV بنجاح');
   };
 
+  if (isAuthChecking) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-100 font-sans" dir="rtl">
+        <div className="w-12 h-12 border-4 border-amber-500 border-t-transparent rounded-full animate-spin mb-4" />
+        <p className="text-sm font-bold text-slate-300">جاري التحقق من الجلسة والصلاحيات...</p>
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <>
+        <LoginPage onLoginSuccess={handleLoginSuccess} availableUsers={allUsers} />
+        {toastMessage && (
+          <div
+            className={`fixed bottom-5 left-5 z-50 px-4 py-3 rounded-xl shadow-xl flex items-center gap-2.5 text-xs font-bold ${
+              toastMessage.type === 'success'
+                ? 'bg-emerald-600 text-white shadow-emerald-600/20'
+                : 'bg-rose-600 text-white shadow-rose-600/20'
+            }`}
+          >
+            {toastMessage.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4" />
+            ) : (
+              <AlertCircle className="w-4 h-4" />
+            )}
+            <span>{toastMessage.text}</span>
+          </div>
+        )}
+      </>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-100/70 text-slate-900 flex flex-col font-sans">
       {/* 1. Global Navigation Bar */}
@@ -646,8 +792,46 @@ export default function App() {
         onOpenIntegrations={() => setIsIntegrationsOpen(true)}
         currentUser={currentUser}
         onOpenAuthLogin={() => setIsAuthModalOpen(true)}
+        onLogout={handleLogout}
         onDownloadBackup={handleDownloadBackup}
       />
+
+      {/* 1. Super Admin Master Hub & Subscriptions Management */}
+      {activeSection === 'super_admin_hub' && (
+        permissions.allowedSections.includes('super_admin_hub') && currentUser ? (
+          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5">
+            <SuperAdminMasterHub
+              users={allUsers}
+              currentUser={currentUser}
+              onRefresh={async () => {
+                const res = await fetch('/api/users');
+                if (res.ok) {
+                  const data = await res.json();
+                  setAllUsers(data);
+                }
+              }}
+              onSelectUserForLogin={(targetUser) => {
+                setCurrentUser(targetUser);
+                localStorage.setItem('dargo_tms_session', JSON.stringify({ user: targetUser, token: `dargo_jwt_${targetUser.id}` }));
+                showToast(`تم تسجيل الدخول بنجاح بحساب (${targetUser.name}) - ${targetUser.roleName || targetUser.role}`, 'success');
+                if (targetUser.role === 'MERCHANT') setActiveSection('merchant_portal');
+                else if (targetUser.role === 'DRIVER') setActiveSection('driver_portal');
+                else if (targetUser.role === 'OPERATOR') setActiveSection('staff_portal');
+                else setActiveSection('operations_grid');
+              }}
+              showToast={showToast}
+            />
+          </main>
+        ) : (
+          <AccessDeniedView
+            sectionTitle="مركز السوبر أدمن وإدارة الاشتراكات"
+            requiredRole="المدير العام للنظام (SUPER_ADMIN)"
+            currentRole={currentRole}
+            onNavigateHome={() => setActiveSection(permissions.allowedSections[0])}
+            homeSectionName={getSectionTitle(permissions.allowedSections[0])}
+          />
+        )
+      )}
 
       {/* 2. Operations Dashboard Grid (ERP Summary Matrix) */}
       {activeSection === 'operations_grid' && (

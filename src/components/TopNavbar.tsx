@@ -27,10 +27,13 @@ import {
   LayoutGrid,
   Settings,
   Check,
+  LogOut,
+  User as UserIcon,
 } from 'lucide-react';
 import { User, Role } from '../types/logistics';
 
 export type AppSection =
+  | 'super_admin_hub'
   | 'operations_grid'
   | 'operations'
   | 'manifests'
@@ -52,6 +55,7 @@ interface TopNavbarProps {
   onOpenIntegrations?: () => void;
   currentUser?: User | null;
   onOpenAuthLogin?: () => void;
+  onLogout?: () => void;
   onDownloadBackup?: () => void;
   onSwitchRoleQuick?: (role: Role) => void;
   onQuickRoleSwitch?: (role: Role) => void;
@@ -67,13 +71,36 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
   onOpenIntegrations,
   currentUser,
   onOpenAuthLogin,
+  onLogout,
   onDownloadBackup,
 }) => {
   const [isManifestsOpen, setIsManifestsOpen] = useState(false);
   const [isUsersDropdownOpen, setIsUsersDropdownOpen] = useState(false);
   const [isAppLauncherOpen, setIsAppLauncherOpen] = useState(false);
+  const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
 
   const role = currentUser?.role || 'ADMIN';
+
+  const getRoleLabel = (r: Role) => {
+    switch (r) {
+      case 'SUPER_ADMIN':
+        return 'المدير العام للنظام (Super Admin)';
+      case 'ADMIN':
+        return 'مدير العمليات (Admin)';
+      case 'MERCHANT':
+        return 'حساب تاجر (Merchant)';
+      case 'DRIVER':
+        return 'كابتن توصيل (Driver)';
+      case 'OPERATOR':
+        return 'موظف الفرز والعمليات';
+      case 'CASHIER':
+        return 'موظف الكاشير';
+      case 'ACCOUNTANT':
+        return 'محاسب مالي';
+      default:
+        return 'مستخدم النظام';
+    }
+  };
 
   return (
     <header className="bg-slate-900 text-slate-100 border-b border-slate-800 sticky top-0 z-40 shadow-md">
@@ -99,6 +126,33 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                     <span>منظومات النظام (ERP)</span>
                     <span className="font-mono text-amber-600 font-bold">v-rc-next</span>
                   </div>
+
+                  {/* مركز السوبر أدمن والاشتراكات (للسوبر أدمن فقط) */}
+                  {role === 'SUPER_ADMIN' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onChangeSection('super_admin_hub');
+                        setIsAppLauncherOpen(false);
+                      }}
+                      className={`w-full text-right px-3 py-2.5 rounded-xl flex items-center justify-between transition-all cursor-pointer ${
+                        activeSection === 'super_admin_hub'
+                          ? 'bg-amber-500 text-slate-950 font-black shadow-md'
+                          : 'bg-gradient-to-r from-amber-500/15 to-indigo-500/15 hover:from-amber-500/25 hover:to-indigo-500/25 text-amber-950 border border-amber-500/30'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <Shield className="w-4 h-4 text-amber-700 stroke-[2.5]" />
+                        <div>
+                          <span className="text-xs font-black block">مركز السوبر أدمن والاشتراكات (SaaS)</span>
+                          <span className="text-[10px] text-amber-800/80 block font-medium">إدارة الحسابات، تفعيل الاشتراكات، وقفل الصلاحيات</span>
+                        </div>
+                      </div>
+                      {activeSection === 'super_admin_hub' && (
+                        <Check className="w-3.5 h-3.5 text-slate-950 stroke-[3]" />
+                      )}
+                    </button>
+                  )}
 
                   {/* التوصيل */}
                   <button
@@ -192,6 +246,50 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                       <Check className="w-3.5 h-3.5 text-amber-600" />
                     )}
                   </button>
+
+                  {/* المستخدمون والصلاحيات */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onChangeSection('users');
+                      setIsAppLauncherOpen(false);
+                    }}
+                    className={`w-full text-right px-3 py-2 rounded-xl flex items-center justify-between transition-colors cursor-pointer ${
+                      activeSection === 'users'
+                        ? 'bg-amber-50 text-amber-900 font-bold'
+                        : 'hover:bg-slate-50 text-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Users className="w-4 h-4 text-blue-600" />
+                      <span className="text-xs">المستخدمون والصلاحيات</span>
+                    </div>
+                    {activeSection === 'users' && (
+                      <Check className="w-3.5 h-3.5 text-amber-600" />
+                    )}
+                  </button>
+
+                  {/* بوابة ومخزن التاجر */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onChangeSection('merchant_portal');
+                      setIsAppLauncherOpen(false);
+                    }}
+                    className={`w-full text-right px-3 py-2 rounded-xl flex items-center justify-between transition-colors cursor-pointer ${
+                      activeSection === 'merchant_portal'
+                        ? 'bg-amber-50 text-amber-900 font-bold'
+                        : 'hover:bg-slate-50 text-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Store className="w-4 h-4 text-amber-600" />
+                      <span className="text-xs">بوابة ومخزن التاجر</span>
+                    </div>
+                    {activeSection === 'merchant_portal' && (
+                      <Check className="w-3.5 h-3.5 text-amber-600" />
+                    )}
+                  </button>
                 </div>
               )}
             </div>
@@ -224,8 +322,25 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
 
           {/* Center Navigation Menus - Dynamically Filtered by Role */}
           <div className="hidden lg:flex items-center gap-0.5 bg-slate-950/60 p-1 rounded-xl border border-slate-800 shadow-inner text-xs font-semibold backdrop-blur-xs">
-            {/* ADMIN Role Menus */}
-            {role === 'ADMIN' && (
+            {/* SUPER_ADMIN Dedicated SaaS Master Button */}
+            {role === 'SUPER_ADMIN' && (
+              <button
+                type="button"
+                onClick={() => onChangeSection('super_admin_hub')}
+                className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer font-black ${
+                  activeSection === 'super_admin_hub'
+                    ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                    : 'text-amber-400 hover:text-amber-300 hover:bg-amber-500/10 border border-amber-500/30'
+                }`}
+                title="مركز إدارة الحسابات، تفعيل الاشتراكات، وقفل وفتح الصلاحيات"
+              >
+                <Shield className="w-3.5 h-3.5 stroke-[2.5]" />
+                <span>مركز السوبر أدمن والاشتراكات</span>
+              </button>
+            )}
+
+            {/* SUPER_ADMIN & ADMIN Role Menus */}
+            {(role === 'SUPER_ADMIN' || role === 'ADMIN') && (
               <>
                 {/* لوحة العمليات */}
                 <button
@@ -269,7 +384,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                   <span>كشوفات</span>
                 </button>
 
-                {/* المستخدمون */}
+                {/* المستخدمون والصلاحيات */}
                 <button
                   type="button"
                   onClick={() => onChangeSection('users')}
@@ -280,10 +395,10 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                   }`}
                 >
                   <Users className="w-3.5 h-3.5" />
-                  <span>المستخدمون</span>
+                  <span>المستخدمون والصلاحيات</span>
                 </button>
 
-                {/* التسويات المالية */}
+                {/* التسويات المالية والمحاسبة العامة */}
                 <button
                   type="button"
                   onClick={() => onChangeSection('settlements')}
@@ -294,10 +409,25 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                   }`}
                 >
                   <Receipt className="w-3.5 h-3.5" />
-                  <span>التسويات المالية</span>
+                  <span>التسويات والمحاسبة</span>
                 </button>
 
-                {/* المرتجعات */}
+                {/* بوابة التاجر والمخزن */}
+                <button
+                  type="button"
+                  onClick={() => onChangeSection('merchant_portal')}
+                  className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
+                    activeSection === 'merchant_portal'
+                      ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
+                  }`}
+                  title="إدارة المخزن، الفواتير، ونظام المحاسبة للتاجر"
+                >
+                  <Store className="w-3.5 h-3.5" />
+                  <span>بوابة ومخزن التاجر</span>
+                </button>
+
+                {/* المرتجعات والرفوف */}
                 <button
                   type="button"
                   onClick={() => onChangeSection('reverse_logistics')}
@@ -398,7 +528,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                   }`}
                 >
                   <Store className="w-3.5 h-3.5" />
-                  <span>نقطة البيع والكاشير (POS) والمتجر</span>
+                  <span>بوابة التاجر (المخزن، الفواتير، المحاسبة، POS)</span>
                 </button>
 
                 <button
@@ -479,8 +609,8 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
               <span className="hidden sm:inline">تتبع</span>
             </button>
 
-            {/* Integrations (Webhooks & API) - Available for ADMIN */}
-            {role === 'ADMIN' && onOpenIntegrations && (
+            {/* Integrations (Webhooks & API) - Available for SUPER_ADMIN & ADMIN */}
+            {(role === 'SUPER_ADMIN' || role === 'ADMIN') && onOpenIntegrations && (
               <button
                 onClick={onOpenIntegrations}
                 className="px-2.5 py-1.5 rounded-lg bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 border border-amber-500/30 text-xs font-bold flex items-center gap-1.5 transition-all"
@@ -492,7 +622,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
             )}
 
             {/* Prisma Schema Doc */}
-            {role === 'ADMIN' && (
+            {(role === 'SUPER_ADMIN' || role === 'ADMIN') && (
               <button
                 onClick={onOpenSchemaDoc}
                 className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg"
@@ -503,7 +633,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
             )}
 
             {/* Database Backup Export */}
-            {role === 'ADMIN' && onDownloadBackup && (
+            {(role === 'SUPER_ADMIN' || role === 'ADMIN') && onDownloadBackup && (
               <button
                 onClick={onDownloadBackup}
                 className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg"
@@ -514,32 +644,72 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
             )}
 
             {/* User Profile & Role Switcher */}
-            <button
-              onClick={onOpenAuthLogin}
-              className="flex items-center gap-2 pr-2 border-r border-slate-800 hover:bg-slate-800/60 p-1 rounded-lg transition-colors text-right"
-              title="إدارة الجلسة وتبديل الحساب / الصلاحيات (RBAC)"
-            >
-              <div className="w-8 h-8 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-amber-400 font-bold text-xs">
-                {currentUser?.name ? currentUser.name.slice(0, 2) : 'با'}
-              </div>
-              <div className="hidden 2xl:block text-right">
-                <div className="text-xs font-semibold text-white leading-tight">
-                  {currentUser?.name || 'باسل البلبيسي'}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)}
+                className="flex items-center gap-2 pr-2 border-r border-slate-800 hover:bg-slate-800/60 p-1.5 rounded-xl transition-colors text-right cursor-pointer"
+                title="إدارة الجلسة وبيانات الحساب (RBAC)"
+              >
+                <div className="w-8 h-8 rounded-xl bg-amber-500 text-slate-950 font-black flex items-center justify-center text-xs shadow-sm">
+                  {currentUser?.name ? currentUser.name.slice(0, 2) : 'مد'}
                 </div>
-                <div className="text-[10px] text-amber-400 flex items-center gap-1">
-                  <Shield className="w-2.5 h-2.5" />
-                  <span>
-                    {role === 'ADMIN'
-                      ? 'مدير العمليات'
-                      : role === 'OPERATOR'
-                      ? 'موظف العمليات'
-                      : role === 'MERCHANT'
-                      ? 'حساب تاجر'
-                      : 'كابتن توصيل'}
-                  </span>
+                <div className="hidden xl:block text-right">
+                  <div className="text-xs font-bold text-white leading-tight truncate max-w-[140px]">
+                    {currentUser?.name || 'مستخدم النظام'}
+                  </div>
+                  <div className="text-[10px] text-amber-400 font-medium flex items-center gap-1">
+                    <Shield className="w-2.5 h-2.5" />
+                    <span>{getRoleLabel(role)}</span>
+                  </div>
                 </div>
-              </div>
-            </button>
+                <ChevronDown className="w-3.5 h-3.5 text-slate-400 hidden xl:block" />
+              </button>
+
+              {/* Profile Dropdown Menu */}
+              {isProfileMenuOpen && (
+                <div className="absolute left-0 mt-2 w-72 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-3 z-50 text-slate-200 animate-in fade-in slide-in-from-top-2 text-right">
+                  <div className="border-b border-slate-800 pb-3 mb-2">
+                    <div className="text-xs font-bold text-white">{currentUser?.name}</div>
+                    <div className="text-[11px] text-slate-400 font-mono mt-0.5">{currentUser?.email}</div>
+                    <div className="mt-2 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[10px] font-bold">
+                      <Shield className="w-3 h-3" />
+                      <span>{getRoleLabel(role)}</span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    {onOpenAuthLogin && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsProfileMenuOpen(false);
+                          onOpenAuthLogin();
+                        }}
+                        className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 transition-colors text-right"
+                      >
+                        <UserIcon className="w-4 h-4 text-amber-400" />
+                        <span>تبديل الحساب / محاكاة الدور</span>
+                      </button>
+                    )}
+
+                    {onLogout && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsProfileMenuOpen(false);
+                          onLogout();
+                        }}
+                        className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold text-rose-400 hover:bg-rose-500/10 border border-transparent hover:border-rose-500/20 transition-colors text-right"
+                      >
+                        <LogOut className="w-4 h-4 text-rose-400" />
+                        <span>تسجيل الخروج من النظام</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 

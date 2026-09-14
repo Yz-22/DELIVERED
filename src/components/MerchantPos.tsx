@@ -69,11 +69,14 @@ const DEFAULT_MERCHANT_PRODUCTS: PosProduct[] = [
 const CATEGORIES = [
   'الكل',
   'ألبسة نسائية',
+  'عبايات وجلابيات',
   'ألبسة رجالية',
   'حقائب وأحذية',
   'إكسسوارات',
+  'شالات وإيشاربات',
   'عطور وتجميل',
   'ساعات',
+  'أخرى',
 ];
 
 // Audio beep for physical/camera scanner feedback
@@ -187,6 +190,69 @@ export const MerchantPos: React.FC<MerchantPosProps> = ({
   const [selectedCategory, setSelectedCategory] = useState('الكل');
   const [barcodeInput, setBarcodeInput] = useState('');
   const barcodeInputRef = useRef<HTMLInputElement>(null);
+
+  // Persistent Categories State
+  const [savedCategories, setSavedCategories] = useState<string[]>([
+    'ألبسة نسائية',
+    'عبايات وجلابيات',
+    'ألبسة رجالية',
+    'ألبسة أطفال',
+    'حقائب وأحذية',
+    'إكسسوارات',
+    'شالات وإيشاربات',
+    'عطور وتجميل',
+    'ساعات ومجوهرات',
+    'إلكترونيات وهواتف',
+    'أدوات منزلية',
+    'عام',
+  ]);
+  const [isPosCatModalOpen, setIsPosCatModalOpen] = useState(false);
+  const [posNewCatInput, setPosNewCatInput] = useState('');
+
+  // Fetch Categories from server on mount
+  useEffect(() => {
+    if (!currentMerchant?.id) return;
+    fetch(`/api/merchants/${currentMerchant.id}/categories`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (Array.isArray(data.categories) && data.categories.length > 0) {
+          setSavedCategories(data.categories);
+        }
+      })
+      .catch((err) => console.error('Failed to fetch POS categories:', err));
+  }, [currentMerchant.id]);
+
+  const handleSavePosCategory = async (catName: string) => {
+    const clean = catName.trim();
+    if (!clean) return;
+    try {
+      const res = await fetch(`/api/merchants/${currentMerchant.id}/categories`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: clean }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.categories)) {
+          setSavedCategories(data.categories);
+        }
+      } else {
+        setSavedCategories((prev) => Array.from(new Set([...prev, clean])));
+      }
+      setSelectedCategory(clean);
+      setNewProductForm((prev) => ({ ...prev, category: clean }));
+      showToast(`تم حفظ تصنيف "${clean}" وتثبيته`);
+      setPosNewCatInput('');
+      setIsPosCatModalOpen(false);
+    } catch (err) {
+      setSavedCategories((prev) => Array.from(new Set([...prev, clean])));
+      setSelectedCategory(clean);
+      setNewProductForm((prev) => ({ ...prev, category: clean }));
+      showToast(`تم حفظ تصنيف "${clean}"`);
+      setPosNewCatInput('');
+      setIsPosCatModalOpen(false);
+    }
+  };
 
   // Custom Item Modal/Popover State
   const [isCustomItemOpen, setIsCustomItemOpen] = useState(false);
@@ -520,6 +586,16 @@ export const MerchantPos: React.FC<MerchantPosProps> = ({
     }
   };
 
+  // Available categories merged from standard, saved, and merchant items
+  const availableCategories = useMemo(() => {
+    const set = new Set<string>(['الكل', ...savedCategories]);
+    CATEGORIES.forEach((c) => set.add(c));
+    products.forEach((p) => {
+      if (p.category && p.category.trim()) set.add(p.category.trim());
+    });
+    return Array.from(set);
+  }, [savedCategories, products]);
+
   // Filtered product items for display
   const filteredProducts = useMemo(() => {
     return products.filter((p) => {
@@ -730,7 +806,7 @@ export const MerchantPos: React.FC<MerchantPosProps> = ({
               {/* Category Pills & Quick Custom Item Button */}
               <div className="flex items-center justify-between gap-2 overflow-x-auto pb-1 pt-1 scrollbar-none">
                 <div className="flex items-center gap-1.5 shrink-0">
-                  {CATEGORIES.map((cat) => (
+                  {availableCategories.map((cat) => (
                     <button
                       key={cat}
                       onClick={() => setSelectedCategory(cat)}
@@ -743,6 +819,17 @@ export const MerchantPos: React.FC<MerchantPosProps> = ({
                       {cat}
                     </button>
                   ))}
+
+                  {/* Add New Category Pill Button */}
+                  <button
+                    type="button"
+                    onClick={() => setIsPosCatModalOpen(true)}
+                    className="px-2.5 py-1.5 rounded-xl text-xs font-bold text-amber-800 bg-amber-100/70 hover:bg-amber-200/80 border border-amber-300 transition-all whitespace-nowrap cursor-pointer flex items-center gap-1"
+                    title="إضافة تصنيف جديد وحفظه دائماً"
+                  >
+                    <Plus className="w-3 h-3 stroke-[2.5]" />
+                    <span>تصنيف</span>
+                  </button>
                 </div>
 
                 {/* Quick Custom Item Button */}
@@ -756,6 +843,41 @@ export const MerchantPos: React.FC<MerchantPosProps> = ({
                   <span>صنف يدوي سريع</span>
                 </button>
               </div>
+
+              {/* Add New Category Inline Drawer in POS */}
+              {isPosCatModalOpen && (
+                <div className="bg-amber-50 border border-amber-300 rounded-xl p-3 flex items-center gap-2 animate-in fade-in">
+                  <span className="text-xs font-bold text-amber-950 whitespace-nowrap">اسم التصنيف الجديد:</span>
+                  <input
+                    type="text"
+                    placeholder="مثال: أطقم سهرة، عبايات كويتية..."
+                    value={posNewCatInput}
+                    onChange={(e) => setPosNewCatInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleSavePosCategory(posNewCatInput);
+                      }
+                    }}
+                    className="flex-1 px-3 py-1.5 bg-white border border-amber-300 rounded-lg text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                    autoFocus
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleSavePosCategory(posNewCatInput)}
+                    className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold rounded-lg cursor-pointer transition-colors shadow-2xs whitespace-nowrap"
+                  >
+                    حفظ التصنيف
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsPosCatModalOpen(false)}
+                    className="px-2 py-1.5 text-slate-500 hover:text-slate-700 text-xs cursor-pointer"
+                  >
+                    إلغاء
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Custom Manual Item Inline Modal */}
@@ -1529,14 +1651,23 @@ export const MerchantPos: React.FC<MerchantPosProps> = ({
                   <label className="block text-[11px] font-bold text-slate-700 mb-1">القسم / التصنيف</label>
                   <select
                     value={newProductForm.category}
-                    onChange={(e) => setNewProductForm({ ...newProductForm, category: e.target.value })}
-                    className="w-full bg-white border border-slate-300 rounded-lg p-2 text-slate-900"
+                    onChange={(e) => {
+                      if (e.target.value === '__NEW__') {
+                        setIsPosCatModalOpen(true);
+                      } else {
+                        setNewProductForm({ ...newProductForm, category: e.target.value });
+                      }
+                    }}
+                    className="w-full bg-white border border-slate-300 rounded-lg p-2 text-slate-900 font-bold"
                   >
-                    {CATEGORIES.filter((c) => c !== 'الكل').map((c) => (
+                    {savedCategories.filter((c) => c !== 'الكل').map((c) => (
                       <option key={c} value={c}>
                         {c}
                       </option>
                     ))}
+                    <option value="__NEW__" className="text-amber-600 font-bold">
+                      + إضافة تصنيف جديد...
+                    </option>
                   </select>
                 </div>
 
