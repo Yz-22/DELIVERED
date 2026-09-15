@@ -2,25 +2,16 @@ import React, { useState } from 'react';
 import {
   ShieldAlert,
   ShieldCheck,
-  Lock,
   Mail,
   Eye,
   EyeOff,
-  LogIn,
   AlertCircle,
   CheckCircle2,
   Globe,
-  UserPlus,
   ArrowRight,
-  Phone,
-  User,
-  Key,
-  Layers,
-  Sparkles,
   Server,
 } from 'lucide-react';
 import { User as UserType } from '../types/logistics';
-import { supabase, isSupabaseConfigured } from '../lib/supabase';
 
 interface OpsSuperAdminLoginProps {
   onLoginSuccess: (user: UserType, token: string) => void;
@@ -31,20 +22,10 @@ export const OpsSuperAdminLogin: React.FC<OpsSuperAdminLoginProps> = ({
   onLoginSuccess,
   onSwitchToStandardLogin,
 }) => {
-  const [activeTab, setActiveTab] = useState<'LOGIN' | 'REGISTER'>('LOGIN');
-
   // Login form state
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [showLoginPassword, setShowLoginPassword] = useState(false);
-
-  // Register form state
-  const [regName, setRegName] = useState('');
-  const [regEmail, setRegEmail] = useState('');
-  const [regPhone, setRegPhone] = useState('');
-  const [regPassword, setRegPassword] = useState('');
-  const [regConfirmPassword, setRegConfirmPassword] = useState('');
-  const [showRegPassword, setShowRegPassword] = useState(false);
 
   // General state
   const [isLoading, setIsLoading] = useState(false);
@@ -175,192 +156,6 @@ export const OpsSuperAdminLogin: React.FC<OpsSuperAdminLoginProps> = ({
     }
   };
 
-  // Handle Register Super Admin
-  const handleRegister = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMessage(null);
-    setSuccessMessage(null);
-
-    const cleanName = regName.trim();
-    const cleanPhone = regPhone.trim();
-    const cleanPass = regPassword.trim();
-    const cleanEmail = regEmail.trim()
-      ? regEmail.trim().toLowerCase()
-      : `${cleanPhone.replace(/\D/g, '')}@dargo-ops.io`;
-
-    if (!cleanName) {
-      setErrorMessage('يرجى إدخال اسم السوبر أدمن بالكامل.');
-      return;
-    }
-    if (!cleanPhone) {
-      setErrorMessage('يرجى إدخال رقم هاتف معتمد.');
-      return;
-    }
-    if (!cleanPass || cleanPass.length < 6) {
-      setErrorMessage('كلمة المرور يجب أن تكون 6 خانات على الأقل.');
-      return;
-    }
-    if (cleanPass !== regConfirmPassword.trim()) {
-      setErrorMessage('كلمتا المرور غير متطابقتين.');
-      return;
-    }
-
-    setIsLoading(true);
-
-    const defaultPerms = [
-      'manage_system_settings',
-      'manage_operations_admins',
-      'view_financial_audit_logs',
-      'export_database_backup',
-      'users.manage_operations',
-      'users.manage_staff',
-    ];
-
-    try {
-      // 1. Try registering via backend API
-      const res = await fetch('/api/auth/register-ops', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: cleanName,
-          email: cleanEmail,
-          phone: cleanPhone,
-          password: cleanPass,
-        }),
-      });
-
-      let data: any = null;
-      try {
-        const text = await res.text();
-        data = JSON.parse(text);
-      } catch {
-        // non-JSON response
-      }
-
-      if (res.ok && data?.user) {
-        setSuccessMessage('تم تسجيل الحساب بنجاح في قاعدة البيانات! جاري نقلك إلى لوحة التحكم...');
-        const token = data.token || `dargo_jwt_${data.user.id}_${Date.now()}`;
-        localStorage.setItem(
-          'dargo_user_session',
-          JSON.stringify({
-            user: data.user,
-            token,
-            savedAt: new Date().toISOString(),
-          })
-        );
-        localStorage.setItem('dargo_tms_session', JSON.stringify({ user: data.user, token }));
-        setTimeout(() => {
-          onLoginSuccess(data.user, token);
-        }, 800);
-        return;
-      }
-
-      // If backend explicitly rejected (e.g. user already exists)
-      if (data?.error) {
-        setErrorMessage(data.error);
-        setIsLoading(false);
-        return;
-      }
-
-      // 2. Fallback: If Supabase is configured directly on client
-      if (isSupabaseConfigured && supabase) {
-        try {
-          const { data: supaUser, error: supaErr } = await supabase
-            .from('users')
-            .insert({
-              name: cleanName,
-              email: cleanEmail,
-              phone: cleanPhone,
-              password: cleanPass,
-              role: 'SUPER_ADMIN',
-              role_name: 'المدير العام للنظام (Super Admin)',
-              portal_access: 'OPS',
-              is_active: true,
-              permissions: defaultPerms,
-              max_allowed_permissions: defaultPerms,
-            })
-            .select()
-            .single();
-
-          if (!supaErr && supaUser) {
-            const userObj: UserType = {
-              id: supaUser.id,
-              name: supaUser.name,
-              email: supaUser.email,
-              phone: supaUser.phone,
-              password: cleanPass,
-              role: 'SUPER_ADMIN',
-              roleName: 'المدير العام للنظام (Super Admin)',
-              branch: 'المقر الرئيسي للمملكة',
-              city: 'عمان',
-              isActive: true,
-              permissions: supaUser.permissions || defaultPerms,
-              maxAllowedPermissions: supaUser.max_allowed_permissions || defaultPerms,
-            };
-            setSuccessMessage('تم تسجيل الحساب بنجاح في قاعدة بيانات Supabase! جاري نقلك...');
-            const token = `dargo_jwt_${userObj.id}_${Date.now()}`;
-            localStorage.setItem('dargo_user_session', JSON.stringify({ user: userObj, token }));
-            localStorage.setItem('dargo_tms_session', JSON.stringify({ user: userObj, token }));
-            setTimeout(() => onLoginSuccess(userObj, token), 800);
-            return;
-          }
-        } catch (supaEx: any) {
-          console.warn('Supabase direct insert notice:', supaEx?.message);
-        }
-      }
-
-      // 3. Fallback: Local Super Admin creation so user is never blocked
-      const localSuperAdmin: UserType = {
-        id: `u-super-${Date.now()}`,
-        name: cleanName,
-        email: cleanEmail,
-        phone: cleanPhone,
-        password: cleanPass,
-        role: 'SUPER_ADMIN',
-        roleName: 'المدير العام للنظام (Super Admin)',
-        branch: 'المقر الرئيسي للمملكة',
-        city: 'عمان',
-        isActive: true,
-        permissions: defaultPerms,
-        maxAllowedPermissions: defaultPerms,
-      };
-
-      setSuccessMessage('تم إنشاء حساب السوبر أدمن بنجاح! جاري تحويلك للمنظومة...');
-      const token = `dargo_jwt_${localSuperAdmin.id}_${Date.now()}`;
-      localStorage.setItem('dargo_user_session', JSON.stringify({ user: localSuperAdmin, token }));
-      localStorage.setItem('dargo_tms_session', JSON.stringify({ user: localSuperAdmin, token }));
-      setTimeout(() => {
-        onLoginSuccess(localSuperAdmin, token);
-      }, 800);
-    } catch (err: any) {
-      console.error('Registration error:', err);
-      // Even on unexpected error, create super admin locally to protect user access
-      const localSuperAdmin: UserType = {
-        id: `u-super-${Date.now()}`,
-        name: cleanName,
-        email: cleanEmail,
-        phone: cleanPhone,
-        password: cleanPass,
-        role: 'SUPER_ADMIN',
-        roleName: 'المدير العام للنظام (Super Admin)',
-        branch: 'المقر الرئيسي للمملكة',
-        city: 'عمان',
-        isActive: true,
-        permissions: defaultPerms,
-        maxAllowedPermissions: defaultPerms,
-      };
-      setSuccessMessage('تم اعتماد حساب السوبر أدمن محلياً! جاري تحويلك للمنظومة...');
-      const token = `dargo_jwt_${localSuperAdmin.id}_${Date.now()}`;
-      localStorage.setItem('dargo_user_session', JSON.stringify({ user: localSuperAdmin, token }));
-      localStorage.setItem('dargo_tms_session', JSON.stringify({ user: localSuperAdmin, token }));
-      setTimeout(() => {
-        onLoginSuccess(localSuperAdmin, token);
-      }, 800);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-4 sm:p-6" dir="rtl">
       {/* Background Decorative Grid */}
@@ -395,40 +190,14 @@ export const OpsSuperAdminLogin: React.FC<OpsSuperAdminLoginProps> = ({
 
         {/* Main Card */}
         <div className="bg-slate-900/95 backdrop-blur-xl rounded-2xl border border-slate-800 shadow-2xl p-6 sm:p-7 space-y-5">
-          {/* Tab Switcher: Login vs Register */}
-          <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-950/80 rounded-xl border border-slate-800">
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab('LOGIN');
-                setErrorMessage(null);
-                setSuccessMessage(null);
-              }}
-              className={`py-2 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
-                activeTab === 'LOGIN'
-                  ? 'bg-amber-500 text-slate-950 shadow-md font-black'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <LogIn className="w-3.5 h-3.5" />
-              <span>تسجيل دخول السوبر أدمن</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab('REGISTER');
-                setErrorMessage(null);
-                setSuccessMessage(null);
-              }}
-              className={`py-2 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
-                activeTab === 'REGISTER'
-                  ? 'bg-amber-500 text-slate-950 shadow-md font-black'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <UserPlus className="w-3.5 h-3.5" />
-              <span>تسجيل حساب سوبر أدمن</span>
-            </button>
+          <div className="border-b border-slate-800 pb-3">
+            <h2 className="text-sm font-bold text-white flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-amber-400" />
+              <span>تسجيل دخول السوبر أدمن الموحد</span>
+            </h2>
+            <p className="text-xs text-slate-400 mt-1">
+              ادخل بالاعتمادات المخصصة لحساب المدير العام للنظام. لا يوجد تسجيل عام في هذه البوابة.
+            </p>
           </div>
 
           {/* Messages */}
@@ -446,180 +215,66 @@ export const OpsSuperAdminLogin: React.FC<OpsSuperAdminLoginProps> = ({
             </div>
           )}
 
-          {/* TAB 1: LOGIN FORM */}
-          {activeTab === 'LOGIN' && (
-            <form onSubmit={handleLogin} className="space-y-4">
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-slate-300 block">
-                  البريد الإلكتروني أو هاتف السوبر أدمن:
-                </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    required
-                    value={loginEmail}
-                    onChange={(e) => setLoginEmail(e.target.value)}
-                    placeholder="admin@dargo-tms.io أو 0790000001"
-                    className="w-full bg-slate-950/90 border border-slate-700 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 text-white placeholder-slate-500 rounded-xl px-3.5 py-2.5 pl-10 text-xs font-mono font-medium transition-all outline-none text-left dir-ltr"
-                  />
-                  <Mail className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                </div>
+          {/* LOGIN FORM */}
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-300 block">
+                البريد الإلكتروني أو هاتف السوبر أدمن:
+              </label>
+              <div className="relative">
+                <input
+                  type="text"
+                  required
+                  value={loginEmail}
+                  onChange={(e) => setLoginEmail(e.target.value)}
+                  placeholder="admin@dargo-tms.io أو 0790000001"
+                  className="w-full bg-slate-950/90 border border-slate-700 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 text-white placeholder-slate-500 rounded-xl px-3.5 py-2.5 pl-10 text-xs font-mono font-medium transition-all outline-none text-left dir-ltr"
+                />
+                <Mail className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
               </div>
+            </div>
 
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-slate-300 block">
-                  كلمة المرور:
-                </label>
-                <div className="relative">
-                  <input
-                    type={showLoginPassword ? 'text' : 'password'}
-                    required
-                    value={loginPassword}
-                    onChange={(e) => setLoginPassword(e.target.value)}
-                    placeholder="••••••••"
-                    className="w-full bg-slate-950/90 border border-slate-700 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 text-white placeholder-slate-500 rounded-xl px-3.5 py-2.5 pl-10 text-xs font-mono font-medium transition-all outline-none text-left dir-ltr"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowLoginPassword(!showLoginPassword)}
-                    className="p-1 text-slate-500 hover:text-slate-300 absolute left-2.5 top-1/2 -translate-y-1/2 transition-colors cursor-pointer"
-                  >
-                    {showLoginPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-300 block">
+                كلمة المرور:
+              </label>
+              <div className="relative">
+                <input
+                  type={showLoginPassword ? 'text' : 'password'}
+                  required
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full bg-slate-950/90 border border-slate-700 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 text-white placeholder-slate-500 rounded-xl px-3.5 py-2.5 pl-10 text-xs font-mono font-medium transition-all outline-none text-left dir-ltr"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowLoginPassword(!showLoginPassword)}
+                  className="p-1 text-slate-500 hover:text-slate-300 absolute left-2.5 top-1/2 -translate-y-1/2 transition-colors cursor-pointer"
+                >
+                  {showLoginPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
               </div>
+            </div>
 
-              <button
-                type="submit"
-                disabled={isLoading}
-                className="w-full bg-amber-500 hover:bg-amber-400 active:scale-[0.99] disabled:opacity-50 text-slate-950 font-black text-xs sm:text-sm py-3 rounded-xl shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2 transition-all cursor-pointer"
-              >
-                {isLoading ? (
-                  <>
-                    <div className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
-                    <span>جاري التحقق من هوية السوبر أدمن...</span>
-                  </>
-                ) : (
-                  <>
-                    <ShieldCheck className="w-4 h-4" />
-                    <span>دخول مركز تحكم السوبر أدمن</span>
-                  </>
-                )}
-              </button>
-            </form>
-          )}
-
-          {/* TAB 2: REGISTER SUPER ADMIN FORM */}
-          {activeTab === 'REGISTER' && (
-            <form onSubmit={handleRegister} className="space-y-3.5">
-              <div className="space-y-1">
-                <label className="text-xs font-bold text-slate-300 block">
-                  الاسم الكامل:
-                </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    required
-                    value={regName}
-                    onChange={(e) => setRegName(e.target.value)}
-                    placeholder="مثال: يوسف الزهرة (المدير العام)"
-                    className="w-full bg-slate-950/90 border border-slate-700 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 text-white placeholder-slate-500 rounded-xl px-3.5 py-2.5 pl-10 text-xs font-medium transition-all outline-none"
-                  />
-                  <User className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs font-bold text-slate-300 block">
-                  رقم الهاتف المعتمد (إلزامي):
-                </label>
-                <div className="relative">
-                  <input
-                    type="tel"
-                    required
-                    value={regPhone}
-                    onChange={(e) => setRegPhone(e.target.value)}
-                    placeholder="0790000002"
-                    className="w-full bg-slate-950/90 border border-slate-700 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 text-white placeholder-slate-500 rounded-xl px-3.5 py-2.5 pl-10 text-xs font-mono font-medium transition-all outline-none text-left dir-ltr"
-                  />
-                  <Phone className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs font-bold text-slate-300 block">
-                  البريد الإلكتروني (اختياري / يولد آلياً):
-                </label>
-                <div className="relative">
-                  <input
-                    type="email"
-                    value={regEmail}
-                    onChange={(e) => setRegEmail(e.target.value)}
-                    placeholder="admin2@dargo-ops.io"
-                    className="w-full bg-slate-950/90 border border-slate-700 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 text-white placeholder-slate-500 rounded-xl px-3.5 py-2.5 pl-10 text-xs font-mono font-medium transition-all outline-none text-left dir-ltr"
-                  />
-                  <Mail className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-300 block">
-                    كلمة المرور:
-                  </label>
-                  <div className="relative">
-                    <input
-                      type={showRegPassword ? 'text' : 'password'}
-                      required
-                      value={regPassword}
-                      onChange={(e) => setRegPassword(e.target.value)}
-                      placeholder="••••••••"
-                      className="w-full bg-slate-950/90 border border-slate-700 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 text-white placeholder-slate-500 rounded-xl px-3 py-2 pl-8 text-xs font-mono font-medium outline-none text-left dir-ltr"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowRegPassword(!showRegPassword)}
-                      className="p-1 text-slate-500 hover:text-slate-300 absolute left-2 top-1/2 -translate-y-1/2 cursor-pointer"
-                    >
-                      {showRegPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-300 block">
-                    تأكيد كلمة المرور:
-                  </label>
-                  <input
-                    type={showRegPassword ? 'text' : 'password'}
-                    required
-                    value={regConfirmPassword}
-                    onChange={(e) => setRegConfirmPassword(e.target.value)}
-                    placeholder="••••••••"
-                    className="w-full bg-slate-950/90 border border-slate-700 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 text-white placeholder-slate-500 rounded-xl px-3 py-2 text-xs font-mono font-medium outline-none text-left dir-ltr"
-                  />
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                disabled={isLoading}
-                className="w-full bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 font-black text-xs sm:text-sm py-3 rounded-xl shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2 transition-all cursor-pointer mt-2"
-              >
-                {isLoading ? (
-                  <>
-                    <div className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
-                    <span>جاري حفظ الحساب في قاعدة البيانات...</span>
-                  </>
-                ) : (
-                  <>
-                    <UserPlus className="w-4 h-4" />
-                    <span>تأكيد تسجيل السوبر أدمن في قاعدة البيانات</span>
-                  </>
-                )}
-              </button>
-            </form>
-          )}
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full bg-amber-500 hover:bg-amber-400 active:scale-[0.99] disabled:opacity-50 text-slate-950 font-black text-xs sm:text-sm py-3 rounded-xl shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2 transition-all cursor-pointer"
+            >
+              {isLoading ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+                  <span>جاري التحقق من هوية السوبر أدمن...</span>
+                </>
+              ) : (
+                <>
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>دخول مركز تحكم السوبر أدمن</span>
+                </>
+              )}
+            </button>
+          </form>
 
           {/* Switch to Standard Portal */}
           <div className="pt-2 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">

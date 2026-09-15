@@ -3922,12 +3922,49 @@ app.post('/api/users', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'الاسم ورقم الهاتف مطلوبان لإنشاء الحساب' });
     }
 
-    // RBAC Security: Non-SuperAdmin cannot create SUPER_ADMIN accounts
-    if (role === 'SUPER_ADMIN' && !ctx.isSuperAdmin) {
-      return res.status(403).json({
-        error: 'ممنوع: لا يمكن إنشاء حساب مدير عام (Super Admin) إلا من خلال السوبر أدمن.',
-        code: 'FORBIDDEN_ROLE',
-      });
+    // Role Hierarchy & Downward-Only Validation Matrix
+    const getUserRoleRank = (r: string): number => {
+      switch (r) {
+        case 'SUPER_ADMIN': return 100;
+        case 'ADMIN': return 80;
+        case 'ACCOUNTANT': return 50;
+        case 'MERCHANT': return 40;
+        case 'OPERATOR': return 30;
+        case 'STAFF': return 30;
+        case 'DRIVER': return 20;
+        case 'CASHIER': return 10;
+        default: return 0;
+      }
+    };
+
+    const reqRank = getUserRoleRank(ctx.userRole);
+    const targetRoleRank = getUserRoleRank(role);
+
+    if (ctx.userRole === 'SUPER_ADMIN') {
+      if (role === 'SUPER_ADMIN' && req.body.id !== ctx.userId) {
+        // Only allow if creating initial root or explicit superadmin setup
+      }
+    } else if (ctx.userRole === 'ADMIN') {
+      if (targetRoleRank >= 80) {
+        return res.status(403).json({
+          error: 'مدير العمليات يستطيع فقط إنشاء حسابات تجار وسائقين وموظفين ضمن نطاقه',
+          code: 'FORBIDDEN_ROLE',
+        });
+      }
+    } else if (ctx.userRole === 'MERCHANT') {
+      if (targetRoleRank >= 40) {
+        return res.status(403).json({
+          error: 'حساب التاجر يستطيع فقط إنشاء حسابات كاشير وموظفين تابعين له',
+          code: 'FORBIDDEN_ROLE',
+        });
+      }
+    } else {
+      if (targetRoleRank >= reqRank) {
+        return res.status(403).json({
+          error: 'غير مصرح بإنشاء حساب في نفس مستواك الوظيفي أو أعلى منه',
+          code: 'FORBIDDEN_ROLE',
+        });
+      }
     }
 
     // RBAC Security: Admin creating sub-accounts must not exceed their permission ceiling
@@ -4276,10 +4313,16 @@ app.post('/api/invitations', requireAuth, async (req, res) => {
   try {
     const ctx = getRequesterContext(req);
 
-    // Only SUPER_ADMIN and ADMIN can issue invitations
-    if (ctx.userRole !== 'SUPER_ADMIN' && ctx.userRole !== 'ADMIN') {
+    // Authorization Check: Allow SUPER_ADMIN, ADMIN, MERCHANT, or users with explicit invitations.create permission
+    const isAllowedToInvite =
+      ctx.isSuperAdmin ||
+      ctx.userRole === 'ADMIN' ||
+      ctx.userRole === 'MERCHANT' ||
+      (Array.isArray(ctx.user?.permissions) && ctx.user.permissions.includes('invitations.create'));
+
+    if (!isAllowedToInvite) {
       return res.status(403).json({
-        error: 'غير مصرح لك بإنشاء دعوات للمستخدمين. هذه الصلاحية مقصورة على مدراء العمليات والمدير العام.',
+        error: 'غير مصرح لك بإنشاء دعوات للمستخدمين. هذه الصلاحية مقصورة على الجهات والمدراء المعتمدين.',
         code: 'FORBIDDEN',
       });
     }
@@ -4300,55 +4343,96 @@ app.post('/api/invitations', requireAuth, async (req, res) => {
       expiresInDays = 7,
     } = req.body;
 
-    if (!email || !String(email).trim()) {
-      return res.status(400).json({ error: 'البريد الإلكتروني للمدعو مطلوب', code: 'EMAIL_REQUIRED' });
-    }
-    const cleanEmail = String(email).trim().toLowerCase();
+    const cleanEmail = email && String(email).trim() ? String(email).trim().toLowerCase() : '';
 
     if (!role) {
       return res.status(400).json({ error: 'الدور الوظيفي المطلوب تحديده في الدعوة مطلوب', code: 'ROLE_REQUIRED' });
     }
 
-    // Role Escalation Prevention: Non-SuperAdmin cannot invite SUPER_ADMIN
-    if (role === 'SUPER_ADMIN' && !ctx.isSuperAdmin) {
-      return res.status(403).json({
-        error: 'لا يمكن لمدير العمليات إنشاء دعوة لحساب المدير العام للنظام (Super Admin)',
-        code: 'ROLE_ESCALATION_FORBIDDEN',
-      });
+    // Role Hierarchy & Downward-Only Validation Matrix
+    const getRoleRank = (r: string): number => {
+      switch (r) {
+        case 'SUPER_ADMIN': return 100;
+        case 'ADMIN': return 80;
+        case 'ACCOUNTANT': return 50;
+        case 'MERCHANT': return 40;
+        case 'OPERATOR': return 30;
+        case 'STAFF': return 30;
+        case 'DRIVER': return 20;
+        case 'CASHIER': return 10;
+        default: return 0;
+      }
+    };
+
+    const requesterRank = getRoleRank(ctx.userRole);
+    const targetRank = getRoleRank(role);
+
+    if (ctx.userRole === 'SUPER_ADMIN') {
+      if (role === 'SUPER_ADMIN') {
+        return res.status(403).json({
+          error: 'لا يمكن إنشاء دعوة لسوبر أدمن آخر عبر نظام الدعوات الفرعية',
+          code: 'ROLE_ESCALATION_FORBIDDEN',
+        });
+      }
+    } else if (ctx.userRole === 'ADMIN') {
+      if (targetRank >= 80) {
+        return res.status(403).json({
+          error: 'مدير العمليات يستطيع فقط دعوة التجار، السائقين، والموظفين الميدانيين ضمن حسابه',
+          code: 'ROLE_ESCALATION_FORBIDDEN',
+        });
+      }
+    } else if (ctx.userRole === 'MERCHANT') {
+      if (targetRank >= 40) {
+        return res.status(403).json({
+          error: 'حساب التاجر يستطيع فقط دعوة موظفيه التابعين له (كاشير، موظف مخزن، مبيعات)',
+          code: 'ROLE_ESCALATION_FORBIDDEN',
+        });
+      }
+    } else {
+      if (targetRank >= requesterRank) {
+        return res.status(403).json({
+          error: 'لا يمكنك دعوة مستخدم في نفس مستواك الوظيفي أو أعلى منه (Downward-Only Invitation)',
+          code: 'ROLE_ESCALATION_FORBIDDEN',
+        });
+      }
     }
 
-    // Tenant & Parent Scoping
+    // Server-Derived Tenant & Parent Scoping (Client Tampering Resilient)
     let assignedTenantId: string | null = null;
     let assignedParentUserId: string | null = null;
     let finalPermissions: string[] = Array.isArray(permissions) ? permissions : [];
     let finalMaxAllowed: string[] = Array.isArray(maxAllowedPermissions) ? maxAllowedPermissions : finalPermissions;
 
     if (ctx.isSuperAdmin) {
-      // Super Admin can define target tenant or leave as root
       assignedTenantId = req.body.tenantId || req.body.parentUserId || null;
       assignedParentUserId = req.body.parentUserId || (role === 'ADMIN' ? null : assignedTenantId);
-    } else {
-      // Operations Admin: strictly bound to own tenant scope (ctx.tenantId)
+    } else if (ctx.userRole === 'ADMIN') {
       assignedTenantId = ctx.tenantId;
       assignedParentUserId = ctx.tenantId;
-
-      // Permission Ceiling Check: verify against the admin's ceiling
-      const adminCeiling = ctx.user?.maxAllowedPermissions && ctx.user.maxAllowedPermissions.length > 0
-        ? ctx.user.maxAllowedPermissions
-        : (ctx.user?.permissions || []);
-
-      if (adminCeiling.length > 0 && !adminCeiling.includes('*')) {
-        const ceilingExceeded = finalPermissions.filter((p: string) => !adminCeiling.includes(p));
-        if (ceilingExceeded.length > 0) {
-          return res.status(403).json({
-            error: `لا يمكنك منح صلاحيات في الدعوة تتجاوز سقف صلاحياتك المعتمد: [${ceilingExceeded.join(', ')}]`,
-            code: 'CEILING_EXCEEDED',
-            violatingPermissions: ceilingExceeded,
-          });
-        }
-      }
-      finalMaxAllowed = finalPermissions;
+    } else if (ctx.userRole === 'MERCHANT') {
+      assignedTenantId = ctx.tenantId;
+      assignedParentUserId = ctx.userId;
+    } else {
+      assignedTenantId = ctx.tenantId;
+      assignedParentUserId = ctx.userId;
     }
+
+    // Permission Ceiling Check: Inviter cannot grant permissions beyond their own ceiling
+    const inviterCeiling = ctx.user?.maxAllowedPermissions && ctx.user.maxAllowedPermissions.length > 0
+      ? ctx.user.maxAllowedPermissions
+      : (ctx.user?.permissions || []);
+
+    if (!ctx.isSuperAdmin && inviterCeiling.length > 0 && !inviterCeiling.includes('*')) {
+      const ceilingExceeded = finalPermissions.filter((p: string) => !inviterCeiling.includes(p));
+      if (ceilingExceeded.length > 0) {
+        return res.status(403).json({
+          error: `لا يمكنك منح صلاحيات في الدعوة تتجاوز سقف صلاحياتك المعتمد: [${ceilingExceeded.join(', ')}]`,
+          code: 'CEILING_EXCEEDED',
+          violatingPermissions: ceilingExceeded,
+        });
+      }
+    }
+    finalMaxAllowed = finalPermissions;
 
     // Generate 256-bit cryptographically secure token and its SHA-256 hash
     const rawToken = crypto.randomBytes(32).toString('hex');
@@ -4438,24 +4522,40 @@ app.get('/api/invitations', requireAuth, async (req, res) => {
   try {
     const ctx = getRequesterContext(req);
 
-    if (ctx.userRole !== 'SUPER_ADMIN' && ctx.userRole !== 'ADMIN') {
+    const isAllowed =
+      ctx.isSuperAdmin ||
+      ctx.userRole === 'ADMIN' ||
+      ctx.userRole === 'MERCHANT' ||
+      (Array.isArray(ctx.user?.permissions) &&
+        (ctx.user.permissions.includes('invitations.view') || ctx.user.permissions.includes('invitations.create')));
+
+    if (!isAllowed) {
       return res.status(403).json({ error: 'غير مصرح بعرض قائمة الدعوات', code: 'FORBIDDEN' });
     }
 
     // Refresh from Supabase if possible
     await syncInvitationsFromSupabase().catch(() => {});
 
-    // Filter strictly by tenant boundary
+    // Filter strictly by tenant/parent boundary
     let filtered: UserInvitation[] = [];
     if (ctx.isSuperAdmin) {
       filtered = [...userInvitations];
-    } else {
+    } else if (ctx.userRole === 'ADMIN') {
       filtered = userInvitations.filter(
         (inv) =>
           inv.tenantId === ctx.tenantId ||
           inv.parentUserId === ctx.tenantId ||
           inv.invitedBy === ctx.userId
       );
+    } else if (ctx.userRole === 'MERCHANT') {
+      filtered = userInvitations.filter(
+        (inv) =>
+          inv.parentUserId === ctx.userId ||
+          inv.invitedBy === ctx.userId ||
+          inv.tenantId === ctx.tenantId
+      );
+    } else {
+      filtered = userInvitations.filter((inv) => inv.invitedBy === ctx.userId);
     }
 
     // Check and update expired status on-the-fly
@@ -4582,7 +4682,11 @@ app.post('/api/invitations/accept', async (req, res) => {
     const invitation = claim.invitation!;
 
     try {
-      const targetEmail = invitation.email.toLowerCase().trim();
+      const targetEmail = (googleEmail || req.body.email || invitation.email || '').toLowerCase().trim();
+      if (!targetEmail) {
+        await claim.release!();
+        return res.status(400).json({ error: 'البريد الإلكتروني للطرف القابل للدعوة مطلوب لتفعيل الحساب', code: 'EMAIL_REQUIRED' });
+      }
 
       // Check if user already exists with this email (Preserve existing users and link identities)
       let existingUser = users.find((u) => u.email?.toLowerCase().trim() === targetEmail);

@@ -85,7 +85,6 @@ export const InvitationsManager: React.FC<InvitationsManagerProps> = ({ currentU
 
   const handleCreateInvitation = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.email.trim()) return;
 
     setIsSubmitting(true);
     setErrorMessage(null);
@@ -271,7 +270,7 @@ export const InvitationsManager: React.FC<InvitationsManagerProps> = ({ currentU
                   return (
                     <tr key={inv.id} className="hover:bg-slate-50/80 transition-colors">
                       <td className="p-3 font-mono font-bold text-slate-900">
-                        {inv.email}
+                        {inv.email || <span className="text-indigo-600 font-sans font-semibold">دعوة عامة (استخدام مرة واحدة)</span>}
                         {inv.commercialName && (
                           <div className="text-[11px] font-sans font-normal text-slate-500">
                             {inv.commercialName}
@@ -440,16 +439,18 @@ export const InvitationsManager: React.FC<InvitationsManagerProps> = ({ currentU
               <form onSubmit={handleCreateInvitation} className="p-6 space-y-4 text-xs">
                 <div className="space-y-1">
                   <label className="font-bold text-slate-700 block">
-                    البريد الإلكتروني للمدعو: <span className="text-rose-500">*</span>
+                    البريد الإلكتروني للمدعو (اختياري):
                   </label>
                   <input
                     type="email"
-                    required
                     value={formData.email}
                     onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                    placeholder="user@example.com"
+                    placeholder="اتركه فارغاً لإنشاء رابط دعوة مخصص لأي حساب Google"
                     className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono focus:outline-hidden focus:ring-2 focus:ring-indigo-500 text-left dir-ltr"
                   />
+                  <p className="text-[11px] text-slate-500 leading-relaxed pt-0.5">
+                    ✨ **يمكنك إبقاء هذا الحقل فارغاً!** سيولد النظام رابط دعوة آمن مخصص **للاستخدام مرة واحدة فقط**. عند فتح الرابط، يقوم المدعو بالتسجيل عبر حسابه في Google ليتم منحه الدور والصلاحيات المحددة فوراً.
+                  </p>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
@@ -469,17 +470,25 @@ export const InvitationsManager: React.FC<InvitationsManagerProps> = ({ currentU
                               ? 'صلاحية التاجر والمبيعات'
                               : newRole === 'DRIVER'
                               ? 'كابتن التوصيل'
+                              : newRole === 'CASHIER'
+                              ? 'موظف الكاشير'
+                              : newRole === 'ACCOUNTANT'
+                              ? 'محاسب مالي'
                               : 'موظف تشغيل',
                         });
                       }}
                       className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold focus:outline-hidden focus:ring-2 focus:ring-indigo-500"
                     >
                       {isSuperAdmin && <option value="ADMIN">مدير عمليات (Admin / Tenant)</option>}
-                      <option value="MERCHANT">حساب تاجر ومبيعات (Merchant)</option>
-                      <option value="DRIVER">كابتن توصيل (Driver)</option>
+                      {(isSuperAdmin || currentUser?.role === 'ADMIN') && (
+                        <>
+                          <option value="MERCHANT">حساب تاجر ومبيعات (Merchant)</option>
+                          <option value="DRIVER">كابتن توصيل (Driver)</option>
+                          <option value="ACCOUNTANT">محاسب مالي (Accountant)</option>
+                        </>
+                      )}
                       <option value="OPERATOR">موظف عمليات وتشغيل (Operator)</option>
                       <option value="CASHIER">كاشير ونقاط بيع (Cashier)</option>
-                      <option value="ACCOUNTANT">محاسب مالي (Accountant)</option>
                     </select>
                   </div>
 
