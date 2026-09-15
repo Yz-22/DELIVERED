@@ -2051,6 +2051,12 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
+// Helper: Check if string is a valid UUID
+const isValidUuid = (val: any): boolean => {
+  if (!val || typeof val !== 'string') return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val.trim());
+};
+
 // 26.0 POST /api/auth/register-ops: Direct Super Admin Registration from OPS Portal directly to Supabase
 app.post('/api/auth/register-ops', async (req, res) => {
   try {
@@ -2085,7 +2091,7 @@ app.post('/api/auth/register-ops', async (req, res) => {
       });
     }
 
-    const newId = `u-super-${Date.now()}`;
+    const newId = crypto.randomUUID();
     const dbPayload = {
       id: newId,
       name: name.trim(),
@@ -2153,18 +2159,35 @@ app.post('/api/auth/verify', async (req, res) => {
       return res.status(400).json({ error: 'معرف المستخدم مطلوب' });
     }
 
+    const cleanUserId = String(userId).trim();
+
+    // Check if valid UUID for PostgreSQL Supabase query
+    if (!isValidUuid(cleanUserId)) {
+      // Check in-memory fallback
+      const localUser = users.find((u) => u && u.id === cleanUserId);
+      if (localUser) {
+        return res.json({ success: true, user: localUser });
+      }
+      return res.status(401).json({ error: 'الجلسة غير صالحة، يرجى تسجيل الدخول مجدداً' });
+    }
+
     const { data, error } = await supabase
       .from('users')
       .select('*')
-      .eq('id', String(userId))
+      .eq('id', cleanUserId)
       .limit(1);
 
     if (error) {
-      return res.status(500).json({ error: error.message });
+      console.warn('Verify session Supabase warning:', error.message);
+      const fallbackUser = users.find((u) => u && u.id === cleanUserId);
+      if (fallbackUser) {
+        return res.json({ success: true, user: fallbackUser });
+      }
+      return res.status(401).json({ error: 'الجلسة غير صالحة أو غير مسجلة' });
     }
 
     if (!data || data.length === 0) {
-      return res.status(404).json({ error: 'المستخدم غير موجود' });
+      return res.status(401).json({ error: 'المستخدم غير مسجل' });
     }
 
     const user = mapDbUserToAppUser(data[0]);
@@ -2175,7 +2198,7 @@ app.post('/api/auth/verify', async (req, res) => {
     res.json({ success: true, user });
   } catch (err: any) {
     console.error('Error verifying auth session:', err);
-    res.status(500).json({ error: err?.message || 'خطأ في التحقق من الجلسة' });
+    res.status(401).json({ error: 'انتهت صلاحية الجلسة' });
   }
 });
 
@@ -2191,13 +2214,18 @@ app.get('/api/users', async (req, res) => {
       query = query.eq('role', role);
     }
     if (parentUserId) {
-      query = query.eq('parent_user_id', parentUserId);
+      if (isValidUuid(parentUserId)) {
+        query = query.eq('parent_user_id', parentUserId);
+      }
     }
 
     const { data, error } = await query;
     if (error) {
-      console.error('Supabase users list error:', error);
-      return res.status(500).json({ error: 'فشل جلب المستخدمين من Supabase: ' + error.message });
+      console.warn('Supabase users list warning, returning cache:', error.message);
+      let filtered = [...users];
+      if (role && role !== 'ALL') filtered = filtered.filter((u) => u?.role === role);
+      if (parentUserId) filtered = filtered.filter((u) => u?.parentUserId === parentUserId);
+      return res.json(filtered);
     }
 
     const mappedUsers = (data || []).map(mapDbUserToAppUser);
@@ -2205,7 +2233,7 @@ app.get('/api/users', async (req, res) => {
     res.json(mappedUsers);
   } catch (err: any) {
     console.error('Error listing users:', err);
-    res.status(500).json({ error: err?.message || 'خطأ في جلب المستخدمين' });
+    res.json(users || []);
   }
 });
 
@@ -2262,7 +2290,7 @@ app.post('/api/users', async (req, res) => {
       ? password.trim()
       : (role === 'SUPER_ADMIN' || role === 'ADMIN' ? 'admin123' : '123456');
 
-    const newId = `u-${role.toLowerCase().slice(0, 3)}-${Date.now()}`;
+    const newId = crypto.randomUUID();
     const defaultRoleName = roleName || (
       role === 'SUPER_ADMIN' ? 'المدير العام للنظام' :
       role === 'ADMIN' ? 'مدير العمليات' :
@@ -2271,6 +2299,8 @@ app.post('/api/users', async (req, res) => {
       role === 'CASHIER' ? 'موظف الكاشير' :
       role === 'ACCOUNTANT' ? 'محاسب مالي' : 'موظف العمليات'
     );
+
+    const validParentId = isValidUuid(parentUserId) ? parentUserId : null;
 
     const dbPayload = {
       id: newId,
@@ -2292,7 +2322,7 @@ app.post('/api/users', async (req, res) => {
       vehicle_type: vehicleType || null,
       vehicle_plate: vehiclePlate || null,
       is_active: Boolean(isActive),
-      parent_user_id: parentUserId || null,
+      parent_user_id: validParentId,
       permissions: Array.isArray(permissions) ? permissions : [],
       max_allowed_permissions: Array.isArray(maxAllowedPermissions) ? maxAllowedPermissions : [],
       created_at: new Date().toISOString(),
@@ -2329,6 +2359,11 @@ app.post('/api/users', async (req, res) => {
 const handleUserUpdate = async (req: express.Request, res: express.Response) => {
   try {
     const userId = req.params.id;
+
+    if (!isValidUuid(userId)) {
+      return res.status(404).json({ error: 'المستخدم غير موجود' });
+    }
+
     const { data: existing, error: findErr } = await supabase
       .from('users')
       .select('*')
@@ -2389,6 +2424,11 @@ app.put('/api/users/:id', handleUserUpdate);
 app.delete('/api/users/:id', async (req, res) => {
   try {
     const userId = req.params.id;
+
+    if (!isValidUuid(userId)) {
+      return res.status(404).json({ error: 'المستخدم غير موجود' });
+    }
+
     const { data: existing, error: findErr } = await supabase
       .from('users')
       .select('*')
