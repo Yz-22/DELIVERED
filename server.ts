@@ -16,12 +16,27 @@ import {
 const app = express();
 const PORT = 3000;
 
-// Safe body parser: if Vercel serverless environment already parsed the JSON body, do not re-read stream
+// Safe body parser: handles pre-parsed body, stringified JSON, and streamed requests
 app.use((req, res, next) => {
-  if (req.body && typeof req.body === 'object' && Object.keys(req.body).length > 0) {
-    return next();
+  if (req.body) {
+    if (typeof req.body === 'string') {
+      try {
+        req.body = JSON.parse(req.body);
+      } catch {
+        // keep as is
+      }
+    }
+    if (typeof req.body === 'object' && req.body !== null && Object.keys(req.body).length > 0) {
+      return next();
+    }
   }
-  express.json()(req, res, next);
+  express.json({ limit: '10mb' })(req, res, (err) => {
+    if (err) {
+      console.warn('express.json parser warning:', err.message);
+      return next();
+    }
+    next();
+  });
 });
 
 // CORS headers for all environments

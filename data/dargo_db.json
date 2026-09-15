@@ -1,6 +1,90 @@
 {
   "users": [
     {
+      "id": "u-super-1789485485208",
+      "name": "Yousef Admin Test",
+      "email": "yousef.test@dargo-ops.io",
+      "phone": "0791234567",
+      "password": "password123",
+      "role": "SUPER_ADMIN",
+      "roleName": "المدير العام للنظام (Super Admin)",
+      "branch": "المقر الرئيسي للمملكة",
+      "city": "عمان",
+      "isActive": true,
+      "permissions": [
+        "manage_system_settings",
+        "manage_operations_admins",
+        "view_financial_audit_logs",
+        "export_database_backup",
+        "users.manage_operations",
+        "users.manage_staff"
+      ],
+      "maxAllowedPermissions": [
+        "manage_system_settings",
+        "manage_operations_admins",
+        "view_financial_audit_logs",
+        "export_database_backup",
+        "users.manage_operations",
+        "users.manage_staff"
+      ]
+    },
+    {
+      "id": "u-super-1789485376481",
+      "name": "Test Super",
+      "email": "testsuper@dargo-ops.io",
+      "phone": "0799998888",
+      "password": "password123",
+      "role": "SUPER_ADMIN",
+      "roleName": "المدير العام للنظام (Super Admin)",
+      "branch": "المقر الرئيسي للمملكة",
+      "city": "عمان",
+      "isActive": true,
+      "permissions": [
+        "manage_system_settings",
+        "manage_operations_admins",
+        "view_financial_audit_logs",
+        "export_database_backup",
+        "users.manage_operations",
+        "users.manage_staff"
+      ],
+      "maxAllowedPermissions": [
+        "manage_system_settings",
+        "manage_operations_admins",
+        "view_financial_audit_logs",
+        "export_database_backup",
+        "users.manage_operations",
+        "users.manage_staff"
+      ]
+    },
+    {
+      "id": "u-super-1789482686921",
+      "name": "Yousef zahra",
+      "email": "0795582299@dargo-ops.io",
+      "phone": "0795582299",
+      "password": "Yzz22101991",
+      "role": "SUPER_ADMIN",
+      "roleName": "المدير العام للنظام (Super Admin)",
+      "branch": "المقر الرئيسي للمملكة",
+      "city": "عمان",
+      "isActive": true,
+      "permissions": [
+        "manage_system_settings",
+        "manage_operations_admins",
+        "view_financial_audit_logs",
+        "export_database_backup",
+        "users.manage_operations",
+        "users.manage_staff"
+      ],
+      "maxAllowedPermissions": [
+        "manage_system_settings",
+        "manage_operations_admins",
+        "view_financial_audit_logs",
+        "export_database_backup",
+        "users.manage_operations",
+        "users.manage_staff"
+      ]
+    },
+    {
       "id": "u-super-1",
       "name": "المدير العام للنظام (Super Admin)",
       "email": "admin@dargo-tms.io",
@@ -286,27 +370,216 @@
   "notificationLogs": [],
   "nextSequenceNumber": 1001,
   "accounts": [
-    { "id": "acc-1010", "code": "1010", "name": "الصندوق الرئيسي (الخزينة النقدية)", "type": "ASSET", "category": "الأصول المتداولة والنقدية", "balance": 0, "isDebitNormal": true, "description": "المبالغ النقدية المتوفرة في الخزينة المركزية" },
-    { "id": "acc-1020", "code": "1020", "name": "بنك الاتحاد - الحساب التشغيلي الرئيسي", "type": "ASSET", "category": "الأصول المتداولة والنقدية", "balance": 0, "isDebitNormal": true, "description": "حساب بنك الاتحاد للحوالات والعمليات" },
-    { "id": "acc-1030", "code": "1030", "name": "محفظة كليك الرقمية CliQ", "type": "ASSET", "category": "الأصول المتداولة والنقدية", "balance": 0, "isDebitNormal": true, "description": "مخصص التسويات الفورية للتجار والكباتن" },
-    { "id": "acc-1040", "code": "1040", "name": "عهد ومحافظ الكباتن النقدية (تحصيلات الميدان)", "type": "ASSET", "category": "الأصول المتداولة والنقدية", "balance": 0, "isDebitNormal": true, "description": "مبالغ COD النقدية بحوزة السائقين قبل توريدها" },
-    { "id": "acc-1050", "code": "1050", "name": "ذمم التجار المدينة (رسوم توصيل مستحقة)", "type": "ASSET", "category": "الذمم المدينة", "balance": 0, "isDebitNormal": true, "description": "رسوم توصيل آجلة تحت التحصيل" },
-    { "id": "acc-1060", "code": "1060", "name": "مخزون بضائع المتاجر بالمستودع (Inventory Asset)", "type": "ASSET", "category": "الأصول المتداولة والمخزون", "balance": 0, "isDebitNormal": true, "description": "إجمالي القيمة الدفترية للأصناف المتوفرة في المخازن" },
-    { "id": "acc-1070", "code": "1070", "name": "ذمم العملاء والزبائن التجارية (Accounts Receivable)", "type": "ASSET", "category": "الذمم المدينة", "balance": 0, "isDebitNormal": true, "description": "مبيعات وفواتير العملاء غير المسددة (البيع بالآجل)" },
-    { "id": "acc-2010", "code": "2010", "name": "أمانات تحصيل التجار الدائنة COD Payable", "type": "LIABILITY", "category": "الخصوم المتداولة", "balance": 0, "isDebitNormal": false, "description": "صافي أثمان البضائع المحصلة لصالح المتاجر بانتظار التحويل" },
-    { "id": "acc-2020", "code": "2020", "name": "مستحقات وعمولات الكباتن المعلقة", "type": "LIABILITY", "category": "الخصوم المتداولة", "balance": 0, "isDebitNormal": false, "description": "أجور التوصيل المستحقة للسائقين قبل الصرف" },
-    { "id": "acc-2030", "code": "2030", "name": "ذمم الموردين التجارية (Accounts Payable)", "type": "LIABILITY", "category": "الخصوم المتداولة", "balance": 0, "isDebitNormal": false, "description": "فواتير مشتريات البضاعة الآجلة المستحقة للموردين" },
-    { "id": "acc-3010", "code": "3010", "name": "رأس مال المنظومة التشغيلي", "type": "EQUITY", "category": "حقوق الملكية", "balance": 0, "isDebitNormal": false, "description": "رأس المال المخصص للعمليات" },
-    { "id": "acc-3020", "code": "3020", "name": "الأرباح المدورة والمحتجزة", "type": "EQUITY", "category": "حقوق الملكية", "balance": 0, "isDebitNormal": false, "description": "أرباح الدورات التشغيلية السابقة" },
-    { "id": "acc-4010", "code": "4010", "name": "إيرادات أجور التوصيل والشحن", "type": "REVENUE", "category": "الإيرادات التشغيلية", "balance": 0, "isDebitNormal": false, "description": "رسوم الشحن المحققة من الطرود المسلمة" },
-    { "id": "acc-4020", "code": "4020", "name": "رسوم خدمات التحصيل والدفع الإلكتروني", "type": "REVENUE", "category": "الإيرادات التشغيلية", "balance": 0, "isDebitNormal": false, "description": "عمولات خدمات الدفع السريع والتحصيل" },
-    { "id": "acc-4030", "code": "4030", "name": "إيرادات مبيعات بضائع المتاجر", "type": "REVENUE", "category": "الإيرادات التشغيلية", "balance": 0, "isDebitNormal": false, "description": "إجمالي المبيعات المحققة من فواتير الأصناف والمنتجات" },
-    { "id": "acc-5010", "code": "5010", "name": "تكاليف وعمولات كباتن التوصيل", "type": "EXPENSE", "category": "تكاليف التشغيل المباشرة", "balance": 0, "isDebitNormal": true, "description": "عمولات السائقين المعتمدة عن كل طرد" },
-    { "id": "acc-5020", "code": "5020", "name": "مصاريف المحروقات والوقود", "type": "EXPENSE", "category": "مصروفات تشغيلية", "balance": 0, "isDebitNormal": true, "description": "فواتير ديزل وبنزين مركبات الشحن" },
-    { "id": "acc-5030", "code": "5030", "name": "مصاريف صيانة وغيار زيت المركبات", "type": "EXPENSE", "category": "مصروفات تشغيلية", "balance": 0, "isDebitNormal": true, "description": "صيانة دورية للسيارات والدراجات" },
-    { "id": "acc-5040", "code": "5040", "name": "مصاريف الرسائل النصية وبوابات SMS", "type": "EXPENSE", "category": "مصروفات إدارية وتشغيلية", "balance": 0, "isDebitNormal": true, "description": "تكلفة إشعارات التتبع ورموز OTP" },
-    { "id": "acc-5050", "code": "5050", "name": "إيجار المستودعات والمكاتب المركزية", "type": "EXPENSE", "category": "مصروفات عمومية", "balance": 0, "isDebitNormal": true, "description": "إيجار مستودع الفرز الرئيسي" },
-    { "id": "acc-5060", "code": "5060", "name": "تكلفة البضاعة المباعة للمتاجر (COGS)", "type": "EXPENSE", "category": "تكاليف التشغيل والمخزون", "balance": 0, "isDebitNormal": true, "description": "التكلفة الدفترية للأصناف والبضائع التي تم بيعها وصرفها من المخزن" }
+    {
+      "id": "acc-1010",
+      "code": "1010",
+      "name": "الصندوق الرئيسي (الخزينة النقدية)",
+      "type": "ASSET",
+      "category": "الأصول المتداولة والنقدية",
+      "balance": 0,
+      "isDebitNormal": true,
+      "description": "المبالغ النقدية المتوفرة في الخزينة المركزية"
+    },
+    {
+      "id": "acc-1020",
+      "code": "1020",
+      "name": "بنك الاتحاد - الحساب التشغيلي الرئيسي",
+      "type": "ASSET",
+      "category": "الأصول المتداولة والنقدية",
+      "balance": 0,
+      "isDebitNormal": true,
+      "description": "حساب بنك الاتحاد للحوالات والعمليات"
+    },
+    {
+      "id": "acc-1030",
+      "code": "1030",
+      "name": "محفظة كليك الرقمية CliQ",
+      "type": "ASSET",
+      "category": "الأصول المتداولة والنقدية",
+      "balance": 0,
+      "isDebitNormal": true,
+      "description": "مخصص التسويات الفورية للتجار والكباتن"
+    },
+    {
+      "id": "acc-1040",
+      "code": "1040",
+      "name": "عهد ومحافظ الكباتن النقدية (تحصيلات الميدان)",
+      "type": "ASSET",
+      "category": "الأصول المتداولة والنقدية",
+      "balance": 0,
+      "isDebitNormal": true,
+      "description": "مبالغ COD النقدية بحوزة السائقين قبل توريدها"
+    },
+    {
+      "id": "acc-1050",
+      "code": "1050",
+      "name": "ذمم التجار المدينة (رسوم توصيل مستحقة)",
+      "type": "ASSET",
+      "category": "الذمم المدينة",
+      "balance": 0,
+      "isDebitNormal": true,
+      "description": "رسوم توصيل آجلة تحت التحصيل"
+    },
+    {
+      "id": "acc-1060",
+      "code": "1060",
+      "name": "مخزون بضائع المتاجر بالمستودع (Inventory Asset)",
+      "type": "ASSET",
+      "category": "الأصول المتداولة والمخزون",
+      "balance": 0,
+      "isDebitNormal": true,
+      "description": "إجمالي القيمة الدفترية للأصناف المتوفرة في المخازن"
+    },
+    {
+      "id": "acc-1070",
+      "code": "1070",
+      "name": "ذمم العملاء والزبائن التجارية (Accounts Receivable)",
+      "type": "ASSET",
+      "category": "الذمم المدينة",
+      "balance": 0,
+      "isDebitNormal": true,
+      "description": "مبيعات وفواتير العملاء غير المسددة (البيع بالآجل)"
+    },
+    {
+      "id": "acc-2010",
+      "code": "2010",
+      "name": "أمانات تحصيل التجار الدائنة COD Payable",
+      "type": "LIABILITY",
+      "category": "الخصوم المتداولة",
+      "balance": 0,
+      "isDebitNormal": false,
+      "description": "صافي أثمان البضائع المحصلة لصالح المتاجر بانتظار التحويل"
+    },
+    {
+      "id": "acc-2020",
+      "code": "2020",
+      "name": "مستحقات وعمولات الكباتن المعلقة",
+      "type": "LIABILITY",
+      "category": "الخصوم المتداولة",
+      "balance": 0,
+      "isDebitNormal": false,
+      "description": "أجور التوصيل المستحقة للسائقين قبل الصرف"
+    },
+    {
+      "id": "acc-2030",
+      "code": "2030",
+      "name": "ذمم الموردين التجارية (Accounts Payable)",
+      "type": "LIABILITY",
+      "category": "الخصوم المتداولة",
+      "balance": 0,
+      "isDebitNormal": false,
+      "description": "فواتير مشتريات البضاعة الآجلة المستحقة للموردين"
+    },
+    {
+      "id": "acc-3010",
+      "code": "3010",
+      "name": "رأس مال المنظومة التشغيلي",
+      "type": "EQUITY",
+      "category": "حقوق الملكية",
+      "balance": 0,
+      "isDebitNormal": false,
+      "description": "رأس المال المخصص للعمليات"
+    },
+    {
+      "id": "acc-3020",
+      "code": "3020",
+      "name": "الأرباح المدورة والمحتجزة",
+      "type": "EQUITY",
+      "category": "حقوق الملكية",
+      "balance": 0,
+      "isDebitNormal": false,
+      "description": "أرباح الدورات التشغيلية السابقة"
+    },
+    {
+      "id": "acc-4010",
+      "code": "4010",
+      "name": "إيرادات أجور التوصيل والشحن",
+      "type": "REVENUE",
+      "category": "الإيرادات التشغيلية",
+      "balance": 0,
+      "isDebitNormal": false,
+      "description": "رسوم الشحن المحققة من الطرود المسلمة"
+    },
+    {
+      "id": "acc-4020",
+      "code": "4020",
+      "name": "رسوم خدمات التحصيل والدفع الإلكتروني",
+      "type": "REVENUE",
+      "category": "الإيرادات التشغيلية",
+      "balance": 0,
+      "isDebitNormal": false,
+      "description": "عمولات خدمات الدفع السريع والتحصيل"
+    },
+    {
+      "id": "acc-4030",
+      "code": "4030",
+      "name": "إيرادات مبيعات بضائع المتاجر",
+      "type": "REVENUE",
+      "category": "الإيرادات التشغيلية",
+      "balance": 0,
+      "isDebitNormal": false,
+      "description": "إجمالي المبيعات المحققة من فواتير الأصناف والمنتجات"
+    },
+    {
+      "id": "acc-5010",
+      "code": "5010",
+      "name": "تكاليف وعمولات كباتن التوصيل",
+      "type": "EXPENSE",
+      "category": "تكاليف التشغيل المباشرة",
+      "balance": 0,
+      "isDebitNormal": true,
+      "description": "عمولات السائقين المعتمدة عن كل طرد"
+    },
+    {
+      "id": "acc-5020",
+      "code": "5020",
+      "name": "مصاريف المحروقات والوقود",
+      "type": "EXPENSE",
+      "category": "مصروفات تشغيلية",
+      "balance": 0,
+      "isDebitNormal": true,
+      "description": "فواتير ديزل وبنزين مركبات الشحن"
+    },
+    {
+      "id": "acc-5030",
+      "code": "5030",
+      "name": "مصاريف صيانة وغيار زيت المركبات",
+      "type": "EXPENSE",
+      "category": "مصروفات تشغيلية",
+      "balance": 0,
+      "isDebitNormal": true,
+      "description": "صيانة دورية للسيارات والدراجات"
+    },
+    {
+      "id": "acc-5040",
+      "code": "5040",
+      "name": "مصاريف الرسائل النصية وبوابات SMS",
+      "type": "EXPENSE",
+      "category": "مصروفات إدارية وتشغيلية",
+      "balance": 0,
+      "isDebitNormal": true,
+      "description": "تكلفة إشعارات التتبع ورموز OTP"
+    },
+    {
+      "id": "acc-5050",
+      "code": "5050",
+      "name": "إيجار المستودعات والمكاتب المركزية",
+      "type": "EXPENSE",
+      "category": "مصروفات عمومية",
+      "balance": 0,
+      "isDebitNormal": true,
+      "description": "إيجار مستودع الفرز الرئيسي"
+    },
+    {
+      "id": "acc-5060",
+      "code": "5060",
+      "name": "تكلفة البضاعة المباعة للمتاجر (COGS)",
+      "type": "EXPENSE",
+      "category": "تكاليف التشغيل والمخزون",
+      "balance": 0,
+      "isDebitNormal": true,
+      "description": "التكلفة الدفترية للأصناف والبضائع التي تم بيعها وصرفها من المخزن"
+    }
   ],
   "journalEntries": [],
   "vouchers": [],
@@ -315,5 +588,5 @@
   "merchantInvoices": [],
   "merchantExpenses": [],
   "merchantCategories": {},
-  "savedAt": "2026-09-14T10:00:00.000Z"
+  "savedAt": "2026-09-15T15:18:14.440Z"
 }
