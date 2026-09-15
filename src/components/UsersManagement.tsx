@@ -44,6 +44,11 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
 
+  const isSuperAdmin = currentUser?.role === 'SUPER_ADMIN';
+
+  // Defense-in-depth: Non-superadmin must never see SUPER_ADMIN users
+  const safeUsers = users.filter((u) => isSuperAdmin || u.role !== 'SUPER_ADMIN');
+
   // Form state matching screenshot 1 and 2
   const [formData, setFormData] = useState({
     name: '',
@@ -62,7 +67,7 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
     isActive: true,
   });
 
-  const filteredUsers = users.filter((u) => {
+  const filteredUsers = safeUsers.filter((u) => {
     if (activeTab === 'STAFF' && u.role !== 'ADMIN' && u.role !== 'OPERATOR') return false;
     if (activeTab === 'MERCHANT' && u.role !== 'MERCHANT') return false;
     if (activeTab === 'DRIVER' && u.role !== 'DRIVER') return false;
@@ -190,7 +195,7 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            جميع المستخدمين ({users.length})
+            جميع المستخدمين ({safeUsers.length})
           </button>
 
           <button
@@ -203,7 +208,7 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
             }`}
           >
             <Briefcase className="w-3.5 h-3.5" />
-            <span>الموظفون والعمليات ({users.filter((u) => u.role === 'ADMIN' || u.role === 'OPERATOR' || u.role === 'SUPER_ADMIN').length})</span>
+            <span>الموظفون والعمليات ({safeUsers.filter((u) => u.role === 'ADMIN' || u.role === 'OPERATOR').length})</span>
           </button>
 
           <button
@@ -216,7 +221,7 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
             }`}
           >
             <Building2 className="w-3.5 h-3.5" />
-            <span>التجار والمتاجر ({users.filter((u) => u.role === 'MERCHANT').length})</span>
+            <span>التجار والمتاجر ({safeUsers.filter((u) => u.role === 'MERCHANT').length})</span>
           </button>
 
           <button
@@ -229,7 +234,7 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
             }`}
           >
             <Car className="w-3.5 h-3.5" />
-            <span>كباتن التوصيل ({users.filter((u) => u.role === 'DRIVER').length})</span>
+            <span>كباتن التوصيل ({safeUsers.filter((u) => u.role === 'DRIVER').length})</span>
           </button>
 
           <button
@@ -266,7 +271,8 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
         <InvitationsManager currentUser={currentUser} />
       ) : activeTab === 'HIERARCHY_RBAC' ? (
         <PermissionsManager
-          users={users}
+          users={safeUsers}
+          currentUser={currentUser}
           onUpdateUserPermissions={(userId, permissions, maxAllowed) => {
             onUpdateUser(userId, { permissions, maxAllowedPermissions: maxAllowed });
           }}
@@ -499,7 +505,9 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
                     }}
                     className="w-full text-xs font-bold bg-slate-50 border border-slate-300 rounded-xl p-2.5 text-slate-900 focus:bg-white focus:ring-2 focus:ring-amber-500"
                   >
-                    <option value="SUPER_ADMIN">المدير العام للنظام (Super Admin)</option>
+                    {isSuperAdmin && (
+                      <option value="SUPER_ADMIN">المدير العام للنظام (Super Admin)</option>
+                    )}
                     <option value="ADMIN">مدير العمليات (Admin)</option>
                     <option value="OPERATOR">موظف العمليات والمستودع (Operator)</option>
                     <option value="MERCHANT">حساب التاجر (Merchant)</option>

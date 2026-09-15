@@ -3644,6 +3644,9 @@ app.get('/api/roles', requireAuth, async (req, res) => {
     if (!ctx.isSuperAdmin && ctx.tenantId) {
       roles = roles.filter((r) => r.isSystemRole || r.tenantId === ctx.tenantId);
     }
+    if (!ctx.isSuperAdmin) {
+      roles = roles.filter((r) => r.roleKey !== 'SUPER_ADMIN');
+    }
     res.json({ success: true, roles });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -3872,6 +3875,8 @@ app.get('/api/users', requireAuth, async (req, res) => {
     } else {
       const allowedIds = getHierarchicalSubtreeUserIds(ctx.user.id, allUserCandidates);
       scopedUsers = allUserCandidates.filter((u) => u && allowedIds.has(u.id));
+      // ABSOLUTE SECURITY RULE: Non-SuperAdmins must NEVER see SUPER_ADMIN users
+      scopedUsers = scopedUsers.filter((u) => u.role !== 'SUPER_ADMIN');
     }
 
     // Role filter
@@ -3923,6 +3928,9 @@ app.get('/api/users/:id', requireAuth, async (req, res) => {
 
     // Subtree Isolation Check:
     if (!ctx.isSuperAdmin) {
+      if (rawTarget.role === 'SUPER_ADMIN') {
+        return res.status(403).json({ error: 'غير مصرح بالوصول إلى بيانات هذا المستخدم', code: 'FORBIDDEN' });
+      }
       const allCandidates = [...users].filter(Boolean);
       if (!allCandidates.some((u) => u.id === rawTarget!.id)) {
         allCandidates.push(rawTarget);

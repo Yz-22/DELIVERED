@@ -32,6 +32,7 @@ import { getSupabaseConfig } from '../lib/supabase';
 
 interface PermissionsManagerProps {
   users: User[];
+  currentUser?: User | null;
   currentUserId?: string;
   onUpdateUserPermissions: (
     userId: string,
@@ -43,6 +44,7 @@ interface PermissionsManagerProps {
 
 export const PermissionsManager: React.FC<PermissionsManagerProps> = ({
   users,
+  currentUser,
   currentUserId,
   onUpdateUserPermissions,
   onAddSubUser,
@@ -68,10 +70,16 @@ export const PermissionsManager: React.FC<PermissionsManagerProps> = ({
 
   const supabaseConfig = getSupabaseConfig();
 
-  // Super Admins & Operations Admins
-  const superAdmins = users.filter((u) => u.role === 'SUPER_ADMIN' || u.role === 'ADMIN');
-  const operationsAdmins = users.filter((u) => u.role === 'OPERATOR');
-  const staffAndSubUsers = users.filter(
+  const isSuperAdmin = currentUser?.role === 'SUPER_ADMIN';
+
+  // Defense-in-depth: Non-superadmins must NEVER see SUPER_ADMIN users
+  const safeUsers = users.filter((u) => isSuperAdmin || u.role !== 'SUPER_ADMIN');
+
+  // Strictly separate Roles
+  const superAdmins = safeUsers.filter((u) => u.role === 'SUPER_ADMIN');
+  const orgAdmins = safeUsers.filter((u) => u.role === 'ADMIN');
+  const operationsAdmins = safeUsers.filter((u) => u.role === 'OPERATOR');
+  const staffAndSubUsers = safeUsers.filter(
     (u) => u.role !== 'SUPER_ADMIN' && u.role !== 'ADMIN' && u.role !== 'OPERATOR'
   );
 
@@ -219,17 +227,19 @@ CREATE INDEX IF NOT EXISTS idx_pos_sales_merchant_date ON public.pos_sales(merch
               <Sliders className="w-3.5 h-3.5" />
               <span>مصفوفة الصلاحيات الدقيقة</span>
             </button>
-            <button
-              onClick={() => setActiveTab('SUPABASE_SQL')}
-              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-                activeTab === 'SUPABASE_SQL'
-                  ? 'bg-emerald-600 text-white shadow-md'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <Database className="w-3.5 h-3.5" />
-              <span>قواعد Supabase & SQL</span>
-            </button>
+            {isSuperAdmin && (
+              <button
+                onClick={() => setActiveTab('SUPABASE_SQL')}
+                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                  activeTab === 'SUPABASE_SQL'
+                    ? 'bg-emerald-600 text-white shadow-md'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <Database className="w-3.5 h-3.5" />
+                <span>قواعد Supabase & SQL</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -276,52 +286,94 @@ CREATE INDEX IF NOT EXISTS idx_pos_sales_merchant_date ON public.pos_sales(merch
         </div>
       </div>
 
-      {/* VIEW 1: HIERARCHICAL TREE VIEW */}
+      {/* VIEW 1: HIERARCHY VIEW */}
       {activeTab === 'HIERARCHY' && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Column 1: Level 1 - Super Admins */}
-          <div className="bg-white rounded-3xl p-5 border border-slate-200 shadow-sm space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center font-bold text-sm">
-                  1
+          {isSuperAdmin ? (
+            /* Column 1: Platform Level - Super Admins */
+            <div className="bg-white rounded-3xl p-5 border border-slate-200 shadow-sm space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center font-bold text-sm">
+                    1
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black text-slate-900">سوبر أدمن المنصة (Super Admin)</h3>
+                    <p className="text-[11px] text-slate-500">يمتلك الصلاحيات المطلقة وسقف التحكم</p>
+                  </div>
                 </div>
-                <div>
-                  <h3 className="text-sm font-black text-slate-900">سوبر أدمن المنصة (Super Admin)</h3>
-                  <p className="text-[11px] text-slate-500">يمتلك الصلاحيات المطلقة وسقف التحكم</p>
-                </div>
+                <span className="text-xs bg-purple-50 text-purple-700 font-bold px-2 py-0.5 rounded-lg border border-purple-200">
+                  {superAdmins.length}
+                </span>
               </div>
-              <span className="text-xs bg-purple-50 text-purple-700 font-bold px-2 py-0.5 rounded-lg border border-purple-200">
-                {superAdmins.length}
-              </span>
-            </div>
 
-            <div className="space-y-2">
-              {superAdmins.map((u) => (
-                <div
-                  key={u.id}
-                  onClick={() => setSelectedUser(u)}
-                  className={`p-3.5 rounded-2xl border transition-all cursor-pointer ${
-                    selectedUser?.id === u.id
-                      ? 'bg-purple-50/80 border-purple-300 ring-2 ring-purple-400/20 shadow-xs'
-                      : 'bg-slate-50 border-slate-200 hover:bg-slate-100/80'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-black text-slate-900">{u.name}</span>
-                    <span className="text-[10px] bg-purple-600 text-white font-bold px-2 py-0.5 rounded-md">
-                      تحكم شامل
-                    </span>
+              <div className="space-y-2">
+                {superAdmins.map((u) => (
+                  <div
+                    key={u.id}
+                    onClick={() => setSelectedUser(u)}
+                    className={`p-3.5 rounded-2xl border transition-all cursor-pointer ${
+                      selectedUser?.id === u.id
+                        ? 'bg-purple-50/80 border-purple-300 ring-2 ring-purple-400/20 shadow-xs'
+                        : 'bg-slate-50 border-slate-200 hover:bg-slate-100/80'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-black text-slate-900">{u.name}</span>
+                      <span className="text-[10px] bg-purple-600 text-white font-bold px-2 py-0.5 rounded-md">
+                        تحكم شامل
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-slate-500 mt-1">{u.email} | {u.phone}</div>
                   </div>
-                  <div className="text-[11px] text-slate-500 mt-1">{u.email} | {u.phone}</div>
-                  <div className="text-[10px] text-purple-700 font-bold mt-2 flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3" />
-                    <span>يستطيع فتح/قفل صلاحيات مدراء العمليات</span>
+                ))}
+              </div>
+            </div>
+          ) : (
+            /* Column 1: Organization Level - Company Admins (For Non-SuperAdmins) */
+            <div className="bg-white rounded-3xl p-5 border border-slate-200 shadow-sm space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center font-bold text-sm">
+                    1
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black text-slate-900">إدارة المؤسسة والشركة</h3>
+                    <p className="text-[11px] text-slate-500">مدراء المؤسسة والفروع الرئيسية</p>
                   </div>
                 </div>
-              ))}
+                <span className="text-xs bg-amber-50 text-amber-800 font-bold px-2 py-0.5 rounded-lg border border-amber-200">
+                  {orgAdmins.length}
+                </span>
+              </div>
+
+              <div className="space-y-2">
+                {orgAdmins.length === 0 ? (
+                  <p className="text-xs text-slate-400 p-3">لا يوجد حسابات مدراء آخرين</p>
+                ) : (
+                  orgAdmins.map((u) => (
+                    <div
+                      key={u.id}
+                      onClick={() => setSelectedUser(u)}
+                      className={`p-3.5 rounded-2xl border transition-all cursor-pointer ${
+                        selectedUser?.id === u.id
+                          ? 'bg-amber-50/80 border-amber-300 ring-2 ring-amber-400/20 shadow-xs'
+                          : 'bg-slate-50 border-slate-200 hover:bg-slate-100/80'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-black text-slate-900">{u.name}</span>
+                        <span className="text-[10px] bg-amber-600 text-white font-bold px-2 py-0.5 rounded-md">
+                          إدارة المؤسسة
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-500 mt-1">{u.email} | {u.branch || 'المركز الرئيسي'}</div>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Column 2: Level 2 - Operations Admins */}
           <div className="bg-white rounded-3xl p-5 border border-slate-200 shadow-sm space-y-4">
