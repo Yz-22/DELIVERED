@@ -14,7 +14,24 @@ export type PermissionCategory =
   | 'INVOICES'
   | 'ACCOUNTING'
   | 'SHIPMENTS'
-  | 'USERS_PERMISSIONS';
+  | 'USERS_PERMISSIONS'
+  | 'SETTINGS';
+
+export interface TenantBranding {
+  id?: string;
+  tenantId: string;
+  companyName: string;
+  logoUrl: string;
+  primaryColor?: string;
+  secondaryColor?: string;
+  faviconUrl?: string;
+  phone?: string;
+  address?: string;
+  taxId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  updatedBy?: string;
+}
 
 export interface PermissionDefinition {
   key: string;
@@ -161,6 +178,15 @@ export const ALL_SYSTEM_PERMISSIONS: PermissionDefinition[] = [
     name: 'إدارة فريق العمل والمستخدمين التابعين',
     description: 'إنشاء حسابات الكاشير والمحاسبين ومنح الصلاحيات ضمن السقف المسموح',
     defaultForRoles: ['SUPER_ADMIN', 'ADMIN', 'OPERATOR'],
+  },
+
+  // Settings & Branding
+  {
+    key: 'company.branding.manage',
+    category: 'SETTINGS',
+    name: 'إدارة الهوية وشعار الشركة (White-Label Branding)',
+    description: 'رفع شعار الشركة وتغيير الاسم التجاري لتطبيقه تلقائياً على كل الحسابات التابعة',
+    defaultForRoles: ['SUPER_ADMIN', 'ADMIN'],
   },
 ];
 

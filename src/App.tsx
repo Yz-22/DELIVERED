@@ -30,6 +30,7 @@ import { LoginPage } from './components/LoginPage';
 import { InviteAcceptancePage } from './components/InviteAcceptancePage';
 import { OpsSuperAdminLogin } from './components/OpsSuperAdminLogin';
 import { SuperAdminMasterHub } from './components/SuperAdminMasterHub';
+import { TenantBrandingProvider } from './context/TenantBrandingContext';
 import { Order, OrderStatus, User, Role, OrdersQueryResponse } from './types/logistics';
 import { CheckCircle2, AlertCircle, X } from 'lucide-react';
 
@@ -467,24 +468,49 @@ export default function App() {
 
   const handleUpdateUser = async (id: string, updatedData: Partial<User>) => {
     try {
-      await fetch(`/api/users/${id}`, {
+      const token = localStorage.getItem('dargo_jwt_token') || currentUser?.id;
+      const url = updatedData.permissions && Object.keys(updatedData).length === 1
+        ? `/api/users/${id}/permissions`
+        : `/api/users/${id}`;
+
+      const res = await fetch(url, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify(updatedData),
       });
-    } catch (e) {
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || 'فشل حفظ تعديلات المستخدم والصلاحيات');
+      }
+
+      const resData = await res.json();
+      const updatedUser: User = resData.user || { ...allUsers.find((u) => u.id === id)!, ...updatedData };
+
+      setAllUsers((prev) =>
+        prev.map((u) => (u.id === id ? { ...u, ...updatedUser } : u))
+      );
+      setMerchants((prev) =>
+        prev.map((u) => (u.id === id ? { ...u, ...updatedUser } : u))
+      );
+      setDrivers((prev) =>
+        prev.map((u) => (u.id === id ? { ...u, ...updatedUser } : u))
+      );
+
+      // If updating the currently logged in user, refresh session
+      if (currentUser && currentUser.id === id) {
+        setCurrentUser(updatedUser);
+        localStorage.setItem('dargo_user_session', JSON.stringify(updatedUser));
+      }
+
+      showToast('تم حفظ وتحديث تعديلات المستخدم والصلاحيات في قاعدة البيانات بنجاح');
+    } catch (e: any) {
       console.error(e);
+      showToast(e.message || 'فشل حفظ الصلاحيات والتعديلات', 'error');
     }
-    setAllUsers((prev) =>
-      prev.map((u) => (u.id === id ? { ...u, ...updatedData } : u))
-    );
-    setMerchants((prev) =>
-      prev.map((u) => (u.id === id ? { ...u, ...updatedData } : u))
-    );
-    setDrivers((prev) =>
-      prev.map((u) => (u.id === id ? { ...u, ...updatedData } : u))
-    );
-    showToast('تم حفظ تعديلات المستخدم والصلاحيات');
   };
 
   const handleDownloadBackup = async () => {
@@ -892,7 +918,8 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-100/70 text-slate-900 flex flex-col font-sans">
+    <TenantBrandingProvider>
+      <div className="min-h-screen bg-slate-100/70 text-slate-900 flex flex-col font-sans">
       {/* 1. Global Navigation Bar */}
       <TopNavbar
         activeSection={activeSection}
@@ -1348,5 +1375,6 @@ export default function App() {
         }}
       />
     </div>
+  </TenantBrandingProvider>
   );
 }

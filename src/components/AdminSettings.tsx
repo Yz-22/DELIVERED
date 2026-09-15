@@ -28,10 +28,14 @@ import {
   Info,
   Users,
   Copy,
-  ExternalLink
+  ExternalLink,
+  Upload,
+  Image as ImageIcon,
+  Loader2,
 } from 'lucide-react';
 import { GOVERNORATES, STANDARD_DELIVERY_FEES } from '../utils/logisticsHelpers';
-import { User } from '../types/logistics';
+import { User, TenantBranding } from '../types/logistics';
+import { fetchCompanyBranding, updateCompanyBranding, uploadCompanyLogo } from '../lib/branding';
 
 export interface PriceListItem {
   id: string;
@@ -387,6 +391,88 @@ export const AdminSettings: React.FC<AdminSettingsProps> = ({
 }) => {
   // Sub-tabs exactly as in Screenshot 1
   const [activeSubTab, setActiveSubTab] = useState<string>(initialSubTab);
+
+  // Company White-Label Branding State
+  const [companyBranding, setCompanyBranding] = useState<TenantBranding>({
+    tenantId: '',
+    companyName: 'Delivere',
+    logoUrl: '',
+    phone: '0790000000',
+    address: 'عمان - مجمع الأعمال / طريق المطار',
+    taxId: '200192834',
+  });
+  const [isBrandingLoading, setIsBrandingLoading] = useState(false);
+  const [isBrandingSaving, setIsBrandingSaving] = useState(false);
+  const [isLogoUploading, setIsLogoUploading] = useState(false);
+
+  // Fetch company branding on load
+  React.useEffect(() => {
+    let isMounted = true;
+    const loadBranding = async () => {
+      try {
+        setIsBrandingLoading(true);
+        const data = await fetchCompanyBranding();
+        if (data && isMounted) {
+          setCompanyBranding((prev) => ({
+            ...prev,
+            ...data,
+            companyName: data.companyName || prev.companyName,
+            logoUrl: data.logoUrl || prev.logoUrl,
+            phone: data.phone || prev.phone,
+            address: data.address || prev.address,
+            taxId: data.taxId || prev.taxId,
+          }));
+        }
+      } catch (err) {
+        // Fallback to default
+      } finally {
+        if (isMounted) setIsBrandingLoading(false);
+      }
+    };
+    loadBranding();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const handleSaveCompanyBranding = async () => {
+    if (!companyBranding.companyName.trim()) {
+      showToast('خطأ: اسم الشركة مطلوب');
+      return;
+    }
+    try {
+      setIsBrandingSaving(true);
+      const updated = await updateCompanyBranding(companyBranding);
+      setCompanyBranding(updated);
+      showToast('تم حفظ وتطبيق الهوية التجارية للشركة بنجاح!');
+      window.dispatchEvent(new CustomEvent('company_branding_updated', { detail: updated }));
+    } catch (err: any) {
+      showToast(err.message || 'فشل حفظ إعدادات الشركة');
+    } finally {
+      setIsBrandingSaving(false);
+    }
+  };
+
+  const handleLogoFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 5 * 1024 * 1024) {
+      showToast('خطأ: حجم الصورة يجب ألا يتجاوز 5 ميجابايت');
+      return;
+    }
+
+    try {
+      setIsLogoUploading(true);
+      const uploadedUrl = await uploadCompanyLogo(file);
+      setCompanyBranding((prev) => ({ ...prev, logoUrl: uploadedUrl }));
+      showToast('تم رفع صورة الشعار بنجاح');
+    } catch (err: any) {
+      showToast(err.message || 'فشل رفع صورة الشعار');
+    } finally {
+      setIsLogoUploading(false);
+    }
+  };
 
   // Price Lists State
   const [priceLists, setPriceLists] = useState<PriceListRecord[]>(INITIAL_PRICE_LISTS);
@@ -1308,23 +1394,128 @@ export const AdminSettings: React.FC<AdminSettingsProps> = ({
           </div>
         )}
 
-        {/* TAB C: إعدادات الشركة */}
+        {/* TAB C: إعدادات وهوية الشركة White-Label Branding */}
         {activeSubTab === 'company' && (
           <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-xs space-y-6 max-w-3xl">
-            <div>
-              <h2 className="text-lg font-black text-slate-900">إعدادات وبيانات الشركة اللوجستية</h2>
-              <p className="text-xs text-slate-500">
-                تظهر هذه البيانات على بوالص الشحن الحرارية، الفواتير، والرسائل الصادرة للزبائن
-              </p>
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+              <div>
+                <h2 className="text-lg font-black text-slate-900 flex items-center gap-2">
+                  <Building2 className="w-5 h-5 text-amber-500" />
+                  <span>هوية الشركة والعلامة التجارية (Company White-Label Branding)</span>
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  تطبيق اسم الشعار واسم الشركة تلقائياً على جميع حسابات ولوحات التحكم التابعة لنفس الشركة/الـ Tenant
+                </p>
+              </div>
+              <span className="px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 text-[11px] font-bold border border-amber-200/60">
+                Tenant Isolation Active
+              </span>
             </div>
 
+            {/* Logo Section */}
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-4">
+              <label className="block text-xs font-bold text-slate-800">
+                شعار الشركة (Company Logo)
+              </label>
+              <p className="text-[11px] text-slate-500 -mt-2">
+                الصيغ المدعومة: PNG, JPG, WEBP, SVG (الحد الأقصى: 5 ميجابايت). سيظهر الشعار في الهيدر، القائمة الجانبية، وبوالص الشحن.
+              </p>
+
+              <div className="flex flex-col sm:flex-row items-center gap-4">
+                {/* Logo Preview Box */}
+                <div className="w-32 h-24 rounded-xl border-2 border-dashed border-slate-300 bg-white flex flex-col items-center justify-center p-2 relative shrink-0 shadow-inner group">
+                  {companyBranding.logoUrl ? (
+                    <div className="w-full h-full flex items-center justify-center relative">
+                      <img
+                        src={companyBranding.logoUrl}
+                        alt="Company Logo"
+                        className="max-h-full max-w-full object-contain"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setCompanyBranding((prev) => ({ ...prev, logoUrl: '' }))}
+                        className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-red-500 text-white flex items-center justify-center text-xs shadow-md hover:bg-red-600 transition-colors cursor-pointer"
+                        title="إزالة الشعار"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="text-center text-slate-400">
+                      <ImageIcon className="w-8 h-8 mx-auto mb-1 text-slate-300" />
+                      <span className="text-[10px] font-medium block">بلا شعار مخصص</span>
+                    </div>
+                  )}
+
+                  {isLogoUploading && (
+                    <div className="absolute inset-0 bg-white/90 backdrop-blur-xs rounded-xl flex items-center justify-center">
+                      <Loader2 className="w-6 h-6 text-amber-500 animate-spin" />
+                    </div>
+                  )}
+                </div>
+
+                {/* Upload & URL Controls */}
+                <div className="flex-1 space-y-3 w-full">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                      رفع ملف صورة الشعار
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <label className="flex-1 px-4 py-2 bg-white border border-slate-300 hover:border-amber-500 rounded-xl text-slate-700 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer shadow-xs transition-all hover:bg-amber-50/30">
+                        <Upload className="w-4 h-4 text-amber-500" />
+                        <span>{isLogoUploading ? 'جاري رفع الشعار...' : 'اختيار صورة من الجهاز'}</span>
+                        <input
+                          type="file"
+                          accept="image/png,image/jpeg,image/jpg,image/webp,image/svg+xml"
+                          onChange={handleLogoFileChange}
+                          disabled={isLogoUploading}
+                          className="hidden"
+                        />
+                      </label>
+                      {companyBranding.logoUrl && (
+                        <button
+                          type="button"
+                          onClick={() => setCompanyBranding((prev) => ({ ...prev, logoUrl: '' }))}
+                          className="px-3 py-2 border border-slate-200 text-slate-600 hover:text-red-600 hover:border-red-200 rounded-xl text-xs font-semibold cursor-pointer transition-colors"
+                        >
+                          إلغاء الشعار
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                      أو أدخل رابط الشعار المباشر (URL)
+                    </label>
+                    <input
+                      type="url"
+                      placeholder="https://example.com/logo.png"
+                      value={companyBranding.logoUrl}
+                      onChange={(e) =>
+                        setCompanyBranding((prev) => ({ ...prev, logoUrl: e.target.value }))
+                      }
+                      className="w-full bg-white border border-slate-300 rounded-xl p-2 text-xs text-slate-900 font-mono focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Company Info Fields */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-              <div>
-                <label className="block font-bold text-slate-700 mb-1">اسم الشركة التجاري</label>
+              <div className="sm:col-span-2">
+                <label className="block font-bold text-slate-800 mb-1">
+                  اسم الشركة التجاري <span className="text-red-500">*</span>
+                </label>
                 <input
                   type="text"
-                  defaultValue="شركة التوصيل والخدمات اللوجستية السريعة (TMS)"
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl p-2.5 text-slate-900 font-bold"
+                  value={companyBranding.companyName}
+                  onChange={(e) =>
+                    setCompanyBranding((prev) => ({ ...prev, companyName: e.target.value }))
+                  }
+                  placeholder="مثال: شركة دارجو اللوجستية"
+                  className="w-full bg-slate-50 border border-slate-300 focus:bg-white rounded-xl p-2.5 text-slate-900 font-extrabold focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 text-sm"
                 />
               </div>
 
@@ -1332,8 +1523,11 @@ export const AdminSettings: React.FC<AdminSettingsProps> = ({
                 <label className="block font-bold text-slate-700 mb-1">رقم الهاتف وخدمة العملاء</label>
                 <input
                   type="text"
-                  defaultValue="0790000000"
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl p-2.5 text-slate-900 font-mono"
+                  value={companyBranding.phone || ''}
+                  onChange={(e) =>
+                    setCompanyBranding((prev) => ({ ...prev, phone: e.target.value }))
+                  }
+                  className="w-full bg-slate-50 border border-slate-300 focus:bg-white rounded-xl p-2.5 text-slate-900 font-mono"
                 />
               </div>
 
@@ -1341,28 +1535,52 @@ export const AdminSettings: React.FC<AdminSettingsProps> = ({
                 <label className="block font-bold text-slate-700 mb-1">الرقم الضريبي والوطني للشركة</label>
                 <input
                   type="text"
-                  defaultValue="200192834"
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl p-2.5 text-slate-900 font-mono"
+                  value={companyBranding.taxId || ''}
+                  onChange={(e) =>
+                    setCompanyBranding((prev) => ({ ...prev, taxId: e.target.value }))
+                  }
+                  className="w-full bg-slate-50 border border-slate-300 focus:bg-white rounded-xl p-2.5 text-slate-900 font-mono"
                 />
               </div>
 
-              <div>
+              <div className="sm:col-span-2">
                 <label className="block font-bold text-slate-700 mb-1">عنوان المقر والمستودع الرئيسي</label>
                 <input
                   type="text"
-                  defaultValue="عمان - مجمع الأعمال / طريق المطار"
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl p-2.5 text-slate-900"
+                  value={companyBranding.address || ''}
+                  onChange={(e) =>
+                    setCompanyBranding((prev) => ({ ...prev, address: e.target.value }))
+                  }
+                  className="w-full bg-slate-50 border border-slate-300 focus:bg-white rounded-xl p-2.5 text-slate-900"
                 />
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => showToast('تم حفظ إعدادات الشركة بنجاح')}
-              className="px-5 py-2.5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs rounded-xl shadow-xs cursor-pointer"
-            >
-              حفظ التعديلات
-            </button>
+            {/* Submit Action */}
+            <div className="flex items-center justify-between border-t border-slate-100 pt-4">
+              <span className="text-[11px] text-slate-400">
+                سيتم تطبيق الشعار والاسم فوراً على لوحة التحكم وجميع مستخدمي الشركة التابعين.
+              </span>
+
+              <button
+                type="button"
+                onClick={handleSaveCompanyBranding}
+                disabled={isBrandingSaving || isLogoUploading}
+                className="px-6 py-2.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-slate-950 font-black text-xs rounded-xl shadow-md transition-all cursor-pointer flex items-center gap-2"
+              >
+                {isBrandingSaving ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>جاري حفظ الهوية...</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4 text-slate-950" />
+                    <span>حفظ وتطبيق الهوية الحالية</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         )}
 

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useTenantBranding } from '../context/TenantBrandingContext';
 import {
   Truck,
   Bell,
@@ -74,6 +75,8 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
   const [isUsersDropdownOpen, setIsUsersDropdownOpen] = useState(false);
   const [isAppLauncherOpen, setIsAppLauncherOpen] = useState(false);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
+
+  const { branding } = useTenantBranding();
 
   const role = currentUser?.role || 'ADMIN';
 
@@ -290,7 +293,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
               )}
             </div>
 
-            {/* Brand Logo */}
+            {/* Brand Logo & Company White-Label Branding */}
             <div
               className="flex items-center gap-2 cursor-pointer shrink-0"
               onClick={() => {
@@ -300,17 +303,31 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                 else onChangeSection('operations_grid');
               }}
             >
+              {branding.logoUrl && role !== 'SUPER_ADMIN' ? (
+                <div className="h-8 max-w-[120px] flex items-center justify-center overflow-hidden rounded-lg bg-white/10 p-1 border border-white/10">
+                  <img
+                    src={branding.logoUrl}
+                    alt={branding.companyName}
+                    className="max-h-full max-w-full object-contain"
+                  />
+                </div>
+              ) : null}
+
               <div>
                 <div className="flex items-center gap-1.5">
-                  <span className="font-extrabold text-base tracking-wide text-white">
-                    {activeSection === 'settings' ? 'الإعدادات' : 'التوصيل'}
+                  <span className="font-black text-sm sm:text-base tracking-wide text-white">
+                    {role === 'SUPER_ADMIN'
+                      ? 'منصة Delivere'
+                      : branding.companyName || 'Delivere'}
                   </span>
                   <span className="text-[10px] bg-amber-500/20 text-amber-300 font-bold px-1.5 py-0.2 rounded border border-amber-500/30">
-                    TMS ERP
+                    TMS
                   </span>
                 </div>
                 <p className="text-[10px] text-slate-400 leading-tight">
-                  {activeSection === 'settings' ? 'قوائم الأسعار وإعدادات المنظومة' : 'منظومة إدارة الشحنات والعمليات'}
+                  {role === 'SUPER_ADMIN'
+                    ? 'منظومة إدارة الشركات والاشتراكات'
+                    : 'منظومة إدارة الشحنات والعمليات'}
                 </p>
               </div>
             </div>

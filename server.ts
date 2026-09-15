@@ -1393,7 +1393,38 @@ export function getHierarchicalSubtreeUserIds(rootUserId: string, allUsersList: 
   return subtreeSet;
 }
 
-// In-Memory Security Audit Logs (Lightweight & High-Performance)
+// Unified Real Authorization Helpers
+export function getEffectivePermissions(user: User | null | undefined): string[] {
+  if (!user) return [];
+  if (user.role === 'SUPER_ADMIN') return ['*'];
+
+  // User explicit permissions stored in database
+  let userPerms: string[] = [];
+  if (Array.isArray(user.permissions)) {
+    userPerms = user.permissions;
+  }
+
+  // Enforce maxAllowedPermissions ceiling if set
+  const maxAllowed = Array.isArray(user.maxAllowedPermissions) && user.maxAllowedPermissions.length > 0
+    ? user.maxAllowedPermissions
+    : undefined;
+
+  if (maxAllowed && !maxAllowed.includes('*')) {
+    userPerms = userPerms.filter((p) => maxAllowed.includes(p) || p === '*');
+  }
+
+  return userPerms;
+}
+
+export function hasPermission(user: User | null | undefined, requiredPermission: string): boolean {
+  if (!user) return false;
+  if (user.role === 'SUPER_ADMIN') return true;
+
+  const effective = getEffectivePermissions(user);
+  return effective.includes('*') || effective.includes(requiredPermission);
+}
+
+// In-Memory & Database Security Audit Logs
 let auditLogs: AuditLogRecord[] = [];
 
 function logAuditEvent(event: {
@@ -1426,6 +1457,27 @@ function logAuditEvent(event: {
   };
   auditLogs.unshift(logEntry);
   if (auditLogs.length > 500) auditLogs.pop();
+
+  // Persist to Supabase audit_logs table asynchronously
+  if (supabase) {
+    Promise.resolve(
+      supabase.from('audit_logs').insert([{
+        action: event.action,
+        action_name_ar: event.actionNameAr,
+        performed_by: (event.performedBy && isValidUuid(event.performedBy)) ? event.performedBy : null,
+        performer_name: event.performerName || 'النظام',
+        performer_role: event.performerRole || 'SUPER_ADMIN',
+        target_id: (event.targetId && isValidUuid(event.targetId)) ? event.targetId : null,
+        target_type: event.targetType || 'USER',
+        target_name: event.targetName,
+        tenant_id: (event.tenantId && isValidUuid(event.tenantId)) ? event.tenantId : null,
+        details: event.details || {},
+        ip_address: event.ipAddress,
+        created_at: new Date().toISOString(),
+      }])
+    ).catch(() => {});
+  }
+
   return logEntry;
 }
 
@@ -1703,17 +1755,14 @@ function canAccessOrder(ctx: RequesterContext, order: Order | undefined | null):
 }
 
 // Commercial Data Privacy: Checking whether a user can view merchant cost prices
-function canViewCostPrices(ctx: RequesterContext, merchantId: string): boolean {
+function canViewCostPrices(ctx: RequesterContext, merchantId?: string): boolean {
   if (ctx.isSuperAdmin) return true;
   if (!ctx.user) return false;
-  if (ctx.user.id === merchantId) return true; // Merchant viewing their own data
+  if (merchantId && ctx.user.id === merchantId) return true; // Merchant viewing their own data
 
-  const userPerms = Array.isArray(ctx.user.permissions) ? ctx.user.permissions : [];
-  if (userPerms.includes('merchant.products.cost_view') || userPerms.includes('*')) {
-    return true;
-  }
-
-  return false;
+  return hasPermission(ctx.user, 'warehouse.view_cost_price') ||
+         hasPermission(ctx.user, 'merchant.cost_view') ||
+         hasPermission(ctx.user, 'merchant.products.cost_view');
 }
 
 // Authentication Middlewares
@@ -1757,11 +1806,8 @@ function requirePermission(permissionKey: string) {
       (req as any).authUser = user;
       return next();
     }
-    const userPerms = Array.isArray(user.permissions) ? user.permissions : [];
-    const roleDef = rolesCatalog.find((r) => r.roleKey === user.role);
-    const rolePerms = roleDef ? roleDef.permissions : [];
-    const hasPerm = userPerms.includes(permissionKey) || rolePerms.includes(permissionKey) || userPerms.includes('*');
-    if (!hasPerm) {
+
+    if (!hasPermission(user, permissionKey)) {
       return res.status(403).json({
         error: `ليس لديك الصلاحية المطلوبة (${permissionKey}) لتنفيذ هذا الإجراء.`,
         code: 'PERMISSION_DENIED',
@@ -4264,6 +4310,15 @@ const handleUserUpdate = async (req: express.Request, res: express.Response) => 
     }
 
     const updatedUser = mapDbUserToAppUser(updated && updated[0] ? updated[0] : { ...targetDbUser, ...dbUpdates });
+    
+    // Maintain in-memory users cache synchronously for immediate session freshness
+    const userIdx = users.findIndex((u) => u && u.id === updatedUser.id);
+    if (userIdx !== -1) {
+      users[userIdx] = updatedUser;
+    } else {
+      users.push(updatedUser);
+    }
+
     syncUsersFromSupabase().catch(() => {});
 
     // Audit Logging
@@ -4277,7 +4332,7 @@ const handleUserUpdate = async (req: express.Request, res: express.Response) => 
       targetType: 'USER',
       targetName: updatedUser.name,
       tenantId: updatedUser.parentUserId || updatedUser.id,
-      details: { changedFields: Object.keys(dbUpdates) },
+      details: { changedFields: Object.keys(dbUpdates), permissions: updatedUser.permissions },
     });
 
     const sanitizedUser = sanitizeUserForClient(updatedUser);
@@ -4291,6 +4346,120 @@ const handleUserUpdate = async (req: express.Request, res: express.Response) => 
     res.status(500).json({ error: err.message });
   }
 };
+
+// 26.3.1 PATCH & PUT /api/users/:id/permissions: Dedicated Endpoint for Permissions Update
+const handleUserPermissionsUpdate = async (req: express.Request, res: express.Response) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const userId = req.params.id;
+
+    if (!isValidUuid(userId)) {
+      return res.status(404).json({ error: 'المستخدم غير موجود' });
+    }
+
+    const { data: existing, error: findErr } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', userId)
+      .limit(1);
+
+    if (findErr || !existing || existing.length === 0) {
+      return res.status(404).json({ error: 'المستخدم غير موجود في قاعدة البيانات' });
+    }
+
+    const targetDbUser = existing[0];
+
+    // Non-superadmin cannot modify SUPER_ADMIN
+    if (!ctx.isSuperAdmin && targetDbUser.role === 'SUPER_ADMIN') {
+      return res.status(403).json({ error: 'غير مصرح بتعديل حساب المدير العام للنظام (Super Admin)' });
+    }
+
+    // Hierarchy isolation check: target user must be self or within requester's subtree
+    const isSelf = ctx.userId === userId;
+    const isSubAccount = targetDbUser.parent_user_id === ctx.tenantId || targetDbUser.parent_user_id === ctx.userId;
+    if (!ctx.isSuperAdmin && !isSelf && !isSubAccount) {
+      return res.status(403).json({ error: 'غير مصرح بتعديل مستخدم خارج نطاق تسلسلك الهرمي' });
+    }
+
+    const requestedPerms = Array.isArray(req.body.permissions) ? req.body.permissions : [];
+    const requestedMaxAllowed = Array.isArray(req.body.maxAllowedPermissions || req.body.max_allowed_permissions)
+      ? (req.body.maxAllowedPermissions || req.body.max_allowed_permissions)
+      : undefined;
+
+    // Permission Ceiling Check for Non-SuperAdmin
+    if (!ctx.isSuperAdmin && ctx.user) {
+      const allowedCeiling = Array.isArray(ctx.user.maxAllowedPermissions) && ctx.user.maxAllowedPermissions.length > 0
+        ? ctx.user.maxAllowedPermissions
+        : (Array.isArray(ctx.user.permissions) ? ctx.user.permissions : []);
+
+      const unauthorizedPerms = requestedPerms.filter((p: string) => !allowedCeiling.includes(p) && !allowedCeiling.includes('*'));
+      if (unauthorizedPerms.length > 0) {
+        return res.status(403).json({
+          error: `الصلاحيات المطلوبة تتجاوز سقف الصلاحيات المسموح لحسابك من الإدارة: [${unauthorizedPerms.join(', ')}]`,
+          code: 'CEILING_EXCEEDED',
+        });
+      }
+    }
+
+    const dbPayload: any = {
+      permissions: requestedPerms,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (requestedMaxAllowed !== undefined) {
+      dbPayload.max_allowed_permissions = requestedMaxAllowed;
+    }
+
+    const { data: updated, error: updateErr } = await supabase
+      .from('users')
+      .update(dbPayload)
+      .eq('id', userId)
+      .select();
+
+    if (updateErr) {
+      return res.status(500).json({ error: 'فشل تحديث الصلاحيات في Supabase: ' + updateErr.message });
+    }
+
+    const updatedUser = mapDbUserToAppUser(updated && updated[0] ? updated[0] : { ...targetDbUser, ...dbPayload });
+
+    // Synchronously update in-memory cache
+    const userIdx = users.findIndex((u) => u && u.id === updatedUser.id);
+    if (userIdx !== -1) {
+      users[userIdx] = updatedUser;
+    } else {
+      users.push(updatedUser);
+    }
+
+    // Audit Log
+    logAuditEvent({
+      action: 'USER_PERMISSIONS_UPDATED',
+      actionNameAr: 'تحديث صلاحيات المستخدم الهرمية',
+      performedBy: ctx.userId || 'UNKNOWN',
+      performerName: ctx.user?.name,
+      performerRole: ctx.userRole,
+      targetId: updatedUser.id,
+      targetType: 'USER',
+      targetName: updatedUser.name,
+      tenantId: updatedUser.parentUserId || updatedUser.id,
+      details: {
+        oldPermissions: targetDbUser.permissions,
+        newPermissions: updatedUser.permissions,
+        maxAllowedPermissions: updatedUser.maxAllowedPermissions,
+      },
+    });
+
+    res.json({
+      success: true,
+      message: 'تم حفظ وتحديث صلاحيات المستخدم بنجاح في قاعدة البيانات',
+      user: sanitizeUserForClient(updatedUser),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+app.patch('/api/users/:id/permissions', requireAuth, handleUserPermissionsUpdate);
+app.put('/api/users/:id/permissions', requireAuth, handleUserPermissionsUpdate);
 
 app.patch('/api/users/:id', requireAuth, handleUserUpdate);
 app.put('/api/users/:id', requireAuth, handleUserUpdate);
@@ -4366,6 +4535,308 @@ app.delete('/api/users/:id', requireAuth, async (req, res) => {
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// TENANT WHITE-LABEL BRANDING SYSTEM
+// ==========================================
+
+export interface TenantSettings {
+  id: string;
+  tenantId: string;
+  companyName: string;
+  logoUrl: string;
+  primaryColor?: string;
+  secondaryColor?: string;
+  faviconUrl?: string;
+  phone?: string;
+  address?: string;
+  taxId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
+// In-memory tenant branding cache keyed by tenant_id
+const tenantBrandingCache = new Map<string, TenantSettings>();
+
+// Helper to get or resolve tenant branding
+async function resolveTenantBranding(tenantId: string): Promise<TenantSettings> {
+  if (tenantBrandingCache.has(tenantId)) {
+    return tenantBrandingCache.get(tenantId)!;
+  }
+
+  // Attempt reading from Supabase
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('tenant_settings')
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .maybeSingle();
+
+      if (!error && data) {
+        const settings: TenantSettings = {
+          id: data.id,
+          tenantId: data.tenant_id,
+          companyName: data.company_name || 'Delivere',
+          logoUrl: data.logo_url || '',
+          primaryColor: data.primary_color || '#f59e0b',
+          secondaryColor: data.secondary_color || '#0f172a',
+          faviconUrl: data.favicon_url || '',
+          phone: data.phone || '',
+          address: data.address || '',
+          taxId: data.tax_id || '',
+          createdAt: data.created_at,
+          updatedAt: data.updated_at,
+          updatedBy: data.updated_by,
+        };
+        tenantBrandingCache.set(tenantId, settings);
+        return settings;
+      }
+    } catch (e) {
+      // Ignore table missing error and fallback gracefully
+    }
+  }
+
+  // Fallback default branding
+  const defaultSettings: TenantSettings = {
+    id: `ts-${tenantId}`,
+    tenantId,
+    companyName: 'Delivere',
+    logoUrl: '',
+    primaryColor: '#f59e0b',
+    secondaryColor: '#0f172a',
+    faviconUrl: '',
+  };
+  tenantBrandingCache.set(tenantId, defaultSettings);
+  return defaultSettings;
+}
+
+// GET /api/company/branding
+app.get('/api/company/branding', requireAuth, async (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    if (!ctx.user) {
+      return res.status(401).json({ error: 'غير مصرح: يجب تسجيل الدخول للوصول إلى الهوية التجارية.' });
+    }
+
+    // Determine target tenant ID
+    let targetTenantId = ctx.tenantId || ctx.user.parentUserId || ctx.user.id;
+    if (ctx.isSuperAdmin && req.query.tenantId) {
+      targetTenantId = req.query.tenantId as string;
+    }
+
+    const branding = await resolveTenantBranding(targetTenantId);
+    res.json({ branding });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'فشل جلب بيانات الهوية التجارية' });
+  }
+});
+
+// PUT & POST /api/company/branding
+const handleUpdateCompanyBranding = async (req: express.Request, res: express.Response) => {
+  try {
+    const ctx = getRequesterContext(req);
+    if (!ctx.user) {
+      return res.status(401).json({ error: 'غير مصرح: يجب تسجيل الدخول' });
+    }
+
+    // Permission check: SuperAdmin OR Admin OR explicitly granted company.branding.manage
+    const canManageBranding =
+      ctx.isSuperAdmin ||
+      ctx.isAdmin ||
+      hasPermission(ctx.user, 'company.branding.manage');
+
+    if (!canManageBranding) {
+      return res.status(403).json({
+        error: 'غير مصرح بتعديل الهوية التجارية واللوجو الخاص بالشركة (company.branding.manage)',
+        code: 'PERMISSION_DENIED',
+      });
+    }
+
+    // STRICT ISOLATION: Non-superadmins CANNOT modify another tenant's branding
+    let targetTenantId = ctx.tenantId || ctx.user.parentUserId || ctx.user.id;
+    if (ctx.isSuperAdmin && req.body.tenantId) {
+      targetTenantId = req.body.tenantId;
+    }
+
+    const { companyName, logoUrl, primaryColor, secondaryColor, faviconUrl, phone, address, taxId } = req.body;
+
+    if (!companyName || typeof companyName !== 'string' || companyName.trim().length === 0) {
+      return res.status(400).json({ error: 'اسم الشركة مطلوب لا يمكن أن يكون فارغاً' });
+    }
+
+    const updatedSettings: TenantSettings = {
+      id: `ts-${targetTenantId}`,
+      tenantId: targetTenantId,
+      companyName: companyName.trim(),
+      logoUrl: typeof logoUrl === 'string' ? logoUrl.trim() : '',
+      primaryColor: primaryColor || '#f59e0b',
+      secondaryColor: secondaryColor || '#0f172a',
+      faviconUrl: faviconUrl || '',
+      phone: phone || '',
+      address: address || '',
+      taxId: taxId || '',
+      updatedAt: new Date().toISOString(),
+      updatedBy: ctx.userId,
+    };
+
+    // Update in-memory cache immediately
+    tenantBrandingCache.set(targetTenantId, updatedSettings);
+
+    // Save/Upsert into Supabase
+    if (supabase) {
+      try {
+        await supabase.from('tenant_settings').upsert(
+          {
+            tenant_id: targetTenantId,
+            company_name: updatedSettings.companyName,
+            logo_url: updatedSettings.logoUrl,
+            primary_color: updatedSettings.primaryColor,
+            secondary_color: updatedSettings.secondaryColor,
+            favicon_url: updatedSettings.faviconUrl,
+            phone: updatedSettings.phone,
+            address: updatedSettings.address,
+            tax_id: updatedSettings.taxId,
+            updated_at: updatedSettings.updatedAt,
+            updated_by: updatedSettings.updatedBy,
+          },
+          { onConflict: 'tenant_id' }
+        );
+      } catch (e) {
+        console.warn('Could not persist tenant_settings to Supabase table:', e);
+      }
+    }
+
+    logAuditEvent({
+      action: 'UPDATE_COMPANY_BRANDING',
+      actionNameAr: 'تحديث الهوية وشعار الشركة',
+      performedBy: ctx.userId || 'UNKNOWN',
+      performerName: ctx.user.name,
+      performerRole: ctx.userRole,
+      tenantId: targetTenantId,
+      details: {
+        companyName: updatedSettings.companyName,
+        logoUrl: updatedSettings.logoUrl,
+      },
+    });
+
+    res.json({
+      success: true,
+      message: 'تم حفظ وتطبيق الهوية التجارية واللوجو بنجاح على جميع حسابات الشركة',
+      branding: updatedSettings,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'فشل تحديث الهوية التجارية' });
+  }
+};
+
+app.put('/api/company/branding', requireAuth, handleUpdateCompanyBranding);
+app.post('/api/company/branding', requireAuth, handleUpdateCompanyBranding);
+
+// POST /api/company/branding/logo - Logo Upload Endpoint
+app.post('/api/company/branding/logo', requireAuth, async (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    if (!ctx.user) {
+      return res.status(401).json({ error: 'غير مصرح: يجب تسجيل الدخول' });
+    }
+
+    const canManageBranding =
+      ctx.isSuperAdmin ||
+      ctx.isAdmin ||
+      hasPermission(ctx.user, 'company.branding.manage');
+
+    if (!canManageBranding) {
+      return res.status(403).json({
+        error: 'غير مصرح برفع شعار الشركة (company.branding.manage)',
+        code: 'PERMISSION_DENIED',
+      });
+    }
+
+    let targetTenantId = ctx.tenantId || ctx.user.parentUserId || ctx.user.id;
+    if (ctx.isSuperAdmin && req.body.tenantId) {
+      targetTenantId = req.body.tenantId;
+    }
+
+    const { imageBase64, fileName, mimeType } = req.body;
+
+    if (!imageBase64 || typeof imageBase64 !== 'string') {
+      return res.status(400).json({ error: 'لم يتم تزويد صورة الشعار' });
+    }
+
+    // Security & File Validation
+    const cleanBase64 = imageBase64.replace(/^data:image\/[a-zA-Z0-9+\-+]+;base64,/, '');
+    const buffer = Buffer.from(cleanBase64, 'base64');
+
+    // Size limit: 5MB
+    if (buffer.length > 5 * 1024 * 1024) {
+      return res.status(400).json({ error: 'حجم صورة الشعار يتجاوز الحد الأقصى المسموح (5 ميجابايت)' });
+    }
+
+    // MimeType check
+    const allowedMimeTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/svg+xml'];
+    const detectedMime = mimeType || 'image/png';
+    if (!allowedMimeTypes.includes(detectedMime.toLowerCase())) {
+      return res.status(400).json({ error: 'نوع الملف غير مدعوم. الأنواع المسموحة: PNG, JPG, WEBP, SVG' });
+    }
+
+    // SVG Security Sanitization: Check for embedded script execution
+    if (detectedMime.toLowerCase().includes('svg') || (fileName && fileName.toLowerCase().endsWith('.svg'))) {
+      const svgText = buffer.toString('utf8').toLowerCase();
+      if (
+        svgText.includes('<script') ||
+        svgText.includes('javascript:') ||
+        svgText.includes('onload=') ||
+        svgText.includes('onerror=') ||
+        svgText.includes('onclick=') ||
+        svgText.includes('<foreignobject')
+      ) {
+        return res.status(400).json({ error: 'ملف الـ SVG يحتوي على عناصر غير آمنة أو برمجية غير مسموح بها.' });
+      }
+    }
+
+    let logoUrl = '';
+    const fileExt = detectedMime.includes('svg') ? 'svg' : detectedMime.includes('webp') ? 'webp' : detectedMime.includes('jpeg') || detectedMime.includes('jpg') ? 'jpg' : 'png';
+    const filePath = `${targetTenantId}/logo_${Date.now()}.${fileExt}`;
+
+    // Upload to Supabase Storage Bucket 'branding'
+    if (supabase) {
+      try {
+        const { data: uploadData, error: uploadErr } = await supabase.storage
+          .from('branding')
+          .upload(filePath, buffer, {
+            contentType: detectedMime,
+            upsert: true,
+          });
+
+        if (!uploadErr && uploadData) {
+          const { data: publicUrlData } = supabase.storage
+            .from('branding')
+            .getPublicUrl(filePath);
+          if (publicUrlData && publicUrlData.publicUrl) {
+            logoUrl = publicUrlData.publicUrl;
+          }
+        }
+      } catch (e) {
+        console.warn('Supabase storage upload fallback:', e);
+      }
+    }
+
+    // Fallback if storage upload is not available: convert to data URI
+    if (!logoUrl) {
+      logoUrl = `data:${detectedMime};base64,${cleanBase64}`;
+    }
+
+    res.json({
+      success: true,
+      message: 'تم رفع الشعار واجتياز الفحص الأمني بنجاح',
+      logoUrl,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'فشل رفع الشعار' });
   }
 });
 
@@ -6497,8 +6968,8 @@ app.post('/api/database/restore', requireSuperAdmin, (req, res) => {
 // GET /api/accounting/overview
 app.get('/api/accounting/overview', requireAuth, (req, res) => {
   const ctx = getRequesterContext(req);
-  if (!ctx.isSuperAdmin && !ctx.isAdmin && !ctx.user?.permissions?.includes('accounting')) {
-    return res.status(403).json({ error: 'غير مصرح بالاطلاع على القوائم المالية العامة' });
+  if (ctx.user && !hasPermission(ctx.user, 'accounting.view_pnl') && !hasPermission(ctx.user, 'accounting')) {
+    return res.status(403).json({ error: 'غير مصرح بالاطلاع على القوائم المالية العامة (accounting.view_pnl)', code: 'PERMISSION_DENIED' });
   }
 
   let totalDebit = 0;
@@ -6571,8 +7042,8 @@ app.get('/api/accounting/overview', requireAuth, (req, res) => {
 // GET /api/accounting/journal-entries
 app.get('/api/accounting/journal-entries', requireAuth, (req, res) => {
   const ctx = getRequesterContext(req);
-  if (!ctx.isSuperAdmin && !ctx.isAdmin && !ctx.user?.permissions?.includes('accounting')) {
-    return res.status(403).json({ error: 'غير مصرح بالاطلاع على قيود اليومية العامة' });
+  if (ctx.user && !hasPermission(ctx.user, 'accounting.view_pnl') && !hasPermission(ctx.user, 'accounting')) {
+    return res.status(403).json({ error: 'غير مصرح بالاطلاع على قيود اليومية العامة', code: 'PERMISSION_DENIED' });
   }
   res.json({ entries: [...journalEntries].reverse() });
 });
@@ -6581,8 +7052,8 @@ app.get('/api/accounting/journal-entries', requireAuth, (req, res) => {
 app.post('/api/accounting/journal-entries', requireAuth, (req, res) => {
   try {
     const ctx = getRequesterContext(req);
-    if (!ctx.isSuperAdmin && !ctx.isAdmin && !ctx.user?.permissions?.includes('accounting')) {
-      return res.status(403).json({ error: 'غير مصرح بإنشاء قيود يومية عامة' });
+    if (ctx.user && !hasPermission(ctx.user, 'accounting.view_pnl') && !hasPermission(ctx.user, 'accounting')) {
+      return res.status(403).json({ error: 'غير مصرح بإنشاء قيود يومية عامة', code: 'PERMISSION_DENIED' });
     }
 
     const { date, description, lines, referenceType, referenceId, createdByName } = req.body;
@@ -6649,8 +7120,8 @@ app.post('/api/accounting/journal-entries', requireAuth, (req, res) => {
 // GET /api/accounting/vouchers
 app.get('/api/accounting/vouchers', requireAuth, (req, res) => {
   const ctx = getRequesterContext(req);
-  if (!ctx.isSuperAdmin && !ctx.isAdmin && !ctx.user?.permissions?.includes('accounting')) {
-    return res.status(403).json({ error: 'غير مصرح بالاطلاع على السندات المالية العامة' });
+  if (ctx.user && !hasPermission(ctx.user, 'accounting.view_pnl') && !hasPermission(ctx.user, 'accounting') && !hasPermission(ctx.user, 'accounting.expenses')) {
+    return res.status(403).json({ error: 'غير مصرح بالاطلاع على السندات المالية العامة', code: 'PERMISSION_DENIED' });
   }
   res.json({ vouchers: [...vouchers].reverse() });
 });
@@ -6659,8 +7130,8 @@ app.get('/api/accounting/vouchers', requireAuth, (req, res) => {
 app.post('/api/accounting/vouchers', requireAuth, (req, res) => {
   try {
     const ctx = getRequesterContext(req);
-    if (!ctx.isSuperAdmin && !ctx.isAdmin && !ctx.user?.permissions?.includes('accounting')) {
-      return res.status(403).json({ error: 'غير مصرح بإصدار سندات مالية عامة' });
+    if (ctx.user && !hasPermission(ctx.user, 'accounting.view_pnl') && !hasPermission(ctx.user, 'accounting') && !hasPermission(ctx.user, 'accounting.expenses')) {
+      return res.status(403).json({ error: 'غير مصرح بإصدار سندات مالية عامة', code: 'PERMISSION_DENIED' });
     }
 
     const {
@@ -6804,6 +7275,10 @@ app.get('/api/merchants/:merchantId/warehouse', requireAuth, (req, res) => {
 
   if (!canAccessMerchant(ctx, merchantId)) {
     return res.status(403).json({ error: 'غير مصرح بالوصول إلى مستودع هذا المتجر' });
+  }
+
+  if (ctx.user && !hasPermission(ctx.user, 'warehouse.view')) {
+    return res.status(403).json({ error: 'ليس لديك صلاحية عرض المستودع والمخزون (warehouse.view)', code: 'PERMISSION_DENIED' });
   }
 
   const rawProducts = merchantProducts.filter((p) => p.merchantId === merchantId);
