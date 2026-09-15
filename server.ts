@@ -1,8 +1,9 @@
 import express from 'express';
 import path from 'path';
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { Order, OrderStatus, User, ApiKey, NotificationLog, PricePlan } from './src/types/logistics';
-import {
+import { createClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import type { Order, OrderStatus, User, ApiKey, NotificationLog, PricePlan } from './src/types/logistics.ts';
+import type {
   Account,
   JournalEntry,
   JournalEntryLine,
@@ -11,7 +12,7 @@ import {
   StockMovement,
   MerchantInvoice,
   MerchantExpense,
-} from './src/types/accounting';
+} from './src/types/accounting.ts';
 
 const app = express();
 const PORT = 3000;
