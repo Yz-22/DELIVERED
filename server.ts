@@ -16,7 +16,13 @@ import {
 const app = express();
 const PORT = 3000;
 
-app.use(express.json());
+// Safe body parser: if Vercel serverless environment already parsed the JSON body, do not re-read stream
+app.use((req, res, next) => {
+  if (req.body && typeof req.body === 'object' && Object.keys(req.body).length > 0) {
+    return next();
+  }
+  express.json()(req, res, next);
+});
 
 // CORS headers for all environments
 app.use((req, res, next) => {
@@ -29,20 +35,35 @@ app.use((req, res, next) => {
   next();
 });
 
+// Detect Serverless / Vercel environment
+const isServerlessEnv = Boolean(
+  process.env.VERCEL ||
+  process.env.VERCEL_ENV ||
+  process.env.NOW_REGION ||
+  process.env.AWS_LAMBDA_FUNCTION_NAME ||
+  process.env.LAMBDA_TASK_ROOT
+);
+
 // Persistent File-Based Storage Path (Vercel uses /tmp for writable storage)
-const DB_DIR = process.env.VERCEL ? path.join('/tmp', 'data') : path.join(process.cwd(), 'data');
+const DB_DIR = isServerlessEnv ? path.join('/tmp', 'data') : path.join(process.cwd(), 'data');
 const DB_FILE = path.join(DB_DIR, 'dargo_db.json');
 const INITIAL_SEED_FILE = path.join(process.cwd(), 'data', 'dargo_db.json');
 
-// Auto-persist on any state mutation
+// Auto-persist on any state mutation (Direct write for serverless environments to avoid frozen setTimeout)
 app.use((req, res, next) => {
-  const originalJson = res.json.bind(res);
-  res.json = (body: any) => {
-    if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method) && (!res.statusCode || res.statusCode < 400)) {
-      setTimeout(saveDatabase, 50);
-    }
-    return originalJson(body);
-  };
+  if (typeof res.json === 'function') {
+    const originalJson = res.json.bind(res);
+    res.json = function (body: any) {
+      if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method) && (!res.statusCode || res.statusCode < 400)) {
+        try {
+          saveDatabase();
+        } catch (err) {
+          console.error('Auto-persist error:', err);
+        }
+      }
+      return originalJson(body);
+    };
+  }
   next();
 });
 
@@ -505,12 +526,11 @@ function loadDatabase() {
   }
 }
 
-// Ensure database file is initialized with clean state
+// Ensure database is loaded from persistent storage or initial seed file
 if (fs.existsSync(DB_FILE)) {
   try {
     const raw = fs.readFileSync(DB_FILE, 'utf-8');
     const parsed = JSON.parse(raw);
-    // If the saved db file still contains mock orders or users with u-admin-1, purge them
     if (Array.isArray(parsed.orders) && parsed.orders.some((o: any) => o.id === 'ord-101' || o.id === 'ord-102')) {
       saveDatabase();
     } else {
@@ -520,7 +540,8 @@ if (fs.existsSync(DB_FILE)) {
     saveDatabase();
   }
 } else {
-  saveDatabase();
+  // If running on Vercel /tmp or first run, load from INITIAL_SEED_FILE if available
+  loadDatabase();
 }
 
 // -------------------------------------------------------------
@@ -3650,11 +3671,35 @@ app.delete('/api/merchants/:merchantId/expenses/:expenseId', (req, res) => {
 });
 
 // -------------------------------------------------------------
+// 404 Fallback for unmatched API routes
+// -------------------------------------------------------------
+app.use('/api', (req, res) => {
+  res.status(404).json({
+    error: 'مسار الـ API غير موجود',
+    method: req.method,
+    url: req.url,
+    originalUrl: req.originalUrl,
+  });
+});
+
+// -------------------------------------------------------------
+// Global Error Handler
+// -------------------------------------------------------------
+app.use((err: any, req: any, res: any, next: any) => {
+  console.error('[API Server Error]:', err);
+  if (!res.headersSent) {
+    res.status(500).json({
+      error: 'خطأ داخلي في الخادم',
+      message: err?.message || String(err),
+    });
+  }
+});
+
+// -------------------------------------------------------------
 // Vite Middleware / Static Serving Setup
 // -------------------------------------------------------------
 async function startServer() {
-  // On Vercel, requests are served via Serverless Functions in api/
-  if (process.env.VERCEL) {
+  if (isServerlessEnv) {
     return;
   }
 
@@ -3678,7 +3723,10 @@ async function startServer() {
   });
 }
 
-startServer();
+// Only launch HTTP listener when running directly, not in Serverless / Vercel
+if (!isServerlessEnv) {
+  startServer();
+}
 
 export default app;
 export { app };
