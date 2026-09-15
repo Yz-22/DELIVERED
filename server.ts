@@ -1,6 +1,6 @@
 import express from 'express';
 import path from 'path';
-import fs from 'fs';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { Order, OrderStatus, User, ApiKey, NotificationLog, PricePlan } from './src/types/logistics';
 import {
   Account,
@@ -76,28 +76,134 @@ const isDirectCliScript = Boolean(
   !isServerlessEnv
 );
 
-// Persistent File-Based Storage Path (Vercel uses /tmp for writable storage)
-const DB_DIR = isServerlessEnv ? path.join('/tmp', 'data') : path.join(process.cwd(), 'data');
-const DB_FILE = path.join(DB_DIR, 'dargo_db.json');
-const INITIAL_SEED_FILE = path.join(process.cwd(), 'data', 'dargo_db.json');
+// -------------------------------------------------------------
+// Supabase Official Database Connection
+// -------------------------------------------------------------
+function sanitizeSupabaseUrl(url?: string): string {
+  return (url || '')
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/rest\/v1\/?$/i, '')
+    .replace(/\/auth\/v1\/?$/i, '')
+    .replace(/\/+$/, '');
+}
 
-// Auto-persist on any state mutation (Direct write for serverless environments to avoid frozen setTimeout)
-app.use((req, res, next) => {
-  if (typeof res.json === 'function') {
-    const originalJson = res.json.bind(res);
-    res.json = function (body: any) {
-      if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method) && (!res.statusCode || res.statusCode < 400)) {
-        try {
-          saveDatabase();
-        } catch (err) {
-          console.error('Auto-persist error:', err);
-        }
-      }
-      return originalJson(body);
-    };
-  }
-  next();
+const SUPABASE_URL = sanitizeSupabaseUrl(
+  process.env.SUPABASE_URL ||
+  process.env.VITE_SUPABASE_URL ||
+  'https://rekflpovydwnqehnqwev.supabase.co'
+);
+
+const SUPABASE_KEY = (
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.SUPABASE_ANON_KEY ||
+  process.env.VITE_SUPABASE_ANON_KEY ||
+  ''
+).trim();
+
+export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false,
+  },
 });
+
+// Data mappers between Supabase database columns and application types
+export function mapDbUserToAppUser(dbUser: any): User {
+  if (!dbUser) return dbUser;
+  return {
+    id: String(dbUser.id),
+    name: dbUser.name || '',
+    email: dbUser.email || '',
+    phone: dbUser.phone || '',
+    password: dbUser.password || dbUser.password_hash || undefined,
+    role: (dbUser.role as any) || 'OPERATOR',
+    roleName: dbUser.role_name || dbUser.roleName || (
+      dbUser.role === 'SUPER_ADMIN' ? 'المدير العام للنظام (Super Admin)' :
+      dbUser.role === 'ADMIN' ? 'مدير العمليات' :
+      dbUser.role === 'MERCHANT' ? 'حساب التاجر' :
+      dbUser.role === 'DRIVER' ? 'كابتن التوصيل' :
+      dbUser.role === 'CASHIER' ? 'موظف الكاشير' :
+      dbUser.role === 'ACCOUNTANT' ? 'محاسب مالي' : 'موظف العمليات'
+    ),
+    commercialName: dbUser.commercial_name || dbUser.commercialName || dbUser.name,
+    storeName: dbUser.commercial_name || dbUser.storeName || dbUser.name,
+    commercialType: dbUser.commercial_type || dbUser.commercialType,
+    city: dbUser.city || 'عمان',
+    address: dbUser.address || '',
+    branch: dbUser.branch || 'المقر الرئيسي للمملكة',
+    department: dbUser.department,
+    priceList: dbUser.price_list || dbUser.priceList || 'جميع المملكة 2 (القياسية)',
+    accountManager: dbUser.account_manager || dbUser.accountManager || 'باسل البلبيسي',
+    vehicleType: dbUser.vehicle_type || dbUser.vehicleType,
+    vehiclePlate: dbUser.vehicle_plate || dbUser.vehiclePlate,
+    isActive: dbUser.is_active !== undefined ? Boolean(dbUser.is_active) : (dbUser.isActive !== undefined ? Boolean(dbUser.isActive) : true),
+    parentUserId: dbUser.parent_user_id || dbUser.parentUserId || null,
+    createdById: dbUser.created_by_id || dbUser.createdById,
+    permissions: Array.isArray(dbUser.permissions) ? dbUser.permissions : [],
+    maxAllowedPermissions: Array.isArray(dbUser.max_allowed_permissions) ? dbUser.max_allowed_permissions : [],
+  };
+}
+
+export function mapAppUserToDbUser(appUser: any) {
+  const payload: any = {};
+  if (appUser.id !== undefined) payload.id = String(appUser.id);
+  if (appUser.name !== undefined) payload.name = String(appUser.name).trim();
+  if (appUser.email !== undefined) payload.email = String(appUser.email).trim().toLowerCase();
+  if (appUser.phone !== undefined) payload.phone = String(appUser.phone).trim();
+  if (appUser.password !== undefined) {
+    payload.password = String(appUser.password).trim();
+    payload.password_hash = String(appUser.password).trim();
+  }
+  if (appUser.role !== undefined) payload.role = appUser.role;
+  if (appUser.roleName !== undefined || appUser.role_name !== undefined) {
+    payload.role_name = appUser.roleName || appUser.role_name;
+  }
+  if (appUser.commercialName !== undefined || appUser.commercial_name !== undefined) {
+    payload.commercial_name = appUser.commercialName || appUser.commercial_name;
+  }
+  if (appUser.commercialType !== undefined || appUser.commercial_type !== undefined) {
+    payload.commercial_type = appUser.commercialType || appUser.commercial_type;
+  }
+  if (appUser.city !== undefined) payload.city = appUser.city;
+  if (appUser.address !== undefined) payload.address = appUser.address;
+  if (appUser.branch !== undefined) payload.branch = appUser.branch;
+  if (appUser.department !== undefined) payload.department = appUser.department;
+  if (appUser.priceList !== undefined || appUser.price_list !== undefined) {
+    payload.price_list = appUser.priceList || appUser.price_list;
+  }
+  if (appUser.accountManager !== undefined || appUser.account_manager !== undefined) {
+    payload.account_manager = appUser.accountManager || appUser.account_manager;
+  }
+  if (appUser.vehicleType !== undefined || appUser.vehicle_type !== undefined) {
+    payload.vehicle_type = appUser.vehicleType || appUser.vehicle_type;
+  }
+  if (appUser.vehiclePlate !== undefined || appUser.vehicle_plate !== undefined) {
+    payload.vehicle_plate = appUser.vehiclePlate || appUser.vehicle_plate;
+  }
+  if (appUser.isActive !== undefined || appUser.is_active !== undefined) {
+    payload.is_active = appUser.isActive !== undefined ? Boolean(appUser.isActive) : Boolean(appUser.is_active);
+  }
+  if (appUser.parentUserId !== undefined || appUser.parent_user_id !== undefined) {
+    payload.parent_user_id = appUser.parentUserId !== undefined ? appUser.parentUserId : appUser.parent_user_id;
+  }
+  if (appUser.createdById !== undefined || appUser.created_by_id !== undefined) {
+    payload.created_by_id = appUser.createdById || appUser.created_by_id;
+  }
+  if (appUser.permissions !== undefined) {
+    payload.permissions = Array.isArray(appUser.permissions) ? appUser.permissions : [];
+  }
+  if (appUser.maxAllowedPermissions !== undefined || appUser.max_allowed_permissions !== undefined) {
+    payload.max_allowed_permissions = Array.isArray(appUser.maxAllowedPermissions || appUser.max_allowed_permissions)
+      ? (appUser.maxAllowedPermissions || appUser.max_allowed_permissions)
+      : [];
+  }
+  if (appUser.portalAccess !== undefined || appUser.portal_access !== undefined) {
+    payload.portal_access = appUser.portalAccess || appUser.portal_access;
+  }
+  payload.updated_at = new Date().toISOString();
+  return payload;
+}
 
 // In-Memory Database (Clean Production Ready)
 let apiKeys: ApiKey[] = [];
@@ -474,122 +580,30 @@ function populateOrder(order: Order): Order {
 }
 
 // -------------------------------------------------------------
-// Database Persistence Layer (Auto-Save & Auto-Load)
+// Database Synchronization Layer (Supabase Official)
 // -------------------------------------------------------------
+export async function syncUsersFromSupabase() {
+  try {
+    const { data: dbUsers, error } = await supabase.from('users').select('*');
+    if (error) {
+      console.warn('[Supabase] Warning fetching users from Supabase:', error.message);
+      return;
+    }
+    if (Array.isArray(dbUsers) && dbUsers.length > 0) {
+      users = dbUsers.map(mapDbUserToAppUser);
+      console.log(`[DarGo Server] Synced ${users.length} official users directly from Supabase.`);
+    }
+  } catch (err: any) {
+    console.error('[Supabase] Failed to sync users from Supabase:', err.message);
+  }
+}
+
+// Initial sync on startup
+syncUsersFromSupabase().catch(() => {});
+
+// Empty no-op saveDatabase to satisfy any legacy internal triggers without filesystem writes
 function saveDatabase() {
-  try {
-    let targetDir = DB_DIR;
-    let targetFile = DB_FILE;
-
-    try {
-      if (!fs.existsSync(targetDir)) {
-        fs.mkdirSync(targetDir, { recursive: true });
-      }
-    } catch {
-      // Fallback to /tmp if primary directory is read-only
-      targetDir = '/tmp';
-      targetFile = path.join('/tmp', 'dargo_db.json');
-    }
-
-    const payload = {
-      users,
-      orders,
-      pricePlans,
-      apiKeys,
-      notificationLogs,
-      nextSequenceNumber,
-      accounts,
-      journalEntries,
-      vouchers,
-      merchantProducts,
-      stockMovements,
-      merchantInvoices,
-      merchantExpenses,
-      merchantCategories,
-      savedAt: new Date().toISOString(),
-    };
-    fs.writeFileSync(targetFile, JSON.stringify(payload, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Failed to save to dargo_db.json:', err);
-  }
-}
-
-function loadDatabase() {
-  try {
-    const candidateFiles = [
-      DB_FILE,
-      path.join('/tmp', 'data', 'dargo_db.json'),
-      path.join('/tmp', 'dargo_db.json'),
-      INITIAL_SEED_FILE,
-    ];
-    const sourceFile = candidateFiles.find((f) => f && fs.existsSync(f));
-    if (sourceFile) {
-      const raw = fs.readFileSync(sourceFile, 'utf-8');
-      const data = JSON.parse(raw);
-      if (Array.isArray(data.orders)) orders = data.orders;
-      if (Array.isArray(data.users) && data.users.length > 0) {
-        users = data.users;
-      }
-      if (Array.isArray(data.pricePlans) && data.pricePlans.length > 0) pricePlans = data.pricePlans;
-      if (Array.isArray(data.apiKeys)) apiKeys = data.apiKeys;
-      if (Array.isArray(data.notificationLogs)) notificationLogs = data.notificationLogs;
-      if (typeof data.nextSequenceNumber === 'number') nextSequenceNumber = data.nextSequenceNumber;
-      if (Array.isArray(data.accounts) && data.accounts.length > 0) accounts = data.accounts;
-      if (Array.isArray(data.journalEntries)) journalEntries = data.journalEntries;
-      if (Array.isArray(data.vouchers)) vouchers = data.vouchers;
-      if (Array.isArray(data.merchantProducts)) merchantProducts = data.merchantProducts;
-      if (Array.isArray(data.stockMovements)) stockMovements = data.stockMovements;
-      if (Array.isArray(data.merchantInvoices)) merchantInvoices = data.merchantInvoices;
-      if (Array.isArray(data.merchantExpenses)) merchantExpenses = data.merchantExpenses;
-      if (data.merchantCategories && typeof data.merchantCategories === 'object') {
-        merchantCategories = data.merchantCategories;
-      }
-
-      // Ensure Super Admin always exists in database
-      const hasSuperAdmin = users.some((u) => u.role === 'SUPER_ADMIN');
-      if (!hasSuperAdmin) {
-        users.unshift({
-          id: 'u-super-1',
-          name: 'المدير العام للنظام (Super Admin)',
-          email: 'admin@dargo-tms.io',
-          phone: '0790000001',
-          password: 'admin123',
-          role: 'SUPER_ADMIN',
-          roleName: 'المدير العام للنظام (Super Admin)',
-          branch: 'المقر الرئيسي للمملكة',
-          city: 'عمان',
-          isActive: true,
-          permissions: ['manage_system_settings', 'manage_operations_admins', 'view_financial_audit_logs', 'export_database_backup'],
-          maxAllowedPermissions: ['manage_system_settings', 'manage_operations_admins', 'view_financial_audit_logs', 'export_database_backup'],
-        });
-        saveDatabase();
-      }
-
-      console.log(`[DarGo DB] Loaded ${orders.length} orders, ${users.length} users, ${accounts.length} accounts, and ${merchantProducts.length} merchant products from persistent storage.`);
-    } else {
-      saveDatabase();
-    }
-  } catch (err) {
-    console.error('Failed to read dargo_db.json, using clean defaults:', err);
-  }
-}
-
-// Ensure database is loaded from persistent storage or initial seed file
-if (fs.existsSync(DB_FILE)) {
-  try {
-    const raw = fs.readFileSync(DB_FILE, 'utf-8');
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed.orders) && parsed.orders.some((o: any) => o.id === 'ord-101' || o.id === 'ord-102')) {
-      saveDatabase();
-    } else {
-      loadDatabase();
-    }
-  } catch {
-    saveDatabase();
-  }
-} else {
-  // If running on Vercel /tmp or first run, load from INITIAL_SEED_FILE if available
-  loadDatabase();
+  // Pure serverless / Supabase mode: no local JSON writes
 }
 
 // -------------------------------------------------------------
@@ -1967,30 +1981,37 @@ app.post('/api/webhooks/shopify', (req, res) => {
   }
 });
 
-// 26. POST /api/auth/login: User Authentication by Email/Phone & Password (managed by Super Admin)
-app.post('/api/auth/login', (req, res) => {
+// 26. POST /api/auth/login: User Authentication by Email/Phone & Password directly via Supabase
+app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, phone, password, requireOps } = req.body || {};
-    let user: User | undefined = undefined;
-
-    const identifier = email || phone;
-    if (!identifier || !identifier.toString().trim()) {
+    const identifier = (email || phone || '').toString().trim();
+    if (!identifier) {
       return res.status(400).json({ error: 'يرجى إدخال البريد الإلكتروني أو رقم الهاتف' });
     }
 
-    const cleanId = identifier.toString().trim().toLowerCase();
-    const safeUsers = Array.isArray(users) ? users : [];
-    user = safeUsers.find(
-      (u) =>
-        (u?.email && u.email.trim().toLowerCase() === cleanId) ||
-        (u?.phone && u.phone.trim() === cleanId)
-    );
+    const cleanId = identifier.toLowerCase();
+    const cleanPhone = identifier;
 
-    if (!user) {
+    // Direct Supabase query
+    const { data: dbUsers, error } = await supabase
+      .from('users')
+      .select('*')
+      .or(`email.ilike.${cleanId},phone.eq.${cleanPhone}`);
+
+    if (error) {
+      console.error('Supabase auth login query error:', error);
+      return res.status(500).json({ error: 'فشل الاتصال بقاعدة بيانات Supabase: ' + error.message });
+    }
+
+    if (!dbUsers || dbUsers.length === 0) {
       return res.status(401).json({
         error: 'البريد الإلكتروني أو رقم الهاتف غير مسجل في النظام. يرجى التواصل مع المدير العام (Super Admin) لإنشاء حسابك.',
       });
     }
+
+    const rawUser = dbUsers[0];
+    const user = mapDbUserToAppUser(rawUser);
 
     if (user.isActive === false) {
       return res.status(403).json({
@@ -2006,14 +2027,17 @@ app.post('/api/auth/login', (req, res) => {
       });
     }
 
-    const inputPass = password ? password.toString().trim() : '';
-    const expectedPass = user.password || (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN' ? 'admin123' : '123456');
+    const inputPass = (password || '').toString().trim();
+    const expectedPass = (rawUser.password || rawUser.password_hash || (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN' ? 'admin123' : '123456')).toString().trim();
 
     if (inputPass !== expectedPass) {
       return res.status(401).json({
         error: 'كلمة المرور غير صحيحة، يرجى التحقق والمحاولة مرة أخرى.',
       });
     }
+
+    // Background sync cache for order lookups
+    syncUsersFromSupabase().catch(() => {});
 
     res.json({
       success: true,
@@ -2027,10 +2051,10 @@ app.post('/api/auth/login', (req, res) => {
   }
 });
 
-// 26.0 POST /api/auth/register-ops: Direct Super Admin Registration from OPS Portal
-app.post('/api/auth/register-ops', (req, res) => {
+// 26.0 POST /api/auth/register-ops: Direct Super Admin Registration from OPS Portal directly to Supabase
+app.post('/api/auth/register-ops', async (req, res) => {
   try {
-    const { name, email, phone, password, securityPasscode } = req.body;
+    const { name, email, phone, password } = req.body || {};
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'يرجى إدخال الاسم الكامل للسوبر أدمن' });
@@ -2045,30 +2069,36 @@ app.post('/api/auth/register-ops', (req, res) => {
     const cleanEmail = email && email.trim() ? email.trim().toLowerCase() : `${phone.replace(/\D/g, '')}@dargo-ops.io`;
     const cleanPhone = phone.trim();
 
-    // Check duplicate
-    const existing = users.find(
-      (u) =>
-        (u.email && u.email.toLowerCase() === cleanEmail) ||
-        (u.phone && u.phone === cleanPhone)
-    );
+    // Check duplicate in Supabase
+    const { data: existing, error: checkErr } = await supabase
+      .from('users')
+      .select('id,email,phone')
+      .or(`email.ilike.${cleanEmail},phone.eq.${cleanPhone}`);
 
-    if (existing) {
+    if (checkErr) {
+      return res.status(500).json({ error: 'خطأ أثناء التحقق من الحساب في Supabase: ' + checkErr.message });
+    }
+
+    if (existing && existing.length > 0) {
       return res.status(400).json({
         error: `المستخدم مسجل مسبقاً في قاعدة البيانات (${cleanEmail}). يمكنك تسجيل الدخول مباشرة.`,
       });
     }
 
-    const newSuperAdmin: User = {
-      id: `u-super-${Date.now()}`,
+    const newId = `u-super-${Date.now()}`;
+    const dbPayload = {
+      id: newId,
       name: name.trim(),
       email: cleanEmail,
       phone: cleanPhone,
       password: password.trim(),
+      password_hash: password.trim(),
       role: 'SUPER_ADMIN',
-      roleName: 'المدير العام للنظام (Super Admin)',
+      role_name: 'المدير العام للنظام (Super Admin)',
       branch: 'المقر الرئيسي للمملكة',
       city: 'عمان',
-      isActive: true,
+      is_active: true,
+      portal_access: 'OPS',
       permissions: [
         'manage_system_settings',
         'manage_operations_admins',
@@ -2077,7 +2107,7 @@ app.post('/api/auth/register-ops', (req, res) => {
         'users.manage_operations',
         'users.manage_staff',
       ],
-      maxAllowedPermissions: [
+      max_allowed_permissions: [
         'manage_system_settings',
         'manage_operations_admins',
         'view_financial_audit_logs',
@@ -2085,17 +2115,29 @@ app.post('/api/auth/register-ops', (req, res) => {
         'users.manage_operations',
         'users.manage_staff',
       ],
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     };
 
-    users.unshift(newSuperAdmin);
-    saveDatabase();
+    const { data: inserted, error: insertErr } = await supabase
+      .from('users')
+      .insert([dbPayload])
+      .select();
 
-    const token = `dargo_jwt_${newSuperAdmin.id}_${Date.now()}`;
+    if (insertErr) {
+      console.error('Supabase register-ops insert error:', insertErr);
+      return res.status(500).json({ error: 'فشل حفظ السوبر أدمن في قاعدة بيانات Supabase: ' + insertErr.message });
+    }
+
+    const createdUser = mapDbUserToAppUser(inserted && inserted[0] ? inserted[0] : dbPayload);
+    syncUsersFromSupabase().catch(() => {});
+
+    const token = `dargo_jwt_${createdUser.id}_${Date.now()}`;
 
     res.status(201).json({
       success: true,
       message: 'تم تسجيل وإنشاء حساب السوبر أدمن الجديد في قاعدة البيانات بنجاح',
-      user: newSuperAdmin,
+      user: createdUser,
       token,
     });
   } catch (err: any) {
@@ -2103,20 +2145,29 @@ app.post('/api/auth/register-ops', (req, res) => {
   }
 });
 
-// 26.0 POST /api/auth/verify: Verify session token and current user
-app.post('/api/auth/verify', (req, res) => {
+// 26.0 POST /api/auth/verify: Verify session token and current user directly via Supabase
+app.post('/api/auth/verify', async (req, res) => {
   try {
     const { userId } = req.body || {};
     if (!userId) {
       return res.status(400).json({ error: 'معرف المستخدم مطلوب' });
     }
 
-    const safeUsers = Array.isArray(users) ? users : [];
-    const user = safeUsers.find((u) => u?.id === userId);
-    if (!user) {
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', String(userId))
+      .limit(1);
+
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+
+    if (!data || data.length === 0) {
       return res.status(404).json({ error: 'المستخدم غير موجود' });
     }
 
+    const user = mapDbUserToAppUser(data[0]);
     if (user.isActive === false) {
       return res.status(403).json({ error: 'الحساب غير نشط' });
     }
@@ -2128,30 +2179,38 @@ app.post('/api/auth/verify', (req, res) => {
   }
 });
 
-// 26.1 GET /api/users: List Users with RBAC Hierarchy
-app.get('/api/users', (req, res) => {
+// 26.1 GET /api/users: List Users directly from Supabase
+app.get('/api/users', async (req, res) => {
   try {
     const role = req.query.role as string;
     const parentUserId = req.query.parentUserId as string;
 
-    const safeUsers = Array.isArray(users) ? users : [];
-    let filtered = [...safeUsers];
+    let query = supabase.from('users').select('*').order('created_at', { ascending: false });
+
     if (role && role !== 'ALL') {
-      filtered = filtered.filter((u) => u?.role === role);
+      query = query.eq('role', role);
     }
     if (parentUserId) {
-      filtered = filtered.filter((u) => u?.parentUserId === parentUserId);
+      query = query.eq('parent_user_id', parentUserId);
     }
 
-    res.json(filtered);
+    const { data, error } = await query;
+    if (error) {
+      console.error('Supabase users list error:', error);
+      return res.status(500).json({ error: 'فشل جلب المستخدمين من Supabase: ' + error.message });
+    }
+
+    const mappedUsers = (data || []).map(mapDbUserToAppUser);
+    users = mappedUsers; // Synchronize in-memory cache for fast internal queries
+    res.json(mappedUsers);
   } catch (err: any) {
     console.error('Error listing users:', err);
     res.status(500).json({ error: err?.message || 'خطأ في جلب المستخدمين' });
   }
 });
 
-// 26.2 POST /api/users: Create User with Hierarchy, Password, Permissions and Subscriptions
-app.post('/api/users', (req, res) => {
+// 26.2 POST /api/users: Create User directly in Supabase
+app.post('/api/users', async (req, res) => {
   try {
     const {
       name,
@@ -2175,17 +2234,6 @@ app.post('/api/users', (req, res) => {
       department,
       vehicleType,
       vehiclePlate,
-      subscriptionPlan,
-      subscriptionPlanName,
-      subscriptionStatus,
-      subscriptionStartDate,
-      subscriptionEndDate,
-      subscriptionPrice,
-      subscriptionBillingCycle,
-      maxMonthlyOrders,
-      maxUsers,
-      enabledModules,
-      notes,
       isActive = true,
     } = req.body;
 
@@ -2194,60 +2242,81 @@ app.post('/api/users', (req, res) => {
     }
 
     const cleanEmail = email && email.trim() ? email.trim().toLowerCase() : `${phone.replace(/\D/g, '')}@dargo-tms.io`;
+    const cleanPhone = phone.trim();
 
-    // Check duplicate email
-    const duplicate = users.find((u) => u.email && u.email.toLowerCase() === cleanEmail);
-    if (duplicate) {
-      return res.status(400).json({ error: `البريد الإلكتروني (${cleanEmail}) مسجل مسبقاً لمستخدم آخر` });
+    // Check duplicate email or phone in Supabase
+    const { data: duplicate, error: checkErr } = await supabase
+      .from('users')
+      .select('id,email,phone')
+      .or(`email.ilike.${cleanEmail},phone.eq.${cleanPhone}`);
+
+    if (checkErr) {
+      return res.status(500).json({ error: 'خطأ فحص التكرار في Supabase: ' + checkErr.message });
     }
 
-    const assignedPassword = password && password.trim() ? password.trim() : (role === 'SUPER_ADMIN' || role === 'ADMIN' ? 'admin123' : '123456');
+    if (duplicate && duplicate.length > 0) {
+      return res.status(400).json({ error: `المستخدم (${cleanEmail} أو ${cleanPhone}) مسجل مسبقاً في قاعدة البيانات` });
+    }
 
-    const newUser: User = {
-      id: `u-${role.toLowerCase().slice(0, 3)}-${Date.now()}`,
+    const assignedPassword = password && password.trim()
+      ? password.trim()
+      : (role === 'SUPER_ADMIN' || role === 'ADMIN' ? 'admin123' : '123456');
+
+    const newId = `u-${role.toLowerCase().slice(0, 3)}-${Date.now()}`;
+    const defaultRoleName = roleName || (
+      role === 'SUPER_ADMIN' ? 'المدير العام للنظام' :
+      role === 'ADMIN' ? 'مدير العمليات' :
+      role === 'MERCHANT' ? 'حساب التاجر' :
+      role === 'DRIVER' ? 'كابتن التوصيل' :
+      role === 'CASHIER' ? 'موظف الكاشير' :
+      role === 'ACCOUNTANT' ? 'محاسب مالي' : 'موظف العمليات'
+    );
+
+    const dbPayload = {
+      id: newId,
       name: name.trim(),
       email: cleanEmail,
+      phone: cleanPhone,
       password: assignedPassword,
-      phone: phone.trim(),
+      password_hash: assignedPassword,
       role,
-      roleName: roleName || (role === 'SUPER_ADMIN' ? 'المدير العام للنظام' : role === 'ADMIN' ? 'مدير العمليات' : role === 'MERCHANT' ? 'حساب التاجر' : role === 'DRIVER' ? 'كابتن التوصيل' : role === 'CASHIER' ? 'موظف الكاشير' : role === 'ACCOUNTANT' ? 'محاسب مالي' : 'موظف العمليات'),
-      parentUserId: parentUserId || null,
-      permissions: Array.isArray(permissions) ? permissions : [],
-      maxAllowedPermissions: Array.isArray(maxAllowedPermissions) ? maxAllowedPermissions : [],
-      commercialName: commercialName?.trim() || companyName?.trim(),
-      commercialType: commercialType?.trim(),
-      companyName: companyName?.trim() || commercialName?.trim(),
-      address: address?.trim(),
-      priceList: priceList || 'جميع المملكة (القياسية)',
-      pricePlanId: pricePlanId || (role === 'DRIVER' ? 'pp-drv-std' : 'pp-mer-std'),
-      branch: branch || 'فرع عمان الرئيسي',
+      role_name: defaultRoleName,
+      commercial_name: commercialName?.trim() || companyName?.trim() || null,
+      commercial_type: commercialType?.trim() || null,
       city: city || 'عمان',
-      accountManager: accountManager || 'باسل البلبيسي',
-      department: department?.trim(),
-      vehicleType,
-      vehiclePlate,
-      subscriptionPlan,
-      subscriptionPlanName,
-      subscriptionStatus: subscriptionStatus || 'ACTIVE',
-      subscriptionStartDate: subscriptionStartDate || new Date().toISOString(),
-      subscriptionEndDate: subscriptionEndDate || new Date(Date.now() + 30 * 86400000).toISOString(),
-      subscriptionPrice,
-      subscriptionBillingCycle: subscriptionBillingCycle || 'MONTHLY',
-      maxMonthlyOrders,
-      maxUsers,
-      enabledModules,
-      notes,
-      isActive: Boolean(isActive),
+      address: address?.trim() || null,
+      branch: branch || 'فرع عمان الرئيسي',
+      department: department?.trim() || null,
+      price_list: priceList || 'جميع المملكة 2 (القياسية)',
+      account_manager: accountManager || 'باسل البلبيسي',
+      vehicle_type: vehicleType || null,
+      vehicle_plate: vehiclePlate || null,
+      is_active: Boolean(isActive),
+      parent_user_id: parentUserId || null,
+      permissions: Array.isArray(permissions) ? permissions : [],
+      max_allowed_permissions: Array.isArray(maxAllowedPermissions) ? maxAllowedPermissions : [],
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     };
 
-    users.push(newUser);
-    saveDatabase();
+    const { data: inserted, error: insertErr } = await supabase
+      .from('users')
+      .insert([dbPayload])
+      .select();
+
+    if (insertErr) {
+      console.error('Supabase user insert error:', insertErr);
+      return res.status(500).json({ error: 'فشل حفظ المستخدم في Supabase: ' + insertErr.message });
+    }
+
+    const createdUser = mapDbUserToAppUser(inserted && inserted[0] ? inserted[0] : dbPayload);
+    syncUsersFromSupabase().catch(() => {});
 
     const responsePayload = {
-      ...newUser,
+      ...createdUser,
       success: true,
-      message: 'تم إنشاء المستخدم بنجاح وتعيين الصلاحيات وكلمة المرور',
-      user: newUser,
+      message: 'تم إنشاء المستخدم بنجاح في قاعدة بيانات Supabase وتعيين الصلاحيات وكلمة المرور',
+      user: createdUser,
     };
 
     res.status(201).json(responsePayload);
@@ -2256,94 +2325,105 @@ app.post('/api/users', (req, res) => {
   }
 });
 
-// 26.3 PATCH /api/users/:id: Update User, Password and Granular RBAC Permissions
-app.patch('/api/users/:id', (req, res) => {
-  const user = users.find((u) => u.id === req.params.id);
-  if (!user) {
-    return res.status(404).json({ error: 'المستخدم غير موجود' });
-  }
+// 26.3 PATCH /api/users/:id & PUT /api/users/:id: Update User directly in Supabase
+const handleUserUpdate = async (req: express.Request, res: express.Response) => {
+  try {
+    const userId = req.params.id;
+    const { data: existing, error: findErr } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', userId)
+      .limit(1);
 
-  // If updating email, check duplicate
-  if (req.body.email) {
-    const cleanEmail = req.body.email.trim().toLowerCase();
-    const duplicate = users.find((u) => u.id !== user.id && u.email && u.email.toLowerCase() === cleanEmail);
-    if (duplicate) {
-      return res.status(400).json({ error: `البريد الإلكتروني (${cleanEmail}) مسجل مسبقاً لمستخدم آخر` });
+    if (findErr) {
+      return res.status(500).json({ error: findErr.message });
     }
-  }
-
-  const allowedUpdates = [
-    'name',
-    'email',
-    'password',
-    'phone',
-    'role',
-    'roleName',
-    'parentUserId',
-    'permissions',
-    'maxAllowedPermissions',
-    'commercialName',
-    'commercialType',
-    'priceList',
-    'pricePlanId',
-    'branch',
-    'city',
-    'accountManager',
-    'department',
-    'vehicleType',
-    'vehiclePlate',
-    'isActive',
-    'address',
-    'subscriptionPlan',
-    'subscriptionPlanName',
-    'subscriptionStatus',
-    'subscriptionStartDate',
-    'subscriptionEndDate',
-    'maxMonthlyOrders',
-    'maxUsers',
-    'monthlyOrdersUsed',
-    'subscriptionPrice',
-    'subscriptionBillingCycle',
-    'suspendedReason',
-    'enabledModules',
-    'companyName',
-    'customDomain',
-    'notes',
-  ];
-
-  for (const key of allowedUpdates) {
-    if (req.body[key] !== undefined) {
-      (user as any)[key] = req.body[key];
+    if (!existing || existing.length === 0) {
+      return res.status(404).json({ error: 'المستخدم غير موجود' });
     }
+
+    // If updating email, check duplicate
+    if (req.body.email) {
+      const cleanEmail = req.body.email.trim().toLowerCase();
+      const { data: dupUsers } = await supabase
+        .from('users')
+        .select('id')
+        .neq('id', userId)
+        .ilike('email', cleanEmail);
+      if (dupUsers && dupUsers.length > 0) {
+        return res.status(400).json({ error: `البريد الإلكتروني (${cleanEmail}) مسجل مسبقاً لمستخدم آخر` });
+      }
+    }
+
+    const dbUpdates = mapAppUserToDbUser(req.body);
+    delete dbUpdates.id;
+
+    const { data: updated, error: updateErr } = await supabase
+      .from('users')
+      .update(dbUpdates)
+      .eq('id', userId)
+      .select();
+
+    if (updateErr) {
+      console.error('Supabase user update error:', updateErr);
+      return res.status(500).json({ error: 'فشل تحديث المستخدم في Supabase: ' + updateErr.message });
+    }
+
+    const updatedUser = mapDbUserToAppUser(updated && updated[0] ? updated[0] : { ...existing[0], ...dbUpdates });
+    syncUsersFromSupabase().catch(() => {});
+
+    res.json({
+      success: true,
+      message: 'تم تحديث بيانات وصلاحيات المستخدم في قاعدة بيانات Supabase بنجاح',
+      user: updatedUser,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
+};
 
-  saveDatabase();
+app.patch('/api/users/:id', handleUserUpdate);
+app.put('/api/users/:id', handleUserUpdate);
 
-  res.json({
-    success: true,
-    message: 'تم تحديث بيانات وصلاحيات المستخدم والاشتراك بنجاح',
-    user,
-  });
-});
+// 26.4 DELETE /api/users/:id: Delete User Account directly from Supabase
+app.delete('/api/users/:id', async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const { data: existing, error: findErr } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', userId)
+      .limit(1);
 
-// 26.4 DELETE /api/users/:id: Delete User Account
-app.delete('/api/users/:id', (req, res) => {
-  const index = users.findIndex((u) => u.id === req.params.id);
-  if (index === -1) {
-    return res.status(404).json({ error: 'المستخدم غير موجود' });
+    if (findErr) {
+      return res.status(500).json({ error: findErr.message });
+    }
+    if (!existing || existing.length === 0) {
+      return res.status(404).json({ error: 'المستخدم غير موجود' });
+    }
+
+    if (existing[0].role === 'SUPER_ADMIN') {
+      return res.status(400).json({ error: 'لا يمكن حذف حساب المدير العام للنظام (Super Admin)' });
+    }
+
+    const { error: delErr } = await supabase
+      .from('users')
+      .delete()
+      .eq('id', userId);
+
+    if (delErr) {
+      return res.status(500).json({ error: 'فشل حذف المستخدم من Supabase: ' + delErr.message });
+    }
+
+    syncUsersFromSupabase().catch(() => {});
+
+    res.json({
+      success: true,
+      message: `تم حذف حساب المستخدم (${existing[0].name}) من قاعدة البيانات بنجاح`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
-
-  if (users[index].role === 'SUPER_ADMIN') {
-    return res.status(400).json({ error: 'لا يمكن حذف حساب المدير العام للنظام (Super Admin)' });
-  }
-
-  const deletedUser = users.splice(index, 1)[0];
-  saveDatabase();
-
-  res.json({
-    success: true,
-    message: `تم حذف حساب المستخدم (${deletedUser.name}) بنجاح`,
-  });
 });
 
 // -------------------------------------------------------------

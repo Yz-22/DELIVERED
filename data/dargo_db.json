@@ -1,6 +1,34 @@
 {
   "users": [
     {
+      "id": "u-super-1789488246323",
+      "name": "yzz",
+      "email": "0795552299@dargo-ops.io",
+      "phone": "0795552299",
+      "password": "123456789",
+      "role": "SUPER_ADMIN",
+      "roleName": "المدير العام للنظام (Super Admin)",
+      "branch": "المقر الرئيسي للمملكة",
+      "city": "عمان",
+      "isActive": true,
+      "permissions": [
+        "manage_system_settings",
+        "manage_operations_admins",
+        "view_financial_audit_logs",
+        "export_database_backup",
+        "users.manage_operations",
+        "users.manage_staff"
+      ],
+      "maxAllowedPermissions": [
+        "manage_system_settings",
+        "manage_operations_admins",
+        "view_financial_audit_logs",
+        "export_database_backup",
+        "users.manage_operations",
+        "users.manage_staff"
+      ]
+    },
+    {
       "id": "u-super-1789482686921",
       "name": "Yousef zahra",
       "email": "0795582299@dargo-ops.io",
@@ -622,5 +650,5 @@
   "merchantInvoices": [],
   "merchantExpenses": [],
   "merchantCategories": {},
-  "savedAt": "2026-09-15T15:54:40.921Z"
+  "savedAt": "2026-09-15T16:45:59.975Z"
 }
