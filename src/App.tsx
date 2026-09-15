@@ -541,23 +541,32 @@ export default function App() {
           try {
             const parsed = JSON.parse(savedSession);
             if (parsed?.user?.id) {
-              const verifyRes = await fetch('/api/auth/verify', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ userId: parsed.user.id }),
-              });
-              if (verifyRes.ok) {
-                const verified = await verifyRes.json();
-                if (verified.user) {
-                  setCurrentUser(verified.user);
+              // Optimistically set currentUser so user is never abruptly logged out during server reboot
+              setCurrentUser(parsed.user);
+
+              try {
+                const verifyRes = await fetch('/api/auth/verify', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ userId: parsed.user.id }),
+                });
+                if (verifyRes.ok) {
+                  const verified = await verifyRes.json();
+                  if (verified.user) {
+                    setCurrentUser(verified.user);
+                  }
+                } else if (verifyRes.status === 401 || verifyRes.status === 403) {
+                  // Explicit rejection by server: account deactivated or invalid
+                  localStorage.removeItem('dargo_user_session');
+                  setCurrentUser(null);
                 }
-              } else if (verifyRes.status === 401 || verifyRes.status === 404 || verifyRes.status === 403) {
-                localStorage.removeItem('dargo_user_session');
+              } catch (netErr) {
+                // If network/server is restarting, do NOT wipe local session; keep the optimistic user logged in
+                console.warn('Server temporarily unreachable during session check, retaining local session:', netErr);
               }
             }
           } catch (e) {
             console.error('Session verify error:', e);
-            localStorage.removeItem('dargo_user_session');
           }
         }
       } catch (e) {
