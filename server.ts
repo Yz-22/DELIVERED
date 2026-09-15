@@ -607,6 +607,53 @@ function saveDatabase() {
 }
 
 // -------------------------------------------------------------
+// Multi-Tenant Isolation & Requester Context Resolver
+// -------------------------------------------------------------
+interface RequesterContext {
+  userId?: string;
+  userRole?: string;
+  tenantId?: string;
+  user?: User;
+  isSuperAdmin: boolean;
+  isAdmin: boolean;
+  isMerchant: boolean;
+  isDriver: boolean;
+}
+
+function getRequesterContext(req: express.Request): RequesterContext {
+  const headerUserId = (req.headers['x-user-id'] as string) || (req.query.requesterId as string) || (req.body?.requesterId as string);
+  const user = headerUserId ? users.find((u) => u && u.id === headerUserId) : undefined;
+  const userRole = user?.role || (req.headers['x-user-role'] as string);
+
+  let tenantId: string | undefined = undefined;
+  if (user) {
+    if (user.role === 'ADMIN') {
+      tenantId = user.id;
+    } else if (user.parentUserId) {
+      tenantId = user.parentUserId;
+    }
+  } else if (req.headers['x-tenant-id']) {
+    tenantId = req.headers['x-tenant-id'] as string;
+  }
+
+  const isSuperAdmin = userRole === 'SUPER_ADMIN';
+  const isAdmin = userRole === 'ADMIN';
+  const isMerchant = userRole === 'MERCHANT';
+  const isDriver = userRole === 'DRIVER';
+
+  return {
+    userId: headerUserId,
+    userRole,
+    tenantId,
+    user,
+    isSuperAdmin,
+    isAdmin,
+    isMerchant,
+    isDriver,
+  };
+}
+
+// -------------------------------------------------------------
 // API Endpoints
 // -------------------------------------------------------------
 
@@ -844,9 +891,10 @@ app.post('/api/price-plans/calculate', (req, res) => {
 // API Endpoints
 // -------------------------------------------------------------
 
-// 1. GET /api/orders: Fetch orders with pagination, search & filters
+// 1. GET /api/orders: Fetch orders with multi-tenant isolation, pagination, search & filters
 app.get('/api/orders', (req, res) => {
   try {
+    const ctx = getRequesterContext(req);
     const page = Math.max(1, parseInt(req.query.page as string) || 1);
     const limit = Math.max(1, parseInt(req.query.limit as string) || 10);
     const search = (req.query.search as string || '').trim().toLowerCase();
@@ -856,9 +904,47 @@ app.get('/api/orders', (req, res) => {
     const driverId = req.query.driverId as string;
     const sortBy = (req.query.sortBy as string) || 'createdAt';
     const sortDir = (req.query.sortDir as string) || 'desc';
+    const reqTenantId = (req.query.tenantId as string) || (ctx.isAdmin ? ctx.tenantId : undefined);
 
     const safeOrders = Array.isArray(orders) ? orders : [];
-    let filtered = [...safeOrders];
+    let tenantOrders = [...safeOrders];
+
+    // Multi-tenant data isolation:
+    if (!ctx.isSuperAdmin && ctx.user) {
+      if (ctx.isAdmin && ctx.tenantId) {
+        // Admin sees orders belonging to their merchants or themselves or drivers under them
+        const adminMerchantIds = users.filter((u) => u && (u.parentUserId === ctx.tenantId || u.id === ctx.tenantId)).map((u) => u.id);
+        tenantOrders = tenantOrders.filter((o) => {
+          if (!o) return false;
+          if (o.tenantId && o.tenantId === ctx.tenantId) return true;
+          if (adminMerchantIds.includes(o.merchantId)) return true;
+          return false;
+        });
+      } else if (ctx.isMerchant) {
+        tenantOrders = tenantOrders.filter((o) => o && o.merchantId === ctx.user?.id);
+      } else if (ctx.isDriver) {
+        tenantOrders = tenantOrders.filter((o) => o && o.driverId === ctx.user?.id);
+      } else if (ctx.tenantId) {
+        // Staff/Operator/Accountant in this tenant
+        const adminMerchantIds = users.filter((u) => u && (u.parentUserId === ctx.tenantId || u.id === ctx.tenantId)).map((u) => u.id);
+        tenantOrders = tenantOrders.filter((o) => {
+          if (!o) return false;
+          if (o.tenantId && o.tenantId === ctx.tenantId) return true;
+          if (adminMerchantIds.includes(o.merchantId)) return true;
+          return false;
+        });
+      }
+    } else if (ctx.isSuperAdmin && reqTenantId && reqTenantId !== 'ALL') {
+      const adminMerchantIds = users.filter((u) => u && (u.parentUserId === reqTenantId || u.id === reqTenantId)).map((u) => u.id);
+      tenantOrders = tenantOrders.filter((o) => {
+        if (!o) return false;
+        if (o.tenantId && o.tenantId === reqTenantId) return true;
+        if (adminMerchantIds.includes(o.merchantId)) return true;
+        return false;
+      });
+    }
+
+    let filtered = [...tenantOrders];
 
     // Search by Sequence, Reference, Recipient Phone, Recipient Name, or Area
     if (search) {
@@ -909,17 +995,17 @@ app.get('/api/orders', (req, res) => {
       return sortDir === 'asc' ? aVal - bVal : bVal - aVal;
     });
 
-    // Calculate Global Stats from All Current Orders
+    // Calculate Scoped Stats from All Orders in this Workspace
     const stats = {
-      total: safeOrders.length,
-      pending: safeOrders.filter((o) => o?.status === 'PENDING').length,
-      picking: safeOrders.filter((o) => o?.status === 'PICKING').length,
-      out_for_delivery: safeOrders.filter((o) => o?.status === 'OUT_FOR_DELIVERY').length,
-      delivered: safeOrders.filter((o) => o?.status === 'DELIVERED').length,
-      cancelled: safeOrders.filter((o) => o?.status === 'CANCELLED').length,
-      postponed: safeOrders.filter((o) => o?.status === 'POSTPONED').length,
-      totalCOD: safeOrders.reduce((sum, o) => sum + (o?.totalCollection || 0), 0),
-      totalDeliveryFees: safeOrders.reduce((sum, o) => sum + (o?.deliveryFee || 0), 0),
+      total: tenantOrders.length,
+      pending: tenantOrders.filter((o) => o?.status === 'PENDING').length,
+      picking: tenantOrders.filter((o) => o?.status === 'PICKING').length,
+      out_for_delivery: tenantOrders.filter((o) => o?.status === 'OUT_FOR_DELIVERY').length,
+      delivered: tenantOrders.filter((o) => o?.status === 'DELIVERED').length,
+      cancelled: tenantOrders.filter((o) => o?.status === 'CANCELLED').length,
+      postponed: tenantOrders.filter((o) => o?.status === 'POSTPONED').length,
+      totalCOD: tenantOrders.reduce((sum, o) => sum + (o?.totalCollection || 0), 0),
+      totalDeliveryFees: tenantOrders.reduce((sum, o) => sum + (o?.deliveryFee || 0), 0),
     };
 
     // Pagination Slice
@@ -2202,34 +2288,47 @@ app.post('/api/auth/verify', async (req, res) => {
   }
 });
 
-// 26.1 GET /api/users: List Users directly from Supabase
+// 26.1 GET /api/users: List Users directly from Supabase with Multi-Tenant Isolation
 app.get('/api/users', async (req, res) => {
   try {
+    const ctx = getRequesterContext(req);
     const role = req.query.role as string;
-    const parentUserId = req.query.parentUserId as string;
+    const parentUserId = (req.query.parentUserId as string) || (ctx.isAdmin ? ctx.tenantId : undefined);
 
     let query = supabase.from('users').select('*').order('created_at', { ascending: false });
 
     if (role && role !== 'ALL') {
       query = query.eq('role', role);
     }
-    if (parentUserId) {
-      if (isValidUuid(parentUserId)) {
-        query = query.eq('parent_user_id', parentUserId);
+
+    // Strict Tenant Isolation:
+    if (!ctx.isSuperAdmin && ctx.user) {
+      if (ctx.isAdmin && ctx.tenantId) {
+        // Admin sees only themselves and accounts created under their company/tenant
+        query = query.or(`id.eq.${ctx.tenantId},parent_user_id.eq.${ctx.tenantId}`);
+      } else if (ctx.tenantId) {
+        // Sub-account sees themselves and their managing Admin
+        query = query.or(`id.eq.${ctx.user.id},parent_user_id.eq.${ctx.tenantId},id.eq.${ctx.tenantId}`);
+      } else {
+        query = query.eq('id', ctx.user.id);
       }
+    } else if (parentUserId && isValidUuid(parentUserId)) {
+      query = query.eq('parent_user_id', parentUserId);
     }
 
     const { data, error } = await query;
     if (error) {
-      console.warn('Supabase users list warning, returning cache:', error.message);
+      console.warn('Supabase users list warning, returning filtered cache:', error.message);
       let filtered = [...users];
+      if (!ctx.isSuperAdmin && ctx.isAdmin && ctx.tenantId) {
+        filtered = filtered.filter((u) => u && (u.id === ctx.tenantId || u.parentUserId === ctx.tenantId));
+      }
       if (role && role !== 'ALL') filtered = filtered.filter((u) => u?.role === role);
       if (parentUserId) filtered = filtered.filter((u) => u?.parentUserId === parentUserId);
       return res.json(filtered);
     }
 
     const mappedUsers = (data || []).map(mapDbUserToAppUser);
-    users = mappedUsers; // Synchronize in-memory cache for fast internal queries
     res.json(mappedUsers);
   } catch (err: any) {
     console.error('Error listing users:', err);
@@ -2237,9 +2336,10 @@ app.get('/api/users', async (req, res) => {
   }
 });
 
-// 26.2 POST /api/users: Create User directly in Supabase
+// 26.2 POST /api/users: Create User directly in Supabase with Multi-Tenant Hierarchy
 app.post('/api/users', async (req, res) => {
   try {
+    const ctx = getRequesterContext(req);
     const {
       name,
       email,
@@ -2300,7 +2400,13 @@ app.post('/api/users', async (req, res) => {
       role === 'ACCOUNTANT' ? 'محاسب مالي' : 'موظف العمليات'
     );
 
-    const validParentId = isValidUuid(parentUserId) ? parentUserId : null;
+    // Auto-attach parentUserId to current Admin if created by an Admin
+    let assignedParentId: string | null = null;
+    if (ctx.isAdmin && ctx.tenantId) {
+      assignedParentId = ctx.tenantId;
+    } else if (parentUserId && isValidUuid(parentUserId)) {
+      assignedParentId = parentUserId;
+    }
 
     const dbPayload = {
       id: newId,
@@ -2315,14 +2421,14 @@ app.post('/api/users', async (req, res) => {
       commercial_type: commercialType?.trim() || null,
       city: city || 'عمان',
       address: address?.trim() || null,
-      branch: branch || 'فرع عمان الرئيسي',
+      branch: branch || (ctx.user?.branch || 'فرع عمان الرئيسي'),
       department: department?.trim() || null,
       price_list: priceList || 'جميع المملكة 2 (القياسية)',
-      account_manager: accountManager || 'باسل البلبيسي',
+      account_manager: accountManager || (ctx.user?.name || 'باسل البلبيسي'),
       vehicle_type: vehicleType || null,
       vehicle_plate: vehiclePlate || null,
       is_active: Boolean(isActive),
-      parent_user_id: validParentId,
+      parent_user_id: assignedParentId,
       permissions: Array.isArray(permissions) ? permissions : [],
       max_allowed_permissions: Array.isArray(maxAllowedPermissions) ? maxAllowedPermissions : [],
       created_at: new Date().toISOString(),
@@ -2345,7 +2451,7 @@ app.post('/api/users', async (req, res) => {
     const responsePayload = {
       ...createdUser,
       success: true,
-      message: 'تم إنشاء المستخدم بنجاح في قاعدة بيانات Supabase وتعيين الصلاحيات وكلمة المرور',
+      message: 'تم إنشاء المستخدم بنجاح في قاعدة بيانات Supabase وربطه بمظلة الشركة والتراخيص',
       user: createdUser,
     };
 

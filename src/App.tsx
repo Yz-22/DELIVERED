@@ -319,7 +319,12 @@ export default function App() {
   // Fetch Users & Authenticate Session
   const fetchUsers = async () => {
     try {
-      const res = await fetch('/api/users');
+      const headers: Record<string, string> = {};
+      if (currentUser?.id) {
+        headers['x-user-id'] = currentUser.id;
+        headers['x-user-role'] = currentUser.role;
+      }
+      const res = await fetch('/api/users', { headers });
       if (res.ok) {
         const data: User[] = await res.json();
         setAllUsers(data);
@@ -483,7 +488,13 @@ export default function App() {
         merchantId: merchantFilter,
       });
 
-      const res = await fetch(`/api/orders?${queryParams.toString()}`);
+      const headers: Record<string, string> = {};
+      if (currentUser?.id) {
+        headers['x-user-id'] = currentUser.id;
+        headers['x-user-role'] = currentUser.role;
+      }
+
+      const res = await fetch(`/api/orders?${queryParams.toString()}`, { headers });
       if (res.ok) {
         const data: OrdersQueryResponse = await res.json();
         setOrders(data.orders);
@@ -503,6 +514,8 @@ export default function App() {
     governorateFilter,
     driverFilter,
     merchantFilter,
+    currentUser?.id,
+    currentUser?.role,
   ]);
 
   useEffect(() => {
@@ -1047,6 +1060,7 @@ export default function App() {
           <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5">
             <UsersManagement
               users={allUsers}
+              currentUser={currentUser}
               onAddUser={handleAddUser}
               onUpdateUser={handleUpdateUser}
             />

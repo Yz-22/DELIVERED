@@ -377,6 +377,8 @@ export interface Order {
   id: string;
   sequence: string;           // ORD-2026-XXXX
   referenceNumber?: string;    // REF-XXXX
+  tenantId?: string;          // Multi-Tenant Isolation: ID of the managing Operations Admin / Company
+  adminId?: string;
   status: OrderStatus;
   paymentType: PaymentType;
   

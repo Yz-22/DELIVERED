@@ -27,12 +27,14 @@ import { PermissionsManager } from './PermissionsManager';
 
 interface UsersManagementProps {
   users: User[];
+  currentUser?: User | null;
   onAddUser: (user: Partial<User>) => void;
   onUpdateUser: (id: string, user: Partial<User>) => void;
 }
 
 export const UsersManagement: React.FC<UsersManagementProps> = ({
   users,
+  currentUser,
   onAddUser,
   onUpdateUser,
 }) => {
@@ -53,9 +55,9 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
     commercialType: 'تجارة تجزئة ومتاجر إلكترونية',
     priceList: 'جميع المملكة 2 (2.0 د.أ عمان / 3.0 د.أ المحافظات)',
     previousPriceList: 'قائمة الأسعار القياسية 2025',
-    branch: 'فرع عمان الرئيسي',
-    accountManager: 'باسل البلبيسي',
-    city: 'عمان',
+    branch: currentUser?.branch || 'فرع عمان الرئيسي',
+    accountManager: currentUser?.name || 'باسل البلبيسي',
+    city: currentUser?.city || 'عمان',
     isActive: true,
   });
 
@@ -125,7 +127,10 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
     if (editingUser) {
       onUpdateUser(editingUser.id, formData);
     } else {
-      onAddUser(formData);
+      onAddUser({
+        ...formData,
+        parentUserId: currentUser?.role === 'ADMIN' ? currentUser.id : undefined,
+      });
     }
     setIsCreateModalOpen(false);
   };
