@@ -298,11 +298,19 @@ export const SuperAdminMasterHub: React.FC<SuperAdminMasterHubProps> = ({
         setNewAccPhone('');
         onRefresh();
       } else {
-        const data = await res.json();
-        showToast(data.error || 'فشل إنشاء الحساب', 'error');
+        let errorMsg = 'فشل إنشاء الحساب في الخادم';
+        try {
+          const data = await res.json();
+          errorMsg = data.error || data.message || errorMsg;
+        } catch {
+          const rawText = await res.text().catch(() => '');
+          errorMsg = rawText ? `خطأ (${res.status}): ${rawText.slice(0, 120)}` : `فشل استجابة الخادم (كود: ${res.status})`;
+        }
+        showToast(errorMsg, 'error');
       }
-    } catch (e) {
-      showToast('حدث خطأ أثناء إنشاء الحساب', 'error');
+    } catch (e: any) {
+      console.error('Account creation error:', e);
+      showToast(e?.message ? `خطأ أثناء الاتصال: ${e.message}` : 'حدث خطأ غير متوقع أثناء إنشاء الحساب', 'error');
     } finally {
       setIsSubmitting(false);
     }
