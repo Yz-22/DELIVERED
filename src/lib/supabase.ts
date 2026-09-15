@@ -48,7 +48,7 @@ export interface SupabaseConfigStatus {
 export function getSupabaseConfig(): SupabaseConfigStatus {
   return {
     configured: isSupabaseConfigured,
-    url: supabaseUrl || 'غير مهيأ (وضع محلي تجريبي)',
+    url: supabaseUrl || 'قاعدة بيانات مدمجة (Standalone DB)',
     hasKey: Boolean(supabaseAnonKey),
   };
 }

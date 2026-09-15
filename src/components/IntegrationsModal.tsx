@@ -41,15 +41,6 @@ export const IntegrationsModal: React.FC<IntegrationsModalProps> = ({
   const [newKeyPlatform, setNewKeyPlatform] = useState<'SHOPIFY' | 'WOOCOMMERCE' | 'SALLA' | 'ZID' | 'CUSTOM'>('SHOPIFY');
   const [isGeneratingKey, setIsGeneratingKey] = useState(false);
 
-  // Webhook Simulator State
-  const [simCustomerName, setSimCustomerName] = useState('سناء الكردي');
-  const [simPhone, setSimPhone] = useState('0795554321');
-  const [simArea, setSimArea] = useState('عبدون');
-  const [simCod, setSimCod] = useState('42.0');
-  const [simItem, setSimItem] = useState('ساعة يد فاخرة + طقم هدايا');
-  const [isSimulating, setIsSimulating] = useState(false);
-  const [simulationResult, setSimulationResult] = useState<any | null>(null);
-
   useEffect(() => {
     if (isOpen && selectedMerchantId) {
       fetchKeys(selectedMerchantId);
@@ -99,36 +90,6 @@ export const IntegrationsModal: React.FC<IntegrationsModalProps> = ({
       // ignore
     } finally {
       setIsGeneratingKey(false);
-    }
-  };
-
-  const handleSimulateWebhook = async () => {
-    setIsSimulating(true);
-    setSimulationResult(null);
-    try {
-      const res = await fetch('/api/webhooks/shopify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          merchantId: selectedMerchantId,
-          customerName: simCustomerName,
-          phone: simPhone,
-          governorate: 'عمان',
-          area: simArea,
-          address: `عمان، ${simArea}، مجمع الروابي التجاري`,
-          codAmount: parseFloat(simCod) || 40,
-          itemsDescription: simItem,
-        }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setSimulationResult(data);
-        onOrderCreatedFromWebhook();
-      }
-    } catch {
-      // ignore
-    } finally {
-      setIsSimulating(false);
     }
   };
 
@@ -214,7 +175,7 @@ export const IntegrationsModal: React.FC<IntegrationsModalProps> = ({
 
         {/* Content Body */}
         <div className="p-5 overflow-y-auto flex-1 space-y-5">
-          {/* TAB 1: WEBHOOKS & SIMULATOR */}
+          {/* TAB 1: WEBHOOKS */}
           {activeTab === 'webhooks' && (
             <div className="space-y-5">
               {/* Webhook URL Box */}
@@ -222,7 +183,7 @@ export const IntegrationsModal: React.FC<IntegrationsModalProps> = ({
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-amber-400 flex items-center gap-1.5">
                     <Webhook className="w-4 h-4" />
-                    <span>رابط الاستقبال التلقائي (Webhook Endpoint URL):</span>
+                    <span>رابط الاستقبال التلقائي الفعلي (Webhook Endpoint URL):</span>
                   </span>
                   <span className="text-[10px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded font-mono">
                     POST / JSON
@@ -234,95 +195,63 @@ export const IntegrationsModal: React.FC<IntegrationsModalProps> = ({
                   </code>
                   <button
                     onClick={() => handleCopy(webhookUrl)}
-                    className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold rounded-lg flex items-center gap-1 shrink-0 transition-colors"
+                    className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold rounded-lg flex items-center gap-1 shrink-0 transition-colors cursor-pointer"
                   >
                     {copiedText === webhookUrl ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                     <span>{copiedText === webhookUrl ? 'تم النسخ' : 'نسخ الرابط'}</span>
                   </button>
                 </div>
                 <p className="text-[11px] text-slate-400">
-                  انسخ هذا الرابط وضعه في إعدادات Notifications/Webhooks داخل لوحة تحكم Shopify أو سلة عند حدوث حدث <strong>Order Creation</strong> ليتم إصدار البوليصة تلقائياً فور طلب الزبون.
+                  انسخ هذا الرابط وضعه في إعدادات Notifications/Webhooks داخل متجرك الإلكتروني في Shopify أو سلة أو ووكومرس عند حدوث حدث <strong>Order Creation</strong> ليتم إصدار بوليصة الشحن تلقائياً فور طلب العميل.
                 </p>
               </div>
 
-              {/* Live Webhook Simulator */}
-              <div className="bg-gradient-to-br from-amber-50/50 to-orange-50/40 border border-amber-200 rounded-2xl p-5 space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h4 className="text-sm font-black text-slate-900 flex items-center gap-2">
-                      <Sparkles className="w-4 h-4 text-amber-600" />
-                      <span>محاكاة وصول طلب حقيقي من متجر إلكتروني (Live Webhook Test):</span>
-                    </h4>
-                    <p className="text-xs text-slate-600 mt-0.5">
-                      جرّب إرسال طلب تجريبي لترى كيف يستقبله نظام DarGo ويُنشئ له بوليصة شحن وباركود فوراً.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleSimulateWebhook}
-                    disabled={isSimulating}
-                    className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-amber-400 font-black text-xs rounded-xl shadow-md flex items-center gap-2 transition-colors disabled:opacity-50"
-                  >
-                    <Play className="w-3.5 h-3.5 fill-amber-400" />
-                    <span>{isSimulating ? 'جاري الاستقبال...' : 'إرسال طلب تجريبي الآن'}</span>
-                  </button>
+              {/* Webhook Production Payload Specifications */}
+              <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4 shadow-xs">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <h4 className="text-sm font-black text-slate-900 flex items-center gap-2">
+                    <Code2 className="w-4 h-4 text-amber-600" />
+                    <span>هيكل حزمة البيانات الرسمية (Production Webhook Payload Schema):</span>
+                  </h4>
+                  <span className="text-[11px] font-bold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-lg">
+                    Content-Type: application/json
+                  </span>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-700 mb-1">اسم الزبون:</label>
-                    <input
-                      type="text"
-                      value={simCustomerName}
-                      onChange={(e) => setSimCustomerName(e.target.value)}
-                      className="w-full text-xs p-2 bg-white border border-slate-300 rounded-xl"
-                    />
+                <div className="space-y-3">
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    يرسل المتجر الإلكتروني طلباً عبر بروتوكول HTTP POST إلى رابط الـ Webhook متضمناً تفاصيل العميل، العنوان، والمبلغ المطلوب تحصيله نقداً عند التسليم (COD).
+                  </p>
+
+                  <div className="bg-slate-950 text-slate-200 rounded-xl p-4 font-mono text-xs overflow-x-auto border border-slate-800" dir="ltr">
+{`{
+  "merchantId": "${selectedMerchantId}",
+  "customerName": "سناء الكردي",
+  "phone": "0795554321",
+  "governorate": "عمان",
+  "area": "عبدون",
+  "address": "عمان، عبدون، شارع دمشق، عمارة 14",
+  "codAmount": 42.00,
+  "itemsDescription": "حقيبة جلدية فاخرة",
+  "notes": "الاتصال قبل الوصول بساعة"
+}`}
                   </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-700 mb-1">هاتف الزبون:</label>
-                    <input
-                      type="text"
-                      value={simPhone}
-                      onChange={(e) => setSimPhone(e.target.value)}
-                      className="w-full text-xs p-2 bg-white border border-slate-300 rounded-xl font-mono"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-700 mb-1">المنطقة:</label>
-                    <input
-                      type="text"
-                      value={simArea}
-                      onChange={(e) => setSimArea(e.target.value)}
-                      className="w-full text-xs p-2 bg-white border border-slate-300 rounded-xl"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-700 mb-1">المبلغ المطلوب COD (د.أ):</label>
-                    <input
-                      type="number"
-                      value={simCod}
-                      onChange={(e) => setSimCod(e.target.value)}
-                      className="w-full text-xs p-2 bg-white border border-slate-300 rounded-xl font-bold"
-                    />
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
+                      <div className="text-xs font-bold text-slate-900 mb-1">استجابة النجاح (201 Created)</div>
+                      <div className="text-[11px] text-slate-600">
+                        يقوم النظام بحفظ الطلب وإصدار رقم التتبع والبوليصة ورمز OTP للاستلام، وإرجاع بيانات الشحنة فوراً.
+                      </div>
+                    </div>
+                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
+                      <div className="text-xs font-bold text-slate-900 mb-1">الأمان والتحقق (Security)</div>
+                      <div className="text-[11px] text-slate-600">
+                        يتم التحقق من الـ Token الخاص بالتاجر والتأكد من مطابقة صلاحيات الحساب وتفعيل الاشتراك.
+                      </div>
+                    </div>
                   </div>
                 </div>
-
-                {simulationResult && (
-                  <div className="bg-emerald-50 border border-emerald-300 p-4 rounded-2xl animate-in fade-in space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-black text-emerald-800 flex items-center gap-1.5">
-                        <Check className="w-4 h-4 text-emerald-600" />
-                        <span>نجح استقبال الطلب وتوليد البوليصة عبر الويب هوك:</span>
-                      </span>
-                      <span className="text-xs font-mono font-black text-slate-900 bg-white px-2 py-0.5 rounded border border-emerald-200">
-                        {simulationResult.order?.sequence}
-                      </span>
-                    </div>
-                    <div className="text-xs text-slate-700">
-                      تم إنشاء الشحنة تلقائياً لحساب (<strong>{currentMerchant?.commercialName || currentMerchant?.name}</strong>) وتم تعيين رمز تحقق الاستلام POD: <strong className="font-mono text-amber-700">{simulationResult.order?.deliveryOtp}</strong>
-                    </div>
-                  </div>
-                )}
               </div>
             </div>
           )}

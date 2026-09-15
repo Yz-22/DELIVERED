@@ -54,11 +54,8 @@ interface TopNavbarProps {
   onOpenSchemaDoc: () => void;
   onOpenIntegrations?: () => void;
   currentUser?: User | null;
-  onOpenAuthLogin?: () => void;
   onLogout?: () => void;
   onDownloadBackup?: () => void;
-  onSwitchRoleQuick?: (role: Role) => void;
-  onQuickRoleSwitch?: (role: Role) => void;
 }
 
 export const TopNavbar: React.FC<TopNavbarProps> = ({
@@ -70,7 +67,6 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
   onOpenSchemaDoc,
   onOpenIntegrations,
   currentUser,
-  onOpenAuthLogin,
   onLogout,
   onDownloadBackup,
 }) => {
@@ -695,20 +691,6 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                   </div>
 
                   <div className="space-y-1">
-                    {onOpenAuthLogin && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsProfileMenuOpen(false);
-                          onOpenAuthLogin();
-                        }}
-                        className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 transition-colors text-right"
-                      >
-                        <UserIcon className="w-4 h-4 text-amber-400" />
-                        <span>تبديل الحساب / محاكاة الدور</span>
-                      </button>
-                    )}
-
                     {onLogout && (
                       <button
                         type="button"
@@ -716,7 +698,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                           setIsProfileMenuOpen(false);
                           onLogout();
                         }}
-                        className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold text-rose-400 hover:bg-rose-500/10 border border-transparent hover:border-rose-500/20 transition-colors text-right"
+                        className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold text-rose-400 hover:bg-rose-500/10 border border-transparent hover:border-rose-500/20 transition-colors text-right cursor-pointer"
                       >
                         <LogOut className="w-4 h-4 text-rose-400" />
                         <span>تسجيل الخروج من النظام</span>

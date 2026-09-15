@@ -29,14 +29,12 @@ interface UsersManagementProps {
   users: User[];
   onAddUser: (user: Partial<User>) => void;
   onUpdateUser: (id: string, user: Partial<User>) => void;
-  onSelectUserToSimulate?: (user: User) => void;
 }
 
 export const UsersManagement: React.FC<UsersManagementProps> = ({
   users,
   onAddUser,
   onUpdateUser,
-  onSelectUserToSimulate,
 }) => {
   const [activeTab, setActiveTab] = useState<'ALL' | 'STAFF' | 'MERCHANT' | 'DRIVER' | 'HIERARCHY_RBAC'>('HIERARCHY_RBAC');
   const [searchQuery, setSearchQuery] = useState('');
@@ -371,16 +369,6 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
                     {/* Actions */}
                     <td className="p-3.5 text-center">
                       <div className="flex items-center justify-center gap-1.5">
-                        {onSelectUserToSimulate && (
-                          <button
-                            type="button"
-                            onClick={() => onSelectUserToSimulate(u)}
-                            className="p-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 transition-colors"
-                            title="محاكاة تسجيل الدخول بهذا الحساب"
-                          >
-                            <KeyRound className="w-3.5 h-3.5" />
-                          </button>
-                        )}
                         <button
                           type="button"
                           onClick={() => handleOpenEdit(u)}

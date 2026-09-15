@@ -50,6 +50,11 @@ app.use((req, res, next) => {
   next();
 });
 
+// Health check endpoints for container and infrastructure monitoring
+app.get(['/api/health', '/health'], (req, res) => {
+  res.json({ status: 'ok', time: new Date().toISOString() });
+});
+
 // Detect Serverless / Vercel environment
 const isServerlessEnv = Boolean(
   process.env.VERCEL ||
@@ -827,95 +832,102 @@ app.post('/api/price-plans/calculate', (req, res) => {
 
 // 1. GET /api/orders: Fetch orders with pagination, search & filters
 app.get('/api/orders', (req, res) => {
-  const page = Math.max(1, parseInt(req.query.page as string) || 1);
-  const limit = Math.max(1, parseInt(req.query.limit as string) || 10);
-  const search = (req.query.search as string || '').trim().toLowerCase();
-  const status = req.query.status as string;
-  const governorate = req.query.governorate as string;
-  const merchantId = req.query.merchantId as string;
-  const driverId = req.query.driverId as string;
-  const sortBy = (req.query.sortBy as string) || 'createdAt';
-  const sortDir = (req.query.sortDir as string) || 'desc';
+  try {
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.max(1, parseInt(req.query.limit as string) || 10);
+    const search = (req.query.search as string || '').trim().toLowerCase();
+    const status = req.query.status as string;
+    const governorate = req.query.governorate as string;
+    const merchantId = req.query.merchantId as string;
+    const driverId = req.query.driverId as string;
+    const sortBy = (req.query.sortBy as string) || 'createdAt';
+    const sortDir = (req.query.sortDir as string) || 'desc';
 
-  let filtered = [...orders];
+    const safeOrders = Array.isArray(orders) ? orders : [];
+    let filtered = [...safeOrders];
 
-  // Search by Sequence, Reference, Recipient Phone, Recipient Name, or Area
-  if (search) {
-    filtered = filtered.filter((o) => {
-      return (
-        o.sequence.toLowerCase().includes(search) ||
-        (o.referenceNumber && o.referenceNumber.toLowerCase().includes(search)) ||
-        o.recipientPhone.includes(search) ||
-        o.recipientName.toLowerCase().includes(search) ||
-        o.area.toLowerCase().includes(search) ||
-        o.governorate.toLowerCase().includes(search)
-      );
+    // Search by Sequence, Reference, Recipient Phone, Recipient Name, or Area
+    if (search) {
+      filtered = filtered.filter((o) => {
+        if (!o) return false;
+        return (
+          (o.sequence && o.sequence.toLowerCase().includes(search)) ||
+          (o.referenceNumber && o.referenceNumber.toLowerCase().includes(search)) ||
+          (o.recipientPhone && o.recipientPhone.toString().includes(search)) ||
+          (o.recipientName && o.recipientName.toLowerCase().includes(search)) ||
+          (o.area && o.area.toLowerCase().includes(search)) ||
+          (o.governorate && o.governorate.toLowerCase().includes(search))
+        );
+      });
+    }
+
+    // Filter by Status
+    if (status && status !== 'ALL') {
+      filtered = filtered.filter((o) => o && o.status === status);
+    }
+
+    // Filter by Governorate
+    if (governorate && governorate !== 'ALL') {
+      filtered = filtered.filter((o) => o && o.governorate === governorate);
+    }
+
+    // Filter by Merchant
+    if (merchantId && merchantId !== 'ALL') {
+      filtered = filtered.filter((o) => o && o.merchantId === merchantId);
+    }
+
+    // Filter by Driver
+    if (driverId) {
+      if (driverId === 'UNASSIGNED') {
+        filtered = filtered.filter((o) => o && !o.driverId);
+      } else if (driverId !== 'ALL') {
+        filtered = filtered.filter((o) => o && o.driverId === driverId);
+      }
+    }
+
+    // Sort
+    filtered.sort((a: any, b: any) => {
+      let aVal = a?.[sortBy] ?? '';
+      let bVal = b?.[sortBy] ?? '';
+      if (typeof aVal === 'string') {
+        return sortDir === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+      }
+      return sortDir === 'asc' ? aVal - bVal : bVal - aVal;
     });
+
+    // Calculate Global Stats from All Current Orders
+    const stats = {
+      total: safeOrders.length,
+      pending: safeOrders.filter((o) => o?.status === 'PENDING').length,
+      picking: safeOrders.filter((o) => o?.status === 'PICKING').length,
+      out_for_delivery: safeOrders.filter((o) => o?.status === 'OUT_FOR_DELIVERY').length,
+      delivered: safeOrders.filter((o) => o?.status === 'DELIVERED').length,
+      cancelled: safeOrders.filter((o) => o?.status === 'CANCELLED').length,
+      postponed: safeOrders.filter((o) => o?.status === 'POSTPONED').length,
+      totalCOD: safeOrders.reduce((sum, o) => sum + (o?.totalCollection || 0), 0),
+      totalDeliveryFees: safeOrders.reduce((sum, o) => sum + (o?.deliveryFee || 0), 0),
+    };
+
+    // Pagination Slice
+    const total = filtered.length;
+    const totalPages = Math.ceil(total / limit) || 1;
+    const startIndex = (page - 1) * limit;
+    const paginatedOrders = filtered.slice(startIndex, startIndex + limit).map(populateOrder);
+
+    res.json({
+      orders: paginatedOrders,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages,
+      },
+      stats,
+    });
+  } catch (err: any) {
+    console.error('Error fetching orders:', err);
+    res.status(500).json({ error: err?.message || 'خطأ في جلب الشحنات' });
   }
-
-  // Filter by Status
-  if (status && status !== 'ALL') {
-    filtered = filtered.filter((o) => o.status === status);
-  }
-
-  // Filter by Governorate
-  if (governorate && governorate !== 'ALL') {
-    filtered = filtered.filter((o) => o.governorate === governorate);
-  }
-
-  // Filter by Merchant
-  if (merchantId && merchantId !== 'ALL') {
-    filtered = filtered.filter((o) => o.merchantId === merchantId);
-  }
-
-  // Filter by Driver
-  if (driverId) {
-    if (driverId === 'UNASSIGNED') {
-      filtered = filtered.filter((o) => !o.driverId);
-    } else if (driverId !== 'ALL') {
-      filtered = filtered.filter((o) => o.driverId === driverId);
-    }
-  }
-
-  // Sort
-  filtered.sort((a: any, b: any) => {
-    let aVal = a[sortBy] ?? '';
-    let bVal = b[sortBy] ?? '';
-    if (typeof aVal === 'string') {
-      return sortDir === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
-    }
-    return sortDir === 'asc' ? aVal - bVal : bVal - aVal;
-  });
-
-  // Calculate Global Stats from All Current Orders
-  const stats = {
-    total: orders.length,
-    pending: orders.filter((o) => o.status === 'PENDING').length,
-    picking: orders.filter((o) => o.status === 'PICKING').length,
-    out_for_delivery: orders.filter((o) => o.status === 'OUT_FOR_DELIVERY').length,
-    delivered: orders.filter((o) => o.status === 'DELIVERED').length,
-    cancelled: orders.filter((o) => o.status === 'CANCELLED').length,
-    postponed: orders.filter((o) => o.status === 'POSTPONED').length,
-    totalCOD: orders.reduce((sum, o) => sum + (o.totalCollection || 0), 0),
-    totalDeliveryFees: orders.reduce((sum, o) => sum + (o.deliveryFee || 0), 0),
-  };
-
-  // Pagination Slice
-  const total = filtered.length;
-  const totalPages = Math.ceil(total / limit) || 1;
-  const startIndex = (page - 1) * limit;
-  const paginatedOrders = filtered.slice(startIndex, startIndex + limit).map(populateOrder);
-
-  res.json({
-    orders: paginatedOrders,
-    pagination: {
-      total,
-      page,
-      limit,
-      totalPages,
-    },
-    stats,
-  });
 });
 
 // 2. GET /api/orders/:id: Get single order details with status logs
@@ -1957,56 +1969,62 @@ app.post('/api/webhooks/shopify', (req, res) => {
 
 // 26. POST /api/auth/login: User Authentication by Email/Phone & Password (managed by Super Admin)
 app.post('/api/auth/login', (req, res) => {
-  const { email, phone, password, requireOps } = req.body;
-  let user: User | undefined = undefined;
+  try {
+    const { email, phone, password, requireOps } = req.body || {};
+    let user: User | undefined = undefined;
 
-  const identifier = email || phone;
-  if (!identifier || !identifier.toString().trim()) {
-    return res.status(400).json({ error: 'يرجى إدخال البريد الإلكتروني أو رقم الهاتف' });
-  }
+    const identifier = email || phone;
+    if (!identifier || !identifier.toString().trim()) {
+      return res.status(400).json({ error: 'يرجى إدخال البريد الإلكتروني أو رقم الهاتف' });
+    }
 
-  const cleanId = identifier.toString().trim().toLowerCase();
-  user = users.find(
-    (u) =>
-      (u.email && u.email.trim().toLowerCase() === cleanId) ||
-      (u.phone && u.phone.trim() === cleanId)
-  );
+    const cleanId = identifier.toString().trim().toLowerCase();
+    const safeUsers = Array.isArray(users) ? users : [];
+    user = safeUsers.find(
+      (u) =>
+        (u?.email && u.email.trim().toLowerCase() === cleanId) ||
+        (u?.phone && u.phone.trim() === cleanId)
+    );
 
-  if (!user) {
-    return res.status(401).json({
-      error: 'البريد الإلكتروني أو رقم الهاتف غير مسجل في النظام. يرجى التواصل مع المدير العام (Super Admin) لإنشاء حسابك.',
+    if (!user) {
+      return res.status(401).json({
+        error: 'البريد الإلكتروني أو رقم الهاتف غير مسجل في النظام. يرجى التواصل مع المدير العام (Super Admin) لإنشاء حسابك.',
+      });
+    }
+
+    if (user.isActive === false) {
+      return res.status(403).json({
+        error: 'تم تعطيل هذا الحساب من قبل إدارة النظام. يرجى مراجعة المسؤول.',
+      });
+    }
+
+    // If logging in from the dedicated OPS portal, enforce that user must be SUPER_ADMIN
+    if (requireOps && user.role !== 'SUPER_ADMIN') {
+      return res.status(403).json({
+        error: 'عفواً، بوابة OPS مخصصة حصرياً للمدير العام للنظام (Super Admin). يرجى التوجه إلى بوابة العمليات والتجار العامة.',
+        isNotSuperAdmin: true,
+      });
+    }
+
+    const inputPass = password ? password.toString().trim() : '';
+    const expectedPass = user.password || (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN' ? 'admin123' : '123456');
+
+    if (inputPass !== expectedPass) {
+      return res.status(401).json({
+        error: 'كلمة المرور غير صحيحة، يرجى التحقق والمحاولة مرة أخرى.',
+      });
+    }
+
+    res.json({
+      success: true,
+      user,
+      token: `dargo_jwt_${user.id}_${Date.now()}`,
+      message: `مرحباً بك يا ${user.name}`,
     });
+  } catch (err: any) {
+    console.error('Error during login:', err);
+    res.status(500).json({ error: err?.message || 'خطأ أثناء تسجيل الدخول' });
   }
-
-  if (user.isActive === false) {
-    return res.status(403).json({
-      error: 'تم تعطيل هذا الحساب من قبل إدارة النظام. يرجى مراجعة المسؤول.',
-    });
-  }
-
-  // If logging in from the dedicated OPS portal, enforce that user must be SUPER_ADMIN
-  if (requireOps && user.role !== 'SUPER_ADMIN') {
-    return res.status(403).json({
-      error: 'عفواً، بوابة OPS مخصصة حصرياً للمدير العام للنظام (Super Admin). يرجى التوجه إلى بوابة العمليات والتجار العامة.',
-      isNotSuperAdmin: true,
-    });
-  }
-
-  const inputPass = password ? password.toString().trim() : '';
-  const expectedPass = user.password || (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN' ? 'admin123' : '123456');
-
-  if (inputPass !== expectedPass) {
-    return res.status(401).json({
-      error: 'كلمة المرور غير صحيحة، يرجى التحقق والمحاولة مرة أخرى.',
-    });
-  }
-
-  res.json({
-    success: true,
-    user,
-    token: `dargo_jwt_${user.id}_${Date.now()}`,
-    message: `مرحباً بك يا ${user.name}`,
-  });
 });
 
 // 26.0 POST /api/auth/register-ops: Direct Super Admin Registration from OPS Portal
@@ -2087,37 +2105,49 @@ app.post('/api/auth/register-ops', (req, res) => {
 
 // 26.0 POST /api/auth/verify: Verify session token and current user
 app.post('/api/auth/verify', (req, res) => {
-  const { userId } = req.body;
-  if (!userId) {
-    return res.status(400).json({ error: 'معرف المستخدم مطلوب' });
-  }
+  try {
+    const { userId } = req.body || {};
+    if (!userId) {
+      return res.status(400).json({ error: 'معرف المستخدم مطلوب' });
+    }
 
-  const user = users.find((u) => u.id === userId);
-  if (!user) {
-    return res.status(404).json({ error: 'المستخدم غير موجود' });
-  }
+    const safeUsers = Array.isArray(users) ? users : [];
+    const user = safeUsers.find((u) => u?.id === userId);
+    if (!user) {
+      return res.status(404).json({ error: 'المستخدم غير موجود' });
+    }
 
-  if (!user.isActive) {
-    return res.status(403).json({ error: 'الحساب غير نشط' });
-  }
+    if (user.isActive === false) {
+      return res.status(403).json({ error: 'الحساب غير نشط' });
+    }
 
-  res.json({ success: true, user });
+    res.json({ success: true, user });
+  } catch (err: any) {
+    console.error('Error verifying auth session:', err);
+    res.status(500).json({ error: err?.message || 'خطأ في التحقق من الجلسة' });
+  }
 });
 
 // 26.1 GET /api/users: List Users with RBAC Hierarchy
 app.get('/api/users', (req, res) => {
-  const role = req.query.role as string;
-  const parentUserId = req.query.parentUserId as string;
+  try {
+    const role = req.query.role as string;
+    const parentUserId = req.query.parentUserId as string;
 
-  let filtered = [...users];
-  if (role && role !== 'ALL') {
-    filtered = filtered.filter((u) => u.role === role);
-  }
-  if (parentUserId) {
-    filtered = filtered.filter((u) => u.parentUserId === parentUserId);
-  }
+    const safeUsers = Array.isArray(users) ? users : [];
+    let filtered = [...safeUsers];
+    if (role && role !== 'ALL') {
+      filtered = filtered.filter((u) => u?.role === role);
+    }
+    if (parentUserId) {
+      filtered = filtered.filter((u) => u?.parentUserId === parentUserId);
+    }
 
-  res.json(filtered);
+    res.json(filtered);
+  } catch (err: any) {
+    console.error('Error listing users:', err);
+    res.status(500).json({ error: err?.message || 'خطأ في جلب المستخدمين' });
+  }
 });
 
 // 26.2 POST /api/users: Create User with Hierarchy, Password, Permissions and Subscriptions

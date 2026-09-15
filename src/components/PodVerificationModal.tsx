@@ -330,10 +330,13 @@ export const PodVerificationModal: React.FC<PodVerificationModalProps> = ({
 
             {photoData ? (
               <div className="relative rounded-2xl overflow-hidden border border-slate-200 bg-slate-100 p-2 flex items-center justify-between">
-                <span className="text-xs text-emerald-700 font-bold flex items-center gap-1">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                  <span>تم إرفاق صورة إثبات التسليم</span>
-                </span>
+                <div className="flex items-center gap-2">
+                  <img src={photoData} alt="POD" className="w-10 h-10 object-cover rounded-lg border border-slate-300" />
+                  <span className="text-xs text-emerald-700 font-bold flex items-center gap-1">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    <span>تم إرفاق صورة إثبات التسليم الحقيقية</span>
+                  </span>
+                </div>
                 <button
                   type="button"
                   onClick={() => setPhotoData(null)}
@@ -343,18 +346,28 @@ export const PodVerificationModal: React.FC<PodVerificationModalProps> = ({
                 </button>
               </div>
             ) : (
-              <button
-                type="button"
-                onClick={() =>
-                  setPhotoData(
-                    'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="100%" height="100%" fill="%23e2e8f0"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-size="12" fill="%23475569">إثبات تسليم الطرد عند الباب</text></svg>'
-                  )
-                }
-                className="w-full py-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-300 rounded-xl text-xs text-slate-700 font-bold flex items-center justify-center gap-1.5 transition-colors"
-              >
+              <label className="w-full py-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-300 rounded-xl text-xs text-slate-700 font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer">
                 <Camera className="w-3.5 h-3.5 text-slate-500" />
-                <span>التقاط / محاكاة صورة الطرد عند الباب</span>
-              </button>
+                <span>التقاط صورة بكاميرا الهاتف أو اختيار صورة الطرد</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      const reader = new FileReader();
+                      reader.onload = () => {
+                        if (typeof reader.result === 'string') {
+                          setPhotoData(reader.result);
+                        }
+                      };
+                      reader.readAsDataURL(file);
+                    }
+                  }}
+                />
+              </label>
             )}
           </div>
 

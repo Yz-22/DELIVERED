@@ -19,7 +19,6 @@ import { OrderDetailsDrawer } from './components/OrderDetailsDrawer';
 import { ThermalWaybillModal } from './components/ThermalWaybillModal';
 import { SchemaAndApiModal } from './components/SchemaAndApiModal';
 import { IntegrationsModal } from './components/IntegrationsModal';
-import { AuthLoginModal } from './components/AuthLoginModal';
 import { CliqPaymentModal } from './components/CliqPaymentModal';
 import { OperationsDashboardGrid } from './components/OperationsDashboardGrid';
 import { UsersManagement } from './components/UsersManagement';
@@ -88,7 +87,6 @@ export default function App() {
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isAuthChecking, setIsAuthChecking] = useState<boolean>(true);
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [cliqOrder, setCliqOrder] = useState<Order | null>(null);
 
   // Active User Role & RBAC Security Matrix
@@ -380,34 +378,6 @@ export default function App() {
     }
   };
 
-  const handleQuickRoleSwitch = (targetRole: Role) => {
-    const foundUser = allUsers.find((u) => u.role === targetRole);
-    if (foundUser) {
-      handleSelectUser(foundUser);
-    } else {
-      const fallbackUser: User = {
-        id: `sim-${targetRole.toLowerCase()}`,
-        name:
-          targetRole === 'ADMIN'
-            ? 'باسل البلبيسي (مدير العمليات)'
-            : targetRole === 'OPERATOR'
-            ? 'أنس الرواشدة (مسؤول الفرز والمستودع)'
-            : targetRole === 'MERCHANT'
-            ? 'متجر سحر الشرق للأزياء'
-            : 'أحمد خليل (كابتن توصيل)',
-        email: `${targetRole.toLowerCase()}@dargo-tms.io`,
-        phone: '0795551234',
-        role: targetRole,
-        commercialName: targetRole === 'MERCHANT' ? 'سحر الشرق فاشن' : undefined,
-        priceList: 'جميع المملكة 2',
-        branch: 'فرع عمان الرئيسي',
-        city: 'عمان',
-        isActive: true,
-      };
-      handleSelectUser(fallbackUser);
-    }
-  };
-
   const handleAddUser = async (newUserData: Partial<User>): Promise<User | null> => {
     try {
       const res = await fetch('/api/users', {
@@ -537,12 +507,33 @@ export default function App() {
   useEffect(() => {
     const initAuthAndUsers = async () => {
       try {
-        const res = await fetch('/api/users');
-        if (res.ok) {
-          const data: User[] = await res.json();
-          setAllUsers(data);
-          setMerchants(data.filter((u) => u.role === 'MERCHANT'));
-          setDrivers(data.filter((u) => u.role === 'DRIVER'));
+        let usersLoaded = false;
+        try {
+          const res = await fetch('/api/users');
+          if (res.ok) {
+            const data: User[] = await res.json();
+            setAllUsers(data);
+            setMerchants(data.filter((u) => u.role === 'MERCHANT'));
+            setDrivers(data.filter((u) => u.role === 'DRIVER'));
+            usersLoaded = true;
+          }
+        } catch {
+          // Will attempt retry below
+        }
+
+        if (!usersLoaded) {
+          try {
+            await new Promise((r) => setTimeout(r, 800));
+            const retryRes = await fetch('/api/users');
+            if (retryRes.ok) {
+              const data: User[] = await retryRes.json();
+              setAllUsers(data);
+              setMerchants(data.filter((u) => u.role === 'MERCHANT'));
+              setDrivers(data.filter((u) => u.role === 'DRIVER'));
+            }
+          } catch (retryErr) {
+            console.warn('Initial users fetch retry failed:', retryErr);
+          }
         }
 
         const savedSession = localStorage.getItem('dargo_user_session');
@@ -560,10 +551,13 @@ export default function App() {
                 if (verified.user) {
                   setCurrentUser(verified.user);
                 }
+              } else if (verifyRes.status === 401 || verifyRes.status === 404 || verifyRes.status === 403) {
+                localStorage.removeItem('dargo_user_session');
               }
             }
           } catch (e) {
             console.error('Session verify error:', e);
+            localStorage.removeItem('dargo_user_session');
           }
         }
       } catch (e) {
@@ -855,7 +849,6 @@ export default function App() {
         onOpenSchemaDoc={() => setIsSchemaModalOpen(true)}
         onOpenIntegrations={() => setIsIntegrationsOpen(true)}
         currentUser={currentUser}
-        onOpenAuthLogin={() => setIsAuthModalOpen(true)}
         onLogout={handleLogout}
         onDownloadBackup={handleDownloadBackup}
       />
@@ -1046,7 +1039,6 @@ export default function App() {
               users={allUsers}
               onAddUser={handleAddUser}
               onUpdateUser={handleUpdateUser}
-              onSelectUserToSimulate={handleSelectUser}
             />
           </main>
         ) : (
@@ -1284,19 +1276,6 @@ export default function App() {
       <SchemaAndApiModal
         isOpen={isSchemaModalOpen}
         onClose={() => setIsSchemaModalOpen(false)}
-      />
-
-      {/* Auth & RBAC Session Modal */}
-      <AuthLoginModal
-        isOpen={isAuthModalOpen}
-        onClose={() => setIsAuthModalOpen(false)}
-        currentUser={currentUser}
-        onSelectUser={handleSelectUser}
-        allUsers={allUsers}
-        onLogout={() => {
-          setCurrentUser(null);
-          showToast('تم تسجيل الخروج');
-        }}
       />
 
       {/* Jordan JoPACC CliQ Payment Modal */}

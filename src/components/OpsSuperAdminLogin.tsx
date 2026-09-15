@@ -34,8 +34,8 @@ export const OpsSuperAdminLogin: React.FC<OpsSuperAdminLoginProps> = ({
   const [activeTab, setActiveTab] = useState<'LOGIN' | 'REGISTER'>('LOGIN');
 
   // Login form state
-  const [loginEmail, setLoginEmail] = useState('admin@dargo-tms.io');
-  const [loginPassword, setLoginPassword] = useState('admin123');
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
   const [showLoginPassword, setShowLoginPassword] = useState(false);
 
   // Register form state
