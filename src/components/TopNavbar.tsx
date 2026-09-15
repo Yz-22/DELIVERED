@@ -342,6 +342,22 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
             {/* SUPER_ADMIN & ADMIN Role Menus */}
             {(role === 'SUPER_ADMIN' || role === 'ADMIN') && (
               <>
+                {/* مركز السوبر أدمن المعتمد للمدير العام */}
+                {role === 'SUPER_ADMIN' && (
+                  <button
+                    type="button"
+                    onClick={() => onChangeSection('super_admin_hub')}
+                    className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
+                      activeSection === 'super_admin_hub'
+                        ? 'bg-amber-500 text-slate-950 font-black shadow-md ring-1 ring-amber-400'
+                        : 'bg-amber-500/15 text-amber-400 border border-amber-500/30 hover:bg-amber-500/25 font-bold'
+                    }`}
+                  >
+                    <Shield className="w-3.5 h-3.5 text-amber-400 stroke-[2.5]" />
+                    <span>مركز السوبر أدمن (OPS Hub)</span>
+                  </button>
+                )}
+
                 {/* لوحة العمليات */}
                 <button
                   type="button"
