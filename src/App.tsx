@@ -28,11 +28,56 @@ import { StaffPortal } from './components/StaffPortal';
 import { AccessDeniedView } from './components/AccessDeniedView';
 import { AdminSettings } from './components/AdminSettings';
 import { LoginPage } from './components/LoginPage';
+import { OpsSuperAdminLogin } from './components/OpsSuperAdminLogin';
 import { SuperAdminMasterHub } from './components/SuperAdminMasterHub';
 import { Order, OrderStatus, User, Role, OrdersQueryResponse } from './types/logistics';
 import { CheckCircle2, AlertCircle, X } from 'lucide-react';
 
 export default function App() {
+  // Check OPS portal from subdomain, path, query param, or hash
+  const checkIsOpsPortal = () => {
+    if (typeof window === 'undefined') return false;
+    const hostname = window.location.hostname || '';
+    const pathname = window.location.pathname || '';
+    const searchParams = new URLSearchParams(window.location.search);
+    return (
+      hostname.startsWith('ops.') ||
+      pathname.startsWith('/ops') ||
+      searchParams.get('portal') === 'ops' ||
+      searchParams.get('ops') === 'true' ||
+      window.location.hash.includes('/ops')
+    );
+  };
+
+  const [isOpsMode, setIsOpsMode] = useState<boolean>(checkIsOpsPortal);
+
+  // Sync state if user navigates back/forward
+  useEffect(() => {
+    const handlePopState = () => {
+      setIsOpsMode(checkIsOpsPortal());
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const handleSwitchToOps = () => {
+    setIsOpsMode(true);
+    try {
+      window.history.pushState(null, '', '/ops');
+    } catch {
+      // fallback
+    }
+  };
+
+  const handleSwitchToStandard = () => {
+    setIsOpsMode(false);
+    try {
+      window.history.pushState(null, '', '/');
+    } catch {
+      // fallback
+    }
+  };
+
   // Primary Navigation Section: Operations, Driver Mobile, Financial Settlements, Merchant Portal, Reverse Logistics
   const [activeSection, setActiveSection] = useState<AppSection>('operations');
 
@@ -758,7 +803,17 @@ export default function App() {
   if (!currentUser) {
     return (
       <>
-        <LoginPage onLoginSuccess={handleLoginSuccess} availableUsers={allUsers} />
+        {isOpsMode ? (
+          <OpsSuperAdminLogin
+            onLoginSuccess={handleLoginSuccess}
+            onSwitchToStandardLogin={handleSwitchToStandard}
+          />
+        ) : (
+          <LoginPage
+            onLoginSuccess={handleLoginSuccess}
+            onSwitchToOpsLogin={handleSwitchToOps}
+          />
+        )}
         {toastMessage && (
           <div
             className={`fixed bottom-5 left-5 z-50 px-4 py-3 rounded-xl shadow-xl flex items-center gap-2.5 text-xs font-bold ${

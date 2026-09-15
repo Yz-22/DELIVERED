@@ -1951,7 +1951,7 @@ app.post('/api/webhooks/shopify', (req, res) => {
 
 // 26. POST /api/auth/login: User Authentication by Email/Phone & Password (managed by Super Admin)
 app.post('/api/auth/login', (req, res) => {
-  const { email, phone, password } = req.body;
+  const { email, phone, password, requireOps } = req.body;
   let user: User | undefined = undefined;
 
   const identifier = email || phone;
@@ -1978,6 +1978,14 @@ app.post('/api/auth/login', (req, res) => {
     });
   }
 
+  // If logging in from the dedicated OPS portal, enforce that user must be SUPER_ADMIN
+  if (requireOps && user.role !== 'SUPER_ADMIN') {
+    return res.status(403).json({
+      error: 'عفواً، بوابة OPS مخصصة حصرياً للمدير العام للنظام (Super Admin). يرجى التوجه إلى بوابة العمليات والتجار العامة.',
+      isNotSuperAdmin: true,
+    });
+  }
+
   const inputPass = password ? password.toString().trim() : '';
   const expectedPass = user.password || (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN' ? 'admin123' : '123456');
 
@@ -1993,6 +2001,82 @@ app.post('/api/auth/login', (req, res) => {
     token: `dargo_jwt_${user.id}_${Date.now()}`,
     message: `مرحباً بك يا ${user.name}`,
   });
+});
+
+// 26.0 POST /api/auth/register-ops: Direct Super Admin Registration from OPS Portal
+app.post('/api/auth/register-ops', (req, res) => {
+  try {
+    const { name, email, phone, password, securityPasscode } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'يرجى إدخال الاسم الكامل للسوبر أدمن' });
+    }
+    if (!phone || !phone.trim()) {
+      return res.status(400).json({ error: 'يرجى إدخال رقم الهاتف المعتمد' });
+    }
+    if (!password || password.trim().length < 6) {
+      return res.status(400).json({ error: 'كلمة المرور يجب أن لا تقل عن 6 خانات' });
+    }
+
+    const cleanEmail = email && email.trim() ? email.trim().toLowerCase() : `${phone.replace(/\D/g, '')}@dargo-ops.io`;
+    const cleanPhone = phone.trim();
+
+    // Check duplicate
+    const existing = users.find(
+      (u) =>
+        (u.email && u.email.toLowerCase() === cleanEmail) ||
+        (u.phone && u.phone === cleanPhone)
+    );
+
+    if (existing) {
+      return res.status(400).json({
+        error: `المستخدم مسجل مسبقاً في قاعدة البيانات (${cleanEmail}). يمكنك تسجيل الدخول مباشرة.`,
+      });
+    }
+
+    const newSuperAdmin: User = {
+      id: `u-super-${Date.now()}`,
+      name: name.trim(),
+      email: cleanEmail,
+      phone: cleanPhone,
+      password: password.trim(),
+      role: 'SUPER_ADMIN',
+      roleName: 'المدير العام للنظام (Super Admin)',
+      branch: 'المقر الرئيسي للمملكة',
+      city: 'عمان',
+      isActive: true,
+      permissions: [
+        'manage_system_settings',
+        'manage_operations_admins',
+        'view_financial_audit_logs',
+        'export_database_backup',
+        'users.manage_operations',
+        'users.manage_staff',
+      ],
+      maxAllowedPermissions: [
+        'manage_system_settings',
+        'manage_operations_admins',
+        'view_financial_audit_logs',
+        'export_database_backup',
+        'users.manage_operations',
+        'users.manage_staff',
+      ],
+    };
+
+    users.unshift(newSuperAdmin);
+    saveDatabase();
+
+    const token = `dargo_jwt_${newSuperAdmin.id}_${Date.now()}`;
+
+    res.status(201).json({
+      success: true,
+      message: 'تم تسجيل وإنشاء حساب السوبر أدمن الجديد في قاعدة البيانات بنجاح',
+      user: newSuperAdmin,
+      token,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // 26.0 POST /api/auth/verify: Verify session token and current user

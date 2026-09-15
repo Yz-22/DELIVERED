@@ -14,10 +14,12 @@ import { User } from '../types/logistics';
 
 interface LoginPageProps {
   onLoginSuccess: (user: User, token: string) => void;
+  onSwitchToOpsLogin?: () => void;
 }
 
 export const LoginPage: React.FC<LoginPageProps> = ({
   onLoginSuccess,
+  onSwitchToOpsLogin,
 }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -201,6 +203,20 @@ export const LoginPage: React.FC<LoginPageProps> = ({
               )}
             </button>
           </form>
+
+          {/* Link to OPS Super Admin Portal */}
+          {onSwitchToOpsLogin && (
+            <div className="pt-3 border-t border-slate-800 text-center">
+              <button
+                type="button"
+                onClick={onSwitchToOpsLogin}
+                className="inline-flex items-center gap-1.5 text-xs text-amber-400 hover:text-amber-300 font-bold hover:underline cursor-pointer"
+              >
+                <Shield className="w-3.5 h-3.5" />
+                <span>دخول الإدارة المركزية (OPS Portal / ops.dargo-tms.io) - خاص بالسوبر أدمن</span>
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Security Notice */}
