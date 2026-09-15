@@ -386,7 +386,8 @@ export default function App() {
         body: JSON.stringify(newUserData),
       });
       if (res.ok) {
-        const createdUser: User = await res.json();
+        const resData: any = await res.json();
+        const createdUser: User = resData.user || resData;
         setAllUsers((prev) => [createdUser, ...prev.filter((u) => u.id !== createdUser.id)]);
         if (createdUser.role === 'MERCHANT') {
           setMerchants((prev) => [createdUser, ...prev.filter((m) => m.id !== createdUser.id)]);
