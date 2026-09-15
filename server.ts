@@ -56,7 +56,19 @@ const isServerlessEnv = Boolean(
   process.env.VERCEL_ENV ||
   process.env.NOW_REGION ||
   process.env.AWS_LAMBDA_FUNCTION_NAME ||
-  process.env.LAMBDA_TASK_ROOT
+  process.env.LAMBDA_TASK_ROOT ||
+  process.env.VERCEL_URL ||
+  process.env.NEXT_RUNTIME
+);
+
+// Check if running directly as a standalone CLI script (dev server or compiled production server)
+const isDirectCliScript = Boolean(
+  process.argv[1] && (
+    process.argv[1].endsWith('server.ts') ||
+    process.argv[1].endsWith('server.cjs') ||
+    process.argv[1].endsWith('server.js')
+  ) &&
+  !isServerlessEnv
 );
 
 // Persistent File-Based Storage Path (Vercel uses /tmp for writable storage)
@@ -461,9 +473,19 @@ function populateOrder(order: Order): Order {
 // -------------------------------------------------------------
 function saveDatabase() {
   try {
-    if (!fs.existsSync(DB_DIR)) {
-      fs.mkdirSync(DB_DIR, { recursive: true });
+    let targetDir = DB_DIR;
+    let targetFile = DB_FILE;
+
+    try {
+      if (!fs.existsSync(targetDir)) {
+        fs.mkdirSync(targetDir, { recursive: true });
+      }
+    } catch {
+      // Fallback to /tmp if primary directory is read-only
+      targetDir = '/tmp';
+      targetFile = path.join('/tmp', 'dargo_db.json');
     }
+
     const payload = {
       users,
       orders,
@@ -481,7 +503,7 @@ function saveDatabase() {
       merchantCategories,
       savedAt: new Date().toISOString(),
     };
-    fs.writeFileSync(DB_FILE, JSON.stringify(payload, null, 2), 'utf-8');
+    fs.writeFileSync(targetFile, JSON.stringify(payload, null, 2), 'utf-8');
   } catch (err) {
     console.error('Failed to save to dargo_db.json:', err);
   }
@@ -489,7 +511,13 @@ function saveDatabase() {
 
 function loadDatabase() {
   try {
-    const sourceFile = fs.existsSync(DB_FILE) ? DB_FILE : (fs.existsSync(INITIAL_SEED_FILE) ? INITIAL_SEED_FILE : null);
+    const candidateFiles = [
+      DB_FILE,
+      path.join('/tmp', 'data', 'dargo_db.json'),
+      path.join('/tmp', 'dargo_db.json'),
+      INITIAL_SEED_FILE,
+    ];
+    const sourceFile = candidateFiles.find((f) => f && fs.existsSync(f));
     if (sourceFile) {
       const raw = fs.readFileSync(sourceFile, 'utf-8');
       const data = JSON.parse(raw);
@@ -1218,76 +1246,6 @@ app.delete('/api/orders/:id', (req, res) => {
   }
   orders.splice(idx, 1);
   res.json({ success: true, message: 'تم حذف الطلبية' });
-});
-
-// 11. GET /api/users: Return Merchants and Drivers
-app.get('/api/users', (req, res) => {
-  const role = req.query.role as string;
-  let result = [...users];
-  if (role) {
-    result = result.filter((u) => u.role === role);
-  }
-  res.json(result);
-});
-
-// 11b. POST /api/users: Create new User with Price List & Role
-app.post('/api/users', (req, res) => {
-  try {
-    const {
-      name,
-      email,
-      phone,
-      role = 'MERCHANT',
-      roleName,
-      commercialName,
-      commercialType,
-      city = 'عمان',
-      address,
-      priceList = 'جميع المملكة 2',
-      branch = 'فرع عمان الرئيسي',
-      accountManager = 'باسل البلبيسي',
-      isActive = true,
-    } = req.body;
-
-    if (!name || !phone) {
-      return res.status(400).json({ error: 'الاسم ورقم الهاتف مطلوبان' });
-    }
-
-    const newUser: User = {
-      id: `u-${role.toLowerCase().slice(0, 3)}-${Date.now()}`,
-      name,
-      email: email || `${phone}@dargo-tms.io`,
-      phone,
-      role,
-      roleName,
-      commercialName,
-      commercialType,
-      city,
-      address,
-      priceList,
-      branch,
-      accountManager,
-      isActive,
-    };
-
-    users.unshift(newUser);
-    saveDatabase();
-    res.status(201).json(newUser);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// 11c. PATCH /api/users/:id: Update User
-app.patch('/api/users/:id', (req, res) => {
-  const user = users.find((u) => u.id === req.params.id);
-  if (!user) {
-    return res.status(404).json({ error: 'المستخدم غير موجود' });
-  }
-
-  Object.assign(user, req.body);
-  saveDatabase();
-  res.json(user);
 });
 
 // 12. GET /api/stats: Top-level Dashboard Metrics
@@ -2162,7 +2120,7 @@ app.get('/api/users', (req, res) => {
   res.json(filtered);
 });
 
-// 26.2 POST /api/users: Create User with Hierarchy, Password and Permissions
+// 26.2 POST /api/users: Create User with Hierarchy, Password, Permissions and Subscriptions
 app.post('/api/users', (req, res) => {
   try {
     const {
@@ -2177,6 +2135,8 @@ app.post('/api/users', (req, res) => {
       maxAllowedPermissions = [],
       commercialName,
       commercialType,
+      companyName,
+      address,
       priceList,
       pricePlanId,
       branch,
@@ -2185,6 +2145,17 @@ app.post('/api/users', (req, res) => {
       department,
       vehicleType,
       vehiclePlate,
+      subscriptionPlan,
+      subscriptionPlanName,
+      subscriptionStatus,
+      subscriptionStartDate,
+      subscriptionEndDate,
+      subscriptionPrice,
+      subscriptionBillingCycle,
+      maxMonthlyOrders,
+      maxUsers,
+      enabledModules,
+      notes,
       isActive = true,
     } = req.body;
 
@@ -2213,8 +2184,10 @@ app.post('/api/users', (req, res) => {
       parentUserId: parentUserId || null,
       permissions: Array.isArray(permissions) ? permissions : [],
       maxAllowedPermissions: Array.isArray(maxAllowedPermissions) ? maxAllowedPermissions : [],
-      commercialName: commercialName?.trim(),
+      commercialName: commercialName?.trim() || companyName?.trim(),
       commercialType: commercialType?.trim(),
+      companyName: companyName?.trim() || commercialName?.trim(),
+      address: address?.trim(),
       priceList: priceList || 'جميع المملكة (القياسية)',
       pricePlanId: pricePlanId || (role === 'DRIVER' ? 'pp-drv-std' : 'pp-mer-std'),
       branch: branch || 'فرع عمان الرئيسي',
@@ -2223,17 +2196,31 @@ app.post('/api/users', (req, res) => {
       department: department?.trim(),
       vehicleType,
       vehiclePlate,
+      subscriptionPlan,
+      subscriptionPlanName,
+      subscriptionStatus: subscriptionStatus || 'ACTIVE',
+      subscriptionStartDate: subscriptionStartDate || new Date().toISOString(),
+      subscriptionEndDate: subscriptionEndDate || new Date(Date.now() + 30 * 86400000).toISOString(),
+      subscriptionPrice,
+      subscriptionBillingCycle: subscriptionBillingCycle || 'MONTHLY',
+      maxMonthlyOrders,
+      maxUsers,
+      enabledModules,
+      notes,
       isActive: Boolean(isActive),
     };
 
     users.push(newUser);
     saveDatabase();
 
-    res.status(201).json({
+    const responsePayload = {
+      ...newUser,
       success: true,
       message: 'تم إنشاء المستخدم بنجاح وتعيين الصلاحيات وكلمة المرور',
       user: newUser,
-    });
+    };
+
+    res.status(201).json(responsePayload);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -3711,10 +3698,17 @@ app.use((err: any, req: any, res: any, next: any) => {
 });
 
 // -------------------------------------------------------------
+// Fallback 404 for API routes
+// -------------------------------------------------------------
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: `المسار غير موجود: ${req.method} ${req.originalUrl || req.url}` });
+});
+
+// -------------------------------------------------------------
 // Vite Middleware / Static Serving Setup
 // -------------------------------------------------------------
 async function startServer() {
-  if (isServerlessEnv) {
+  if (!isDirectCliScript || isServerlessEnv) {
     return;
   }
 
@@ -3738,8 +3732,8 @@ async function startServer() {
   });
 }
 
-// Only launch HTTP listener when running directly, not in Serverless / Vercel
-if (!isServerlessEnv) {
+// Only launch HTTP listener when running as standalone Node process, never in Serverless or when imported
+if (isDirectCliScript && !isServerlessEnv) {
   startServer();
 }
 

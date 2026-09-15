@@ -1,6 +1,46 @@
 {
   "users": [
     {
+      "id": "u-dri-1789486000505",
+      "name": "New Test Driver",
+      "email": "0798765432@dargo-tms.io",
+      "phone": "0798765432",
+      "role": "DRIVER",
+      "city": "عمان",
+      "priceList": "جميع المملكة 2",
+      "branch": "فرع عمان الرئيسي",
+      "accountManager": "باسل البلبيسي",
+      "isActive": true
+    },
+    {
+      "id": "u-super-1789485994246",
+      "name": "Test Vercel Runner",
+      "email": "0799988776@dargo-ops.io",
+      "phone": "0799988776",
+      "password": "password123",
+      "role": "SUPER_ADMIN",
+      "roleName": "المدير العام للنظام (Super Admin)",
+      "branch": "المقر الرئيسي للمملكة",
+      "city": "عمان",
+      "isActive": true,
+      "permissions": [
+        "manage_system_settings",
+        "manage_operations_admins",
+        "view_financial_audit_logs",
+        "export_database_backup",
+        "users.manage_operations",
+        "users.manage_staff"
+      ],
+      "maxAllowedPermissions": [
+        "manage_system_settings",
+        "manage_operations_admins",
+        "view_financial_audit_logs",
+        "export_database_backup",
+        "users.manage_operations",
+        "users.manage_staff"
+      ]
+    },
+    {
       "id": "u-super-1789485485208",
       "name": "Yousef Admin Test",
       "email": "yousef.test@dargo-ops.io",
@@ -309,6 +349,31 @@
         "acc_merchant_settlement",
         "acc_reports_export"
       ]
+    },
+    {
+      "id": "u-adm-1789486141199",
+      "name": "شركة الصقر للشحن والخدمات اللوجستية",
+      "email": "0795551234@dargo-tms.io",
+      "password": "admin123",
+      "phone": "0795551234",
+      "role": "ADMIN",
+      "roleName": "مدير العمليات",
+      "parentUserId": null,
+      "permissions": [],
+      "maxAllowedPermissions": [],
+      "commercialName": "شركة الصقر اللوجستية",
+      "companyName": "شركة الصقر اللوجستية",
+      "priceList": "جميع المملكة (القياسية)",
+      "pricePlanId": "pp-mer-std",
+      "branch": "فرع عمان الرئيسي",
+      "city": "عمان",
+      "accountManager": "باسل البلبيسي",
+      "subscriptionPlan": "PROFESSIONAL",
+      "subscriptionStatus": "ACTIVE",
+      "subscriptionStartDate": "2026-09-15T15:29:01.199Z",
+      "subscriptionEndDate": "2026-10-15T15:29:01.199Z",
+      "subscriptionBillingCycle": "MONTHLY",
+      "isActive": true
     }
   ],
   "orders": [],
@@ -588,5 +653,5 @@
   "merchantInvoices": [],
   "merchantExpenses": [],
   "merchantCategories": {},
-  "savedAt": "2026-09-15T15:18:14.440Z"
+  "savedAt": "2026-09-15T15:29:01.200Z"
 }
