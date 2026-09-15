@@ -1,7 +1,6 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
-import { createServer as createViteServer } from 'vite';
 import { Order, OrderStatus, User, ApiKey, NotificationLog, PricePlan } from './src/types/logistics';
 import {
   Account,
@@ -19,9 +18,21 @@ const PORT = 3000;
 
 app.use(express.json());
 
-// Persistent File-Based Storage Path
-const DB_DIR = path.join(process.cwd(), 'data');
+// CORS headers for all environments
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-api-key');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
+// Persistent File-Based Storage Path (Vercel uses /tmp for writable storage)
+const DB_DIR = process.env.VERCEL ? path.join('/tmp', 'data') : path.join(process.cwd(), 'data');
 const DB_FILE = path.join(DB_DIR, 'dargo_db.json');
+const INITIAL_SEED_FILE = path.join(process.cwd(), 'data', 'dargo_db.json');
 
 // Auto-persist on any state mutation
 app.use((req, res, next) => {
@@ -442,8 +453,9 @@ function saveDatabase() {
 
 function loadDatabase() {
   try {
-    if (fs.existsSync(DB_FILE)) {
-      const raw = fs.readFileSync(DB_FILE, 'utf-8');
+    const sourceFile = fs.existsSync(DB_FILE) ? DB_FILE : (fs.existsSync(INITIAL_SEED_FILE) ? INITIAL_SEED_FILE : null);
+    if (sourceFile) {
+      const raw = fs.readFileSync(sourceFile, 'utf-8');
       const data = JSON.parse(raw);
       if (Array.isArray(data.orders)) orders = data.orders;
       if (Array.isArray(data.users) && data.users.length > 0) {
@@ -3641,7 +3653,13 @@ app.delete('/api/merchants/:merchantId/expenses/:expenseId', (req, res) => {
 // Vite Middleware / Static Serving Setup
 // -------------------------------------------------------------
 async function startServer() {
+  // On Vercel, requests are served via Serverless Functions in api/
+  if (process.env.VERCEL) {
+    return;
+  }
+
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -3661,3 +3679,6 @@ async function startServer() {
 }
 
 startServer();
+
+export default app;
+export { app };
