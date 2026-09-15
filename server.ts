@@ -1280,7 +1280,13 @@ export async function syncUsersFromSupabase() {
       return;
     }
     if (Array.isArray(dbUsers) && dbUsers.length > 0) {
-      users = dbUsers.map(mapDbUserToAppUser);
+      const fetched = dbUsers.map(mapDbUserToAppUser);
+      for (const existing of users) {
+        if (existing && !fetched.some((u) => u.id === existing.id)) {
+          fetched.push(existing);
+        }
+      }
+      users = fetched;
       console.log(`[DarGo Server] Synced ${users.length} official users directly from Supabase.`);
     }
   } catch (err: any) {
@@ -1355,7 +1361,36 @@ export function sanitizeUserForClient(user: any): User {
   const sanitized = { ...user };
   delete sanitized.password;
   delete sanitized.password_hash;
+  delete sanitized.token;
+  delete sanitized.sessionToken;
+  delete sanitized.google_sub;
+  delete sanitized.secret;
   return sanitized as User;
+}
+
+export function getHierarchicalSubtreeUserIds(rootUserId: string, allUsersList: any[]): Set<string> {
+  const subtreeSet = new Set<string>();
+  if (rootUserId) subtreeSet.add(rootUserId);
+  if (!rootUserId || !Array.isArray(allUsersList)) return subtreeSet;
+
+  let addedNew = true;
+  while (addedNew) {
+    addedNew = false;
+    for (const u of allUsersList) {
+      if (!u || !u.id) continue;
+      if (subtreeSet.has(u.id)) continue;
+
+      const parentId = u.parentUserId || u.parent_user_id;
+      const createdBy = u.createdBy || u.created_by_id;
+
+      if ((parentId && subtreeSet.has(parentId)) || (createdBy && subtreeSet.has(createdBy))) {
+        subtreeSet.add(u.id);
+        addedNew = true;
+      }
+    }
+  }
+
+  return subtreeSet;
 }
 
 // In-Memory Security Audit Logs (Lightweight & High-Performance)
@@ -3801,60 +3836,70 @@ app.delete('/api/roles/:id', requireAuth, async (req, res) => {
 // Users Management & RBAC Enforcement
 // -------------------------------------------------------------
 
-// 26.1 GET /api/users: List Users directly from Supabase with Multi-Tenant Isolation
+// 26.1 GET /api/users: List Users with Multi-Tenant & Hierarchical Subtree Isolation
 app.get('/api/users', requireAuth, async (req, res) => {
   try {
     const ctx = getRequesterContext(req);
+    if (!ctx.user) {
+      return res.status(401).json({ error: 'غير مصرح: يجب تسجيل الدخول للوصول إلى هذه الواجهة.', code: 'UNAUTHORIZED' });
+    }
+
     const role = req.query.role as string;
-    const parentUserId = (req.query.parentUserId as string) || (ctx.isAdmin ? ctx.tenantId : undefined);
 
-    let query = supabase.from('users').select('*').order('created_at', { ascending: false });
+    // Fetch all user records from DB or memory cache
+    let allUserCandidates: User[] = [];
+    const { data: dbData, error: dbErr } = await supabase
+      .from('users')
+      .select('*')
+      .order('created_at', { ascending: false });
 
+    if (!dbErr && Array.isArray(dbData)) {
+      allUserCandidates = dbData.map(mapDbUserToAppUser);
+      // Merge with in-memory users cache to ensure no newly created user is missed
+      for (const u of users) {
+        if (u && !allUserCandidates.some((existing) => existing.id === u.id)) {
+          allUserCandidates.push(u);
+        }
+      }
+    } else {
+      allUserCandidates = [...users].filter(Boolean);
+    }
+
+    // Apply Subtree Scope
+    let scopedUsers: User[] = [];
+    if (ctx.isSuperAdmin) {
+      scopedUsers = allUserCandidates;
+    } else {
+      const allowedIds = getHierarchicalSubtreeUserIds(ctx.user.id, allUserCandidates);
+      scopedUsers = allUserCandidates.filter((u) => u && allowedIds.has(u.id));
+    }
+
+    // Role filter
     if (role && role !== 'ALL') {
-      query = query.eq('role', role);
+      scopedUsers = scopedUsers.filter((u) => u.role === role);
     }
 
-    // Strict Tenant Isolation:
-    if (!ctx.isSuperAdmin && ctx.user) {
-      if (ctx.isAdmin && ctx.tenantId) {
-        // Admin sees only themselves and accounts created under their company/tenant
-        query = query.or(`id.eq.${ctx.tenantId},parent_user_id.eq.${ctx.tenantId}`);
-      } else if (ctx.tenantId) {
-        // Sub-account sees themselves and their managing Admin
-        query = query.or(`id.eq.${ctx.user.id},parent_user_id.eq.${ctx.tenantId},id.eq.${ctx.tenantId}`);
-      } else {
-        query = query.eq('id', ctx.user.id);
-      }
-    } else if (parentUserId && isValidUuid(parentUserId)) {
-      query = query.eq('parent_user_id', parentUserId);
-    }
-
-    const { data, error } = await query;
-    if (error) {
-      console.warn('Supabase users list warning, returning filtered cache:', error.message);
-      let filtered = [...users];
-      if (!ctx.isSuperAdmin && ctx.isAdmin && ctx.tenantId) {
-        filtered = filtered.filter((u) => u && (u.id === ctx.tenantId || u.parentUserId === ctx.tenantId));
-      }
-      if (role && role !== 'ALL') filtered = filtered.filter((u) => u?.role === role);
-      if (parentUserId) filtered = filtered.filter((u) => u?.parentUserId === parentUserId);
-      return res.json(filtered.map(sanitizeUserForClient));
-    }
-
-    const mappedUsers = (data || []).map(mapDbUserToAppUser).map(sanitizeUserForClient);
-    res.json(mappedUsers);
+    const sanitized = scopedUsers.map(sanitizeUserForClient);
+    return res.json(sanitized);
   } catch (err: any) {
     console.error('Error listing users:', err);
-    res.json((users || []).map(sanitizeUserForClient));
+    // CRITICAL SECURITY RULE: NEVER leak global users array on error! Return 500 status.
+    return res.status(500).json({
+      error: 'حدث خطأ داخلي أثناء استرجاع قائمة المستخدمين',
+      code: 'INTERNAL_SERVER_ERROR',
+    });
   }
 });
 
-// 26.1.1 GET /api/users/:id: Get single user by ID with Tenant Isolation
+// 26.1.1 GET /api/users/:id: Get single user by ID with Subtree Isolation
 app.get('/api/users/:id', requireAuth, async (req, res) => {
   try {
     const ctx = getRequesterContext(req);
-    const userId = req.params.id;
+    if (!ctx.user) {
+      return res.status(401).json({ error: 'غير مصرح: يرجى تسجيل الدخول أولاً.', code: 'UNAUTHORIZED' });
+    }
 
+    const userId = req.params.id;
     if (!isValidUuid(userId)) {
       return res.status(404).json({ error: 'المستخدم غير موجود' });
     }
@@ -3865,27 +3910,32 @@ app.get('/api/users/:id', requireAuth, async (req, res) => {
       .eq('id', userId)
       .limit(1);
 
-    if (error || !data || data.length === 0) {
+    let rawTarget: User | null = null;
+    if (!error && data && data.length > 0) {
+      rawTarget = mapDbUserToAppUser(data[0]);
+    } else {
+      rawTarget = users.find((u) => u && u.id === userId) || null;
+    }
+
+    if (!rawTarget) {
       return res.status(404).json({ error: 'المستخدم غير موجود' });
     }
 
-    const targetUser = data[0];
-
-    // Tenant Isolation Check:
+    // Subtree Isolation Check:
     if (!ctx.isSuperAdmin) {
-      const isSelf = ctx.userId === targetUser.id;
-      const isSubAccount = targetUser.parent_user_id === ctx.tenantId || targetUser.parent_user_id === ctx.userId;
-      const isTenantAdmin = targetUser.id === ctx.tenantId;
-
-      if (!isSelf && !isSubAccount && !isTenantAdmin) {
-        return res.status(403).json({ error: 'غير مصرح بالوصول إلى بيانات هذا المستخدم' });
+      const allCandidates = [...users].filter(Boolean);
+      if (!allCandidates.some((u) => u.id === rawTarget!.id)) {
+        allCandidates.push(rawTarget);
+      }
+      const allowedIds = getHierarchicalSubtreeUserIds(ctx.user.id, allCandidates);
+      if (!allowedIds.has(rawTarget.id)) {
+        return res.status(403).json({ error: 'غير مصرح بالوصول إلى بيانات هذا المستخدم', code: 'FORBIDDEN' });
       }
     }
 
-    const appUser = mapDbUserToAppUser(targetUser);
-    res.json(sanitizeUserForClient(appUser));
+    res.json(sanitizeUserForClient(rawTarget));
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'حدث خطأ داخلي: ' + err.message, code: 'INTERNAL_SERVER_ERROR' });
   }
 });
 
@@ -4006,7 +4056,7 @@ app.post('/api/users', requireAuth, async (req, res) => {
       : (role === 'SUPER_ADMIN' || role === 'ADMIN' ? 'admin123' : '123456');
 
     const secureHash = hashPassword(assignedPassword);
-    const newId = crypto.randomUUID();
+    const newId = (req.body.id && isValidUuid(req.body.id)) ? req.body.id : crypto.randomUUID();
 
     const defaultRoleName = roleName || (
       role === 'SUPER_ADMIN' ? 'المدير العام للنظام' :
@@ -4047,8 +4097,8 @@ app.post('/api/users', requireAuth, async (req, res) => {
       vehicle_type: vehicleType || null,
       vehicle_plate: vehiclePlate || null,
       is_active: Boolean(isActive),
-      parent_user_id: assignedParentId,
-      created_by_id: ctx.userId || null,
+      parent_user_id: (assignedParentId && isValidUuid(assignedParentId)) ? assignedParentId : null,
+      created_by_id: (ctx.userId && isValidUuid(ctx.userId)) ? ctx.userId : null,
       permissions: Array.isArray(permissions) ? permissions : [],
       max_allowed_permissions: ctx.isSuperAdmin
         ? (Array.isArray(maxAllowedPermissions) ? maxAllowedPermissions : permissions)
@@ -4068,6 +4118,13 @@ app.post('/api/users', requireAuth, async (req, res) => {
     }
 
     const createdUser = mapDbUserToAppUser(inserted && inserted[0] ? inserted[0] : dbPayload);
+    // Maintain in-memory users cache synchronously
+    const existingIdx = users.findIndex((u) => u && u.id === createdUser.id);
+    if (existingIdx >= 0) {
+      users[existingIdx] = createdUser;
+    } else {
+      users.unshift(createdUser);
+    }
     syncUsersFromSupabase().catch(() => {});
 
     // Audit Logging
@@ -4536,23 +4593,23 @@ app.get('/api/invitations', requireAuth, async (req, res) => {
     // Refresh from Supabase if possible
     await syncInvitationsFromSupabase().catch(() => {});
 
-    // Filter strictly by tenant/parent boundary
+    // Filter strictly by tenant/parent/subtree boundary
     let filtered: UserInvitation[] = [];
     if (ctx.isSuperAdmin) {
       filtered = [...userInvitations];
-    } else if (ctx.userRole === 'ADMIN') {
+    } else if (ctx.userRole === 'ADMIN' && ctx.user) {
+      const allowedUserIds = getHierarchicalSubtreeUserIds(ctx.user.id, users);
       filtered = userInvitations.filter(
         (inv) =>
-          inv.tenantId === ctx.tenantId ||
-          inv.parentUserId === ctx.tenantId ||
-          inv.invitedBy === ctx.userId
+          allowedUserIds.has(inv.invitedBy) ||
+          inv.invitedBy === ctx.userId ||
+          inv.parentUserId === ctx.userId
       );
     } else if (ctx.userRole === 'MERCHANT') {
       filtered = userInvitations.filter(
         (inv) =>
           inv.parentUserId === ctx.userId ||
-          inv.invitedBy === ctx.userId ||
-          inv.tenantId === ctx.tenantId
+          inv.invitedBy === ctx.userId
       );
     } else {
       filtered = userInvitations.filter((inv) => inv.invitedBy === ctx.userId);

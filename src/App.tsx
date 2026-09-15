@@ -329,14 +329,35 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // Fetch Users & Authenticate Session
-  const fetchUsers = async () => {
+  // Helper to extract session authorization headers
+  const getAuthHeaders = useCallback((): Record<string, string> => {
+    const headers: Record<string, string> = {};
     try {
-      const headers: Record<string, string> = {};
-      if (currentUser?.id) {
-        headers['x-user-id'] = currentUser.id;
-        headers['x-user-role'] = currentUser.role;
+      const savedSession = localStorage.getItem('dargo_user_session');
+      if (savedSession) {
+        const parsed = JSON.parse(savedSession);
+        if (parsed?.token) {
+          headers['Authorization'] = `Bearer ${parsed.token}`;
+        } else if (parsed?.user?.id) {
+          headers['Authorization'] = `Bearer ${parsed.user.id}`;
+        }
+      } else if (currentUser?.id) {
+        headers['Authorization'] = `Bearer ${currentUser.id}`;
       }
+    } catch {
+      if (currentUser?.id) {
+        headers['Authorization'] = `Bearer ${currentUser.id}`;
+      }
+    }
+    return headers;
+  }, [currentUser?.id]);
+
+  // Fetch Users & Authenticate Session
+  const fetchUsers = useCallback(async () => {
+    try {
+      const headers = getAuthHeaders();
+      // Only fetch if an authorization token/header exists
+      if (!headers['Authorization']) return;
       const res = await fetch('/api/users', { headers });
       if (res.ok) {
         const data: User[] = await res.json();
@@ -347,7 +368,7 @@ export default function App() {
     } catch (e) {
       console.error('Error fetching users:', e);
     }
-  };
+  }, [getAuthHeaders]);
 
   const handleLoginSuccess = (user: User, token: string) => {
     setCurrentUser(user);
@@ -501,11 +522,7 @@ export default function App() {
         merchantId: merchantFilter,
       });
 
-      const headers: Record<string, string> = {};
-      if (currentUser?.id) {
-        headers['x-user-id'] = currentUser.id;
-        headers['x-user-role'] = currentUser.role;
-      }
+      const headers = getAuthHeaders();
 
       const res = await fetch(`/api/orders?${queryParams.toString()}`, { headers });
       if (res.ok) {
@@ -534,35 +551,6 @@ export default function App() {
   useEffect(() => {
     const initAuthAndUsers = async () => {
       try {
-        let usersLoaded = false;
-        try {
-          const res = await fetch('/api/users');
-          if (res.ok) {
-            const data: User[] = await res.json();
-            setAllUsers(data);
-            setMerchants(data.filter((u) => u.role === 'MERCHANT'));
-            setDrivers(data.filter((u) => u.role === 'DRIVER'));
-            usersLoaded = true;
-          }
-        } catch {
-          // Will attempt retry below
-        }
-
-        if (!usersLoaded) {
-          try {
-            await new Promise((r) => setTimeout(r, 800));
-            const retryRes = await fetch('/api/users');
-            if (retryRes.ok) {
-              const data: User[] = await retryRes.json();
-              setAllUsers(data);
-              setMerchants(data.filter((u) => u.role === 'MERCHANT'));
-              setDrivers(data.filter((u) => u.role === 'DRIVER'));
-            }
-          } catch (retryErr) {
-            console.warn('Initial users fetch retry failed:', retryErr);
-          }
-        }
-
         const savedSession = localStorage.getItem('dargo_user_session');
         if (savedSession) {
           try {
@@ -596,6 +584,9 @@ export default function App() {
             console.error('Session verify error:', e);
           }
         }
+
+        // Now attempt fetching users with authenticated session headers
+        await fetchUsers();
       } catch (e) {
         console.error('Auth init error:', e);
       } finally {
@@ -604,11 +595,17 @@ export default function App() {
     };
 
     initAuthAndUsers();
-  }, []);
+  }, [fetchUsers]);
 
   useEffect(() => {
     fetchOrders();
   }, [fetchOrders]);
+
+  useEffect(() => {
+    if (currentUser?.id) {
+      fetchUsers();
+    }
+  }, [currentUser?.id, fetchUsers]);
 
   // Checkbox handlers
   const handleToggleSelect = (id: string) => {
