@@ -326,7 +326,7 @@ export interface User {
   maxUsers?: number;
   monthlyOrdersUsed?: number;
   subscriptionPrice?: number;
-  subscriptionBillingCycle?: 'MONTHLY' | 'ANNUAL';
+  subscriptionBillingCycle?: SubscriptionCycle | 'MONTHLY' | 'ANNUAL';
   suspendedReason?: string;
   enabledModules?: {
     tmsDelivery?: boolean;
@@ -348,6 +348,44 @@ export interface User {
   createdById?: string;             // Who created this account
   permissions?: string[];           // Active specific permissions assigned to this user
   maxAllowedPermissions?: string[]; // Boundary ceiling set by Super Admin for an Operations Admin
+
+  // Phase 1.5B Identity & Invitation Fields
+  authProvider?: 'EMAIL_PASSWORD' | 'GOOGLE' | 'HYBRID';
+  googleId?: string;
+  googleEmail?: string;
+  invitationId?: string;
+  invitedBy?: string;
+}
+
+export type InvitationStatus = 'PENDING' | 'ACCEPTED' | 'EXPIRED' | 'REVOKED';
+
+export interface UserInvitation {
+  id: string;
+  tokenHash: string;
+  email: string;
+  phone?: string;
+  role: Role;
+  roleName?: string;
+  tenantId?: string | null;
+  parentUserId?: string | null;
+  invitedBy: string;
+  inviterName?: string;
+  inviterRole?: string;
+  permissions?: string[];
+  maxAllowedPermissions?: string[];
+  commercialName?: string;
+  companyName?: string;
+  branch?: string;
+  city?: string;
+  priceList?: string;
+  pricePlanId?: string;
+  status: InvitationStatus;
+  expiresAt: string;
+  acceptedAt?: string;
+  acceptedByUserId?: string;
+  authProvider?: 'EMAIL_PASSWORD' | 'GOOGLE';
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface PricePlan {
@@ -490,4 +528,121 @@ export interface QuickOrderPayload {
 
 export interface BatchOrderPayload {
   orders: QuickOrderPayload[];
+}
+
+export interface RoleRecord {
+  id: string;
+  name: string;
+  roleKey: string;
+  description?: string;
+  isSystemRole: boolean;
+  tenantId?: string | null;
+  permissions: string[];
+  createdBy?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AuditLogRecord {
+  id: string;
+  action: string;
+  actionNameAr: string;
+  performedBy: string;
+  performerName?: string;
+  performerRole?: string;
+  targetId?: string;
+  targetType?: string;
+  targetName?: string;
+  tenantId?: string;
+  details?: Record<string, any>;
+  ipAddress?: string;
+  timestamp: string;
+}
+
+export type SubscriptionCycle = 'MONTHLY' | 'YEARLY' | 'CUSTOM';
+export type SubscriptionEngineStatus = 'TRIAL' | 'ACTIVE' | 'EXPIRED' | 'SUSPENDED' | 'CANCELLED';
+
+export interface SubscriptionPlanRecord {
+  id: string;
+  code: string;
+  name: string;
+  nameAr: string;
+  description: string;
+  price: number;
+  monthlyPrice: number;
+  annualPrice: number;
+  currency: string;
+  billingCycle: SubscriptionCycle;
+  trialDays: number;
+  maxUsers: number;
+  maxMonthlyOrders: number; // 0 for unlimited
+  enabledModules: {
+    tmsDelivery: boolean;
+    posCashier: boolean;
+    merchantWms: boolean;
+    accountingSettlements: boolean;
+    apiIntegrations: boolean;
+    aiRouteOptimizer: boolean;
+    whatsappTracking?: boolean;
+    customDomain?: boolean;
+    [key: string]: boolean | undefined;
+  };
+  isActive: boolean;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SubscriptionRecord {
+  id: string;
+  tenantId: string;
+  tenantName?: string;
+  planId: string;
+  planCode: string;
+  planName: string;
+  status: SubscriptionEngineStatus;
+  effectiveStatus?: SubscriptionEngineStatus;
+  startDate: string;
+  endDate: string;
+  trialStartDate?: string;
+  trialEndDate?: string;
+  price: number;
+  currency: string;
+  billingCycle: SubscriptionCycle;
+  enabledModules: Record<string, boolean>;
+  maxUsers: number;
+  maxMonthlyOrders: number;
+  autoRenew: boolean;
+  suspendedReason?: string;
+  gracePeriodDays?: number;
+  createdBy?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TenantSubscriptionContext {
+  tenantId: string;
+  tenantName?: string;
+  subscription: SubscriptionRecord | null;
+  plan: SubscriptionPlanRecord | null;
+  status: SubscriptionEngineStatus;
+  effectiveStatus: SubscriptionEngineStatus;
+  isActive: boolean;
+  isTrial: boolean;
+  isExpired: boolean;
+  isSuspended: boolean;
+  isCancelled: boolean;
+  startDate: string;
+  endDate: string;
+  trialDaysRemaining?: number;
+  daysRemaining: number;
+  enabledModules: Record<string, boolean>;
+  limits: {
+    maxUsers: number;
+    maxMonthlyOrders: number;
+  };
+  usage: {
+    currentUsers: number;
+    currentMonthlyOrders: number;
+  };
 }

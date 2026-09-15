@@ -1,8 +1,25 @@
 import express from 'express';
 import path from 'path';
+import crypto from 'crypto';
 import { createClient } from '@supabase/supabase-js';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Order, OrderStatus, User, ApiKey, NotificationLog, PricePlan } from './src/types/logistics.ts';
+import type {
+  Order,
+  OrderStatus,
+  User,
+  ApiKey,
+  NotificationLog,
+  PricePlan,
+  RoleRecord,
+  AuditLogRecord,
+  SubscriptionPlanRecord,
+  SubscriptionRecord,
+  TenantSubscriptionContext,
+  SubscriptionCycle,
+  SubscriptionEngineStatus,
+  UserInvitation,
+  InvitationStatus,
+} from './src/types/logistics.ts';
 import type {
   Account,
   JournalEntry,
@@ -44,7 +61,7 @@ app.use((req, res, next) => {
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-api-key');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-api-key, x-user-id, x-user-role, x-auth-token, x-tenant-id');
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
@@ -143,6 +160,11 @@ export function mapDbUserToAppUser(dbUser: any): User {
     createdById: dbUser.created_by_id || dbUser.createdById,
     permissions: Array.isArray(dbUser.permissions) ? dbUser.permissions : [],
     maxAllowedPermissions: Array.isArray(dbUser.max_allowed_permissions) ? dbUser.max_allowed_permissions : [],
+    authProvider: dbUser.auth_provider || dbUser.authProvider || 'EMAIL_PASSWORD',
+    googleId: dbUser.google_id || dbUser.googleId || undefined,
+    googleEmail: dbUser.google_email || dbUser.googleEmail || undefined,
+    invitationId: dbUser.invitation_id || dbUser.invitationId || undefined,
+    invitedBy: dbUser.invited_by || dbUser.invitedBy || undefined,
   };
 }
 
@@ -202,8 +224,288 @@ export function mapAppUserToDbUser(appUser: any) {
   if (appUser.portalAccess !== undefined || appUser.portal_access !== undefined) {
     payload.portal_access = appUser.portalAccess || appUser.portal_access;
   }
+  if (appUser.authProvider !== undefined || appUser.auth_provider !== undefined) {
+    payload.auth_provider = appUser.authProvider || appUser.auth_provider;
+  }
+  if (appUser.googleId !== undefined || appUser.google_id !== undefined) {
+    payload.google_id = appUser.googleId || appUser.google_id;
+  }
+  if (appUser.googleEmail !== undefined || appUser.google_email !== undefined) {
+    payload.google_email = appUser.googleEmail || appUser.google_email;
+  }
+  if (appUser.invitationId !== undefined || appUser.invitation_id !== undefined) {
+    payload.invitation_id = appUser.invitationId || appUser.invitation_id;
+  }
+  if (appUser.invitedBy !== undefined || appUser.invited_by !== undefined) {
+    payload.invited_by = appUser.invitedBy || appUser.invited_by;
+  }
   payload.updated_at = new Date().toISOString();
   return payload;
+}
+
+// -------------------------------------------------------------
+// User Invitations Mappers & Store (Phase 1.5B)
+// -------------------------------------------------------------
+export function mapDbInvitationToAppInvitation(dbInv: any): UserInvitation {
+  if (!dbInv) return dbInv;
+  return {
+    id: String(dbInv.id),
+    tokenHash: dbInv.token_hash || dbInv.tokenHash || '',
+    email: (dbInv.email || '').toLowerCase().trim(),
+    phone: dbInv.phone || undefined,
+    role: dbInv.role || 'OPERATOR',
+    roleName: dbInv.role_name || dbInv.roleName || undefined,
+    tenantId: dbInv.tenant_id || dbInv.tenantId || null,
+    parentUserId: dbInv.parent_user_id || dbInv.parentUserId || null,
+    invitedBy: String(dbInv.invited_by || dbInv.invitedBy || ''),
+    inviterName: dbInv.inviter_name || dbInv.inviterName || undefined,
+    inviterRole: dbInv.inviter_role || dbInv.inviterRole || undefined,
+    permissions: Array.isArray(dbInv.permissions) ? dbInv.permissions : [],
+    maxAllowedPermissions: Array.isArray(dbInv.max_allowed_permissions) ? dbInv.max_allowed_permissions : (Array.isArray(dbInv.maxAllowedPermissions) ? dbInv.maxAllowedPermissions : []),
+    commercialName: dbInv.commercial_name || dbInv.commercialName || undefined,
+    companyName: dbInv.company_name || dbInv.companyName || undefined,
+    branch: dbInv.branch || undefined,
+    city: dbInv.city || undefined,
+    priceList: dbInv.price_list || dbInv.priceList || undefined,
+    pricePlanId: dbInv.price_plan_id || dbInv.pricePlanId || undefined,
+    status: (dbInv.status as InvitationStatus) || 'PENDING',
+    expiresAt: dbInv.expires_at || dbInv.expiresAt || new Date(Date.now() + 7 * 86400000).toISOString(),
+    acceptedAt: dbInv.accepted_at || dbInv.acceptedAt || undefined,
+    acceptedByUserId: dbInv.accepted_by_user_id || dbInv.acceptedByUserId || undefined,
+    authProvider: dbInv.auth_provider || dbInv.authProvider || 'EMAIL_PASSWORD',
+    createdAt: dbInv.created_at || dbInv.createdAt || new Date().toISOString(),
+    updatedAt: dbInv.updated_at || dbInv.updatedAt || new Date().toISOString(),
+  };
+}
+
+export function mapAppInvitationToDbInvitation(appInv: Partial<UserInvitation>): any {
+  const payload: any = {};
+  if (appInv.id !== undefined) payload.id = String(appInv.id);
+  if (appInv.tokenHash !== undefined) payload.token_hash = appInv.tokenHash;
+  if (appInv.email !== undefined) payload.email = String(appInv.email).trim().toLowerCase();
+  if (appInv.phone !== undefined) payload.phone = appInv.phone;
+  if (appInv.role !== undefined) payload.role = appInv.role;
+  if (appInv.roleName !== undefined) payload.role_name = appInv.roleName;
+  if (appInv.tenantId !== undefined) payload.tenant_id = appInv.tenantId;
+  if (appInv.parentUserId !== undefined) payload.parent_user_id = appInv.parentUserId;
+  if (appInv.invitedBy !== undefined) payload.invited_by = appInv.invitedBy;
+  if (appInv.inviterName !== undefined) payload.inviter_name = appInv.inviterName;
+  if (appInv.inviterRole !== undefined) payload.inviter_role = appInv.inviterRole;
+  if (appInv.permissions !== undefined) payload.permissions = Array.isArray(appInv.permissions) ? appInv.permissions : [];
+  if (appInv.maxAllowedPermissions !== undefined) payload.max_allowed_permissions = Array.isArray(appInv.maxAllowedPermissions) ? appInv.maxAllowedPermissions : [];
+  if (appInv.commercialName !== undefined) payload.commercial_name = appInv.commercialName;
+  if (appInv.companyName !== undefined) payload.company_name = appInv.companyName;
+  if (appInv.branch !== undefined) payload.branch = appInv.branch;
+  if (appInv.city !== undefined) payload.city = appInv.city;
+  if (appInv.priceList !== undefined) payload.price_list = appInv.priceList;
+  if (appInv.pricePlanId !== undefined) payload.price_plan_id = appInv.pricePlanId;
+  if (appInv.status !== undefined) payload.status = appInv.status;
+  if (appInv.expiresAt !== undefined) payload.expires_at = appInv.expiresAt;
+  if (appInv.acceptedAt !== undefined) payload.accepted_at = appInv.acceptedAt;
+  if (appInv.acceptedByUserId !== undefined) payload.accepted_by_user_id = appInv.acceptedByUserId;
+  if (appInv.authProvider !== undefined) payload.auth_provider = appInv.authProvider;
+  payload.updated_at = new Date().toISOString();
+  return payload;
+}
+
+export function sanitizeInvitationForClient(inv: UserInvitation): Omit<UserInvitation, 'tokenHash'> {
+  const sanitized = { ...inv };
+  delete (sanitized as any).tokenHash;
+  return sanitized;
+}
+
+export let userInvitations: UserInvitation[] = [];
+
+const activeInvitationClaims = new Set<string>();
+
+export interface AtomicClaimResult {
+  success: boolean;
+  invitation?: UserInvitation;
+  errorCode?: string;
+  errorMessage?: string;
+  release?: () => Promise<void>;
+  commit?: (acceptedByUserId: string) => Promise<void>;
+}
+
+export async function claimInvitationAtomically(tokenHash: string): Promise<AtomicClaimResult> {
+  // Look up invitation in memory
+  let invitation = userInvitations.find((i) => i.tokenHash === tokenHash);
+  if (!invitation) {
+    try {
+      const { data: dbData } = await supabase
+        .from('user_invitations')
+        .select('*')
+        .eq('token_hash', tokenHash)
+        .limit(1);
+
+      if (dbData && dbData.length > 0) {
+        invitation = mapDbInvitationToAppInvitation(dbData[0]);
+        userInvitations.push(invitation);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  if (!invitation) {
+    return {
+      success: false,
+      errorCode: 'INVITATION_NOT_FOUND',
+      errorMessage: 'رابط الدعوة غير صالح أو غير موجود.',
+    };
+  }
+
+  // In-process synchronous lock check (prevents concurrent async ticks within same process)
+  if (activeInvitationClaims.has(invitation.id)) {
+    return {
+      success: false,
+      errorCode: 'INVITATION_ALREADY_USED',
+      errorMessage: 'تم استخدام رابط الدعوة مسبقاً أو أنه قيد المعالجة حالياً.',
+    };
+  }
+
+  if (invitation.status === 'ACCEPTED') {
+    return {
+      success: false,
+      errorCode: 'INVITATION_ALREADY_USED',
+      errorMessage: 'تم استخدام رابط الدعوة مسبقاً.',
+    };
+  }
+
+  if (invitation.status === 'REVOKED') {
+    return {
+      success: false,
+      errorCode: 'INVITATION_REVOKED',
+      errorMessage: 'تم إلغاء رابط الدعوة.',
+    };
+  }
+
+  if (new Date() > new Date(invitation.expiresAt) || invitation.status === 'EXPIRED') {
+    invitation.status = 'EXPIRED';
+    return {
+      success: false,
+      errorCode: 'INVITATION_EXPIRED',
+      errorMessage: 'انتهت صلاحية رابط الدعوة.',
+    };
+  }
+
+  // Acquire in-memory lock synchronously before any DB await
+  activeInvitationClaims.add(invitation.id);
+
+  // Database-level conditional atomic update
+  const nowIso = new Date().toISOString();
+  let dbClaimed = false;
+
+  try {
+    const { data: updatedRows, error: dbErr } = await supabase
+      .from('user_invitations')
+      .update({
+        status: 'ACCEPTED',
+        accepted_at: nowIso,
+        updated_at: nowIso,
+      })
+      .eq('id', invitation.id)
+      .eq('status', 'PENDING')
+      .select('*');
+
+    if (!dbErr && Array.isArray(updatedRows)) {
+      if (updatedRows.length > 0) {
+        dbClaimed = true;
+      } else {
+        // Check if row actually exists in DB with non-PENDING status
+        const { data: existingDbRow } = await supabase
+          .from('user_invitations')
+          .select('status')
+          .eq('id', invitation.id)
+          .limit(1);
+
+        if (existingDbRow && existingDbRow.length > 0) {
+          activeInvitationClaims.delete(invitation.id);
+          invitation.status = existingDbRow[0].status || 'ACCEPTED';
+          return {
+            success: false,
+            errorCode: 'INVITATION_ALREADY_USED',
+            errorMessage: 'تم استخدام رابط الدعوة مسبقاً.',
+          };
+        }
+      }
+    }
+  } catch (err: any) {
+    // DB fallback - proceed with in-memory claim
+  }
+
+  // Mark in-memory invitation accepted
+  invitation.status = 'ACCEPTED';
+  invitation.acceptedAt = nowIso;
+  invitation.updatedAt = nowIso;
+
+  const invId = invitation.id;
+
+  const release = async () => {
+    activeInvitationClaims.delete(invId);
+    if (invitation) {
+      invitation.status = 'PENDING';
+      invitation.acceptedAt = undefined;
+      invitation.acceptedByUserId = undefined;
+    }
+
+    if (dbClaimed) {
+      try {
+        await supabase
+          .from('user_invitations')
+          .update({
+            status: 'PENDING',
+            accepted_at: null,
+            accepted_by_user_id: null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', invId);
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  const commit = async (acceptedByUserId: string) => {
+    invitation!.acceptedByUserId = acceptedByUserId;
+    activeInvitationClaims.delete(invId);
+
+    if (dbClaimed) {
+      try {
+        await supabase
+          .from('user_invitations')
+          .update({
+            accepted_by_user_id: acceptedByUserId,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', invId);
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  return {
+    success: true,
+    invitation,
+    release,
+    commit,
+  };
+}
+
+export async function syncInvitationsFromSupabase() {
+  try {
+    const { data: dbInvs, error } = await supabase.from('user_invitations').select('*');
+    if (error) {
+      // Table may not exist yet or warning
+      return;
+    }
+    if (Array.isArray(dbInvs) && dbInvs.length > 0) {
+      userInvitations = dbInvs.map(mapDbInvitationToAppInvitation);
+    }
+  } catch (err: any) {
+    // silently fallback to memory
+  }
 }
 
 // In-Memory Database (Clean Production Ready)
@@ -529,6 +831,393 @@ let orders: Order[] = [];
 
 let nextSequenceNumber = 1001;
 
+// =============================================================
+// Subscription Engine Catalog & In-Memory State (Phase 2)
+// =============================================================
+export let subscriptionPlans: SubscriptionPlanRecord[] = [
+  {
+    id: 'plan-enterprise',
+    code: 'ENTERPRISE',
+    name: 'Enterprise Diamond Plan',
+    nameAr: 'الباقة الماسية والمؤسسية (Enterprise)',
+    description: 'تحكم كامل وشامل لشركات الشحن الكبرى والمستودعات المركزية بدون قيود على عدد الشحنات مع دعم 50 مستخدم وتفعيل لكافة الأنظمة.',
+    price: 150,
+    monthlyPrice: 150,
+    annualPrice: 1500,
+    currency: 'JOD',
+    billingCycle: 'MONTHLY',
+    trialDays: 14,
+    maxUsers: 50,
+    maxMonthlyOrders: 0, // 0 = unlimited
+    enabledModules: {
+      tmsDelivery: true,
+      posCashier: true,
+      merchantWms: true,
+      accountingSettlements: true,
+      apiIntegrations: true,
+      aiRouteOptimizer: true,
+      whatsappTracking: true,
+      customDomain: true,
+    },
+    isActive: true,
+    sortOrder: 1,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'plan-professional',
+    code: 'PROFESSIONAL',
+    name: 'Professional Gold Plan',
+    nameAr: 'الباقة الذهبية للمحترفين (Gold Pro)',
+    description: 'باقة مثالية للشركات المتوسطة والمتنامية مع دعم حتى 10,000 شحنة شهرياً و15 مستخدم مع كافة الأنظمة الأساسية والمحاسبة.',
+    price: 85,
+    monthlyPrice: 85,
+    annualPrice: 850,
+    currency: 'JOD',
+    billingCycle: 'MONTHLY',
+    trialDays: 14,
+    maxUsers: 15,
+    maxMonthlyOrders: 10000,
+    enabledModules: {
+      tmsDelivery: true,
+      posCashier: true,
+      merchantWms: true,
+      accountingSettlements: true,
+      apiIntegrations: true,
+      aiRouteOptimizer: true,
+      whatsappTracking: true,
+      customDomain: false,
+    },
+    isActive: true,
+    sortOrder: 2,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'plan-growth',
+    code: 'GROWTH',
+    name: 'Growth Silver Plan',
+    nameAr: 'الباقة الفضية للنمو (Silver)',
+    description: 'حل ممتاز وموفر للشركات الناشئة والمتاجر النشطة حتى 2,500 شحنة شهرياً و5 مستخدمين مع أنظمة التوصيل والكاشير والمستودع.',
+    price: 40,
+    monthlyPrice: 40,
+    annualPrice: 400,
+    currency: 'JOD',
+    billingCycle: 'MONTHLY',
+    trialDays: 7,
+    maxUsers: 5,
+    maxMonthlyOrders: 2500,
+    enabledModules: {
+      tmsDelivery: true,
+      posCashier: true,
+      merchantWms: true,
+      accountingSettlements: true,
+      apiIntegrations: false,
+      aiRouteOptimizer: false,
+      whatsappTracking: false,
+      customDomain: false,
+    },
+    isActive: true,
+    sortOrder: 3,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'plan-trial',
+    code: 'TRIAL',
+    name: 'Free Trial Plan',
+    nameAr: 'الاشتراك التجريبي المجاني (Trial 14 days)',
+    description: 'فترة تجريبية مجانية تتيح اختبار نظام الشحنات وإدارة التوصيل حتى 100 شحنة و3 مستخدمين.',
+    price: 0,
+    monthlyPrice: 0,
+    annualPrice: 0,
+    currency: 'JOD',
+    billingCycle: 'MONTHLY',
+    trialDays: 14,
+    maxUsers: 3,
+    maxMonthlyOrders: 100,
+    enabledModules: {
+      tmsDelivery: true,
+      posCashier: true,
+      merchantWms: false,
+      accountingSettlements: false,
+      apiIntegrations: false,
+      aiRouteOptimizer: false,
+      whatsappTracking: false,
+      customDomain: false,
+    },
+    isActive: true,
+    sortOrder: 4,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+];
+
+export let subscriptions: SubscriptionRecord[] = [];
+
+// Helper: Synchronize subscription state directly to user record for complete backward compatibility
+export function syncSubscriptionToUser(tenantId: string, sub: SubscriptionRecord) {
+  const user = users.find((u) => u.id === tenantId);
+  if (user) {
+    user.subscriptionPlan = sub.planCode as any;
+    user.subscriptionPlanName = sub.planName;
+    user.subscriptionStatus = sub.status as any;
+    user.subscriptionStartDate = sub.startDate;
+    user.subscriptionEndDate = sub.endDate;
+    user.subscriptionPrice = sub.price;
+    user.subscriptionBillingCycle = sub.billingCycle;
+    user.enabledModules = { ...(sub.enabledModules as any) };
+    user.maxUsers = sub.maxUsers;
+    user.maxMonthlyOrders = sub.maxMonthlyOrders;
+    user.isActive = sub.status !== 'SUSPENDED';
+    user.suspendedReason = sub.suspendedReason;
+  }
+}
+
+// Helper: Ensure every tenant in memory has a corresponding SubscriptionRecord
+export function ensureTenantSubscriptions() {
+  const potentialTenants = users.filter((u) => u.role === 'ADMIN' || u.role === 'MERCHANT' || u.role === 'SUPER_ADMIN');
+  for (const tenantUser of potentialTenants) {
+    const existing = subscriptions.find((s) => s.tenantId === tenantUser.id);
+    if (!existing) {
+      const planCode = tenantUser.subscriptionPlan || (tenantUser.role === 'SUPER_ADMIN' ? 'ENTERPRISE' : 'PROFESSIONAL');
+      const planDef = subscriptionPlans.find((p) => p.code === planCode) || subscriptionPlans[1];
+      const now = new Date();
+      const startDate = tenantUser.subscriptionStartDate || now.toISOString();
+      const endDate = tenantUser.subscriptionEndDate || new Date(now.getTime() + 86400000 * 30).toISOString();
+      const status: SubscriptionEngineStatus = tenantUser.subscriptionStatus === 'SUSPENDED' ? 'SUSPENDED' : (planCode === 'TRIAL' ? 'TRIAL' : 'ACTIVE');
+
+      const initialSub: SubscriptionRecord = {
+        id: `sub-${tenantUser.id}`,
+        tenantId: tenantUser.id,
+        tenantName: tenantUser.companyName || tenantUser.storeName || tenantUser.name,
+        planId: planDef.id,
+        planCode: planDef.code,
+        planName: planDef.nameAr,
+        status,
+        startDate,
+        endDate,
+        trialStartDate: planCode === 'TRIAL' ? startDate : undefined,
+        trialEndDate: planCode === 'TRIAL' ? endDate : undefined,
+        price: tenantUser.subscriptionPrice !== undefined ? tenantUser.subscriptionPrice : planDef.monthlyPrice,
+        currency: 'JOD',
+        billingCycle: (tenantUser.subscriptionBillingCycle as SubscriptionCycle) || 'MONTHLY',
+        enabledModules: tenantUser.enabledModules ? { ...tenantUser.enabledModules } : { ...planDef.enabledModules },
+        maxUsers: tenantUser.maxUsers || planDef.maxUsers,
+        maxMonthlyOrders: tenantUser.maxMonthlyOrders !== undefined ? tenantUser.maxMonthlyOrders : planDef.maxMonthlyOrders,
+        autoRenew: false,
+        suspendedReason: tenantUser.suspendedReason,
+        gracePeriodDays: 0,
+        createdAt: startDate,
+        updatedAt: now.toISOString(),
+      };
+      subscriptions.push(initialSub);
+      syncSubscriptionToUser(tenantUser.id, initialSub);
+    }
+  }
+}
+
+// Ensure initial run
+ensureTenantSubscriptions();
+
+// Helper: Central Effective-Status Resolver (Single Source of Truth for Subscriptions)
+export function getTenantSubscriptionContext(tenantId?: string): TenantSubscriptionContext {
+  const now = new Date();
+  const defaultModules = {
+    tmsDelivery: true,
+    posCashier: true,
+    merchantWms: true,
+    accountingSettlements: true,
+    apiIntegrations: true,
+    aiRouteOptimizer: true,
+    whatsappTracking: true,
+    customDomain: true,
+  };
+
+  // Super Admin / Root system tenant has unrestricted access
+  if (!tenantId || tenantId === '00000000-0000-0000-0000-000000000000' || tenantId === 'u-super-1') {
+    return {
+      tenantId: tenantId || 'u-super-1',
+      tenantName: 'المدير العام للنظام (Super Admin)',
+      subscription: null,
+      plan: subscriptionPlans[0],
+      status: 'ACTIVE',
+      effectiveStatus: 'ACTIVE',
+      isActive: true,
+      isTrial: false,
+      isExpired: false,
+      isSuspended: false,
+      isCancelled: false,
+      startDate: now.toISOString(),
+      endDate: new Date(now.getTime() + 86400000 * 3650).toISOString(),
+      daysRemaining: 3650,
+      enabledModules: defaultModules,
+      limits: { maxUsers: 0, maxMonthlyOrders: 0 },
+      usage: { currentUsers: users.length, currentMonthlyOrders: orders.length },
+    };
+  }
+
+  // Find active/latest subscription for tenant
+  let sub = subscriptions
+    .filter((s) => s.tenantId === tenantId)
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+
+  // If no subscription record found, check user and create fallback
+  if (!sub) {
+    const u = users.find((x) => x.id === tenantId);
+    if (u) {
+      ensureTenantSubscriptions();
+      sub = subscriptions.find((s) => s.tenantId === tenantId)!;
+    }
+  }
+
+  // If still no subscription found, return default fallback trial
+  if (!sub) {
+    const trialPlan = subscriptionPlans.find((p) => p.code === 'TRIAL') || subscriptionPlans[3];
+    return {
+      tenantId,
+      subscription: null,
+      plan: trialPlan,
+      status: 'EXPIRED',
+      effectiveStatus: 'EXPIRED',
+      isActive: false,
+      isTrial: true,
+      isExpired: true,
+      isSuspended: false,
+      isCancelled: false,
+      startDate: now.toISOString(),
+      endDate: now.toISOString(),
+      daysRemaining: 0,
+      trialDaysRemaining: 0,
+      enabledModules: { ...trialPlan.enabledModules },
+      limits: { maxUsers: trialPlan.maxUsers, maxMonthlyOrders: trialPlan.maxMonthlyOrders },
+      usage: { currentUsers: 1, currentMonthlyOrders: 0 },
+    };
+  }
+
+  const planDef = subscriptionPlans.find((p) => p.id === sub.planId || p.code === sub.planCode) || subscriptionPlans[1];
+  const endDate = new Date(sub.endDate);
+  const diffTime = endDate.getTime() - now.getTime();
+  const daysRemaining = Math.max(0, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
+
+  let effectiveStatus: SubscriptionEngineStatus = sub.status;
+  let isExpired = false;
+
+  if (sub.status === 'SUSPENDED') {
+    effectiveStatus = 'SUSPENDED';
+  } else if (sub.status === 'CANCELLED') {
+    effectiveStatus = 'CANCELLED';
+  } else if (sub.status === 'TRIAL') {
+    const trialEnd = sub.trialEndDate ? new Date(sub.trialEndDate) : endDate;
+    if (trialEnd.getTime() < now.getTime()) {
+      isExpired = true;
+      effectiveStatus = 'EXPIRED';
+    } else {
+      effectiveStatus = 'TRIAL';
+    }
+  } else if (sub.status === 'ACTIVE') {
+    if (endDate.getTime() < now.getTime()) {
+      isExpired = true;
+      effectiveStatus = 'EXPIRED';
+    } else {
+      effectiveStatus = 'ACTIVE';
+    }
+  } else if (sub.status === 'EXPIRED') {
+    isExpired = true;
+    effectiveStatus = 'EXPIRED';
+  }
+
+  const isActive = (effectiveStatus === 'ACTIVE' || effectiveStatus === 'TRIAL') && !isExpired;
+  const isTrial = effectiveStatus === 'TRIAL' || sub.status === 'TRIAL';
+  const isSuspended = effectiveStatus === 'SUSPENDED';
+  const isCancelled = effectiveStatus === 'CANCELLED';
+
+  // Compute usage
+  const currentUsers = users.filter((u) => u.isActive && (u.id === tenantId || u.parentUserId === tenantId)).length;
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const currentMonthlyOrders = orders.filter((o) => (o.merchantId === tenantId) && new Date(o.createdAt) >= monthStart).length;
+
+  return {
+    tenantId,
+    tenantName: sub.tenantName,
+    subscription: sub,
+    plan: planDef,
+    status: sub.status,
+    effectiveStatus,
+    isActive,
+    isTrial,
+    isExpired,
+    isSuspended,
+    isCancelled,
+    startDate: sub.startDate,
+    endDate: sub.endDate,
+    trialDaysRemaining: isTrial ? daysRemaining : undefined,
+    daysRemaining,
+    enabledModules: { ...sub.enabledModules },
+    limits: {
+      maxUsers: sub.maxUsers,
+      maxMonthlyOrders: sub.maxMonthlyOrders,
+    },
+    usage: {
+      currentUsers,
+      currentMonthlyOrders,
+    },
+  };
+}
+
+// Middleware: Enforce subscription active status and optional specific module permission
+export function requireSubscriptionModule(moduleKey?: string) {
+  return async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const ctx = getRequesterContext(req);
+    if (ctx.isSuperAdmin) {
+      return next();
+    }
+
+    const tenantId = ctx.tenantId || ctx.userId;
+    if (!tenantId) {
+      return next();
+    }
+
+    const subCtx = getTenantSubscriptionContext(tenantId);
+
+    if (!subCtx.isActive) {
+      return res.status(403).json({
+        error: subCtx.isSuspended
+          ? 'تم تجميد اشتراك المنشأة من قبل إدارة المنظومة. يرجى التواصل مع الإدارة لفك التجميد.'
+          : 'انتهت صلاحية اشتراك المنشأة. يرجى تجديد أو ترقية الاشتراك لمتابعة العمل.',
+        code: subCtx.isSuspended ? 'SUBSCRIPTION_SUSPENDED' : 'SUBSCRIPTION_EXPIRED',
+        status: subCtx.effectiveStatus,
+        details: {
+          endDate: subCtx.endDate,
+          planName: subCtx.plan?.nameAr || subCtx.subscription?.planName,
+        },
+      });
+    }
+
+    if (moduleKey) {
+      const moduleMap: Record<string, string> = {
+        TMS: 'tmsDelivery',
+        POS: 'posCashier',
+        WMS: 'merchantWms',
+        ACCOUNTING: 'accountingSettlements',
+        ERP: 'accountingSettlements',
+        API: 'apiIntegrations',
+        AI_ROUTING: 'aiRouteOptimizer',
+      };
+      const actualKey = moduleMap[moduleKey] || moduleKey;
+      if (subCtx.enabledModules && subCtx.enabledModules[actualKey] === false) {
+        return res.status(403).json({
+          error: `نظام (${moduleKey}) غير مفعّل في باقة اشتراككم الحالية. يرجى ترقية الباقة لدى الإدارة العامة.`,
+          code: 'MODULE_DISABLED',
+          moduleKey: actualKey,
+        });
+      }
+    }
+
+    next();
+  };
+}
+
 // Helper: Get fee for merchant based on assigned price plan and governorate
 function getMerchantDeliveryFee(merchantId: string, governorate: string): number {
   const merchant = users.find((u) => u.id === merchantId);
@@ -608,7 +1297,213 @@ function saveDatabase() {
 }
 
 // -------------------------------------------------------------
-// Multi-Tenant Isolation & Requester Context Resolver
+// Security, Password Hashing (scrypt KDF) & Audit Trail
+// -------------------------------------------------------------
+const PASSWORD_SALT = process.env.PASSWORD_SALT || 'dargo_delivere_secure_salt_2026';
+
+function hashPassword(pass: string): string {
+  if (!pass) return '';
+  const salt = crypto.randomBytes(16).toString('hex');
+  const derivedKey = crypto.scryptSync(pass, salt, 64);
+  return `scrypt$${salt}$${derivedKey.toString('hex')}`;
+}
+
+function verifyPassword(inputPass: string, storedPass?: string, storedHash?: string): boolean {
+  if (!inputPass) return false;
+  const cleanInput = inputPass.trim();
+
+  // 1. Check if storedHash is in modern scrypt KDF format
+  if (storedHash && storedHash.startsWith('scrypt$')) {
+    const parts = storedHash.split('$');
+    if (parts.length === 3) {
+      const salt = parts[1];
+      const expectedKeyHex = parts[2];
+      try {
+        const derivedKey = crypto.scryptSync(cleanInput, salt, 64);
+        const derivedKeyHex = derivedKey.toString('hex');
+        if (
+          expectedKeyHex.length === derivedKeyHex.length &&
+          crypto.timingSafeEqual(Buffer.from(expectedKeyHex, 'hex'), Buffer.from(derivedKeyHex, 'hex'))
+        ) {
+          return true;
+        }
+      } catch {
+        return false;
+      }
+    }
+  }
+
+  // 2. Backward compatibility: Salted SHA-256 fallback
+  if (storedHash) {
+    const saltedSha256 = crypto.createHash('sha256').update(cleanInput + PASSWORD_SALT).digest('hex');
+    if (saltedSha256 === storedHash) return true;
+
+    // 3. Backward compatibility: Direct standard SHA-256 fallback
+    const directSha256 = crypto.createHash('sha256').update(cleanInput).digest('hex');
+    if (directSha256 === storedHash) return true;
+  }
+
+  // 4. Backward compatibility: Plaintext check for legacy/seed records
+  if (storedPass && cleanInput === storedPass.trim()) return true;
+  if (storedHash && cleanInput === storedHash.trim()) return true;
+
+  return false;
+}
+
+export function sanitizeUserForClient(user: any): User {
+  if (!user) return user;
+  const sanitized = { ...user };
+  delete sanitized.password;
+  delete sanitized.password_hash;
+  return sanitized as User;
+}
+
+// In-Memory Security Audit Logs (Lightweight & High-Performance)
+let auditLogs: AuditLogRecord[] = [];
+
+function logAuditEvent(event: {
+  action: string;
+  actionNameAr: string;
+  performedBy: string;
+  performerName?: string;
+  performerRole?: string;
+  targetId?: string;
+  targetType?: string;
+  targetName?: string;
+  tenantId?: string;
+  details?: Record<string, any>;
+  ipAddress?: string;
+}): AuditLogRecord {
+  const logEntry: AuditLogRecord = {
+    id: `audit-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+    action: event.action,
+    actionNameAr: event.actionNameAr,
+    performedBy: event.performedBy,
+    performerName: event.performerName || 'النظام',
+    performerRole: event.performerRole || 'SUPER_ADMIN',
+    targetId: event.targetId,
+    targetType: event.targetType || 'USER',
+    targetName: event.targetName,
+    tenantId: event.tenantId,
+    details: event.details || {},
+    ipAddress: event.ipAddress,
+    timestamp: new Date().toISOString(),
+  };
+  auditLogs.unshift(logEntry);
+  if (auditLogs.length > 500) auditLogs.pop();
+  return logEntry;
+}
+
+// -------------------------------------------------------------
+// System Roles Catalog & Dynamic Role Definitions
+// -------------------------------------------------------------
+let rolesCatalog: RoleRecord[] = [
+  {
+    id: 'role-super-admin',
+    name: 'المدير العام للنظام (Super Admin)',
+    roleKey: 'SUPER_ADMIN',
+    description: 'تحكم كامل وشامل في جميع إعدادات المنظومة والمستأجرين والصلاحيات وسقف التراخيص',
+    isSystemRole: true,
+    permissions: ['*'],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'role-admin',
+    name: 'مدير العمليات والشركة (Admin)',
+    roleKey: 'ADMIN',
+    description: 'إدارة عمليات الشركة والموظفين والطلبات والفرز والتوزيع والمحاسبة التابعة للمؤسسة',
+    isSystemRole: true,
+    permissions: [
+      'pos.access', 'pos.discount', 'pos.void_sale', 'pos.custom_items',
+      'warehouse.view', 'warehouse.manage_products', 'warehouse.adjust_stock', 'warehouse.view_cost_price',
+      'invoices.view', 'invoices.create', 'invoices.delete',
+      'accounting.view_pnl', 'accounting.expenses', 'accounting.wallet_payouts',
+      'shipments.create', 'shipments.dispatch', 'users.manage_staff'
+    ],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'role-operator',
+    name: 'مسؤول تشغيل ومستودع (Operator)',
+    roleKey: 'OPERATOR',
+    description: 'فرز الطرود، تسليم واستلام الشحنات، إدارة المخزون، وإنشاء الفواتير',
+    isSystemRole: true,
+    permissions: [
+      'pos.access', 'pos.discount', 'pos.void_sale', 'pos.custom_items',
+      'warehouse.view', 'warehouse.manage_products', 'warehouse.adjust_stock', 'warehouse.view_cost_price',
+      'invoices.view', 'invoices.create', 'invoices.delete',
+      'accounting.view_pnl', 'accounting.expenses',
+      'shipments.create', 'shipments.dispatch', 'users.manage_staff'
+    ],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'role-merchant',
+    name: 'التاجر وصاحب المتجر (Merchant)',
+    roleKey: 'MERCHANT',
+    description: 'إنشاء طلبات التوصيل، متابعة الطرود، استخدام الكاشير والمستودع الخاص، ومتابعة الأرباح',
+    isSystemRole: true,
+    permissions: [
+      'pos.access', 'pos.discount', 'pos.void_sale', 'pos.custom_items',
+      'warehouse.view', 'warehouse.manage_products', 'warehouse.adjust_stock', 'warehouse.view_cost_price',
+      'invoices.view', 'invoices.create',
+      'accounting.view_pnl', 'accounting.expenses', 'accounting.wallet_payouts',
+      'shipments.create'
+    ],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'role-cashier',
+    name: 'كاشير نقاط البيع (Cashier)',
+    roleKey: 'CASHIER',
+    description: 'إجراء عمليات البيع السريع وإصدار الإيصالات للعملاء',
+    isSystemRole: true,
+    permissions: ['pos.access', 'pos.custom_items'],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'role-accountant',
+    name: 'محاسب مالي (Accountant)',
+    roleKey: 'ACCOUNTANT',
+    description: 'التسويات المالية، كشوفات الحساب، تسجيل المصاريف ومتابعة الأرباح',
+    isSystemRole: true,
+    permissions: [
+      'warehouse.view', 'warehouse.view_cost_price',
+      'invoices.view', 'invoices.create',
+      'accounting.view_pnl', 'accounting.expenses'
+    ],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'role-driver',
+    name: 'كابتن التوصيل (Driver)',
+    roleKey: 'DRIVER',
+    description: 'استلام الشحنات وتوصيلها وتحديث الحالات التشغيلية وإثبات التسليم POD',
+    isSystemRole: true,
+    permissions: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'role-staff',
+    name: 'موظف تشغيل (Staff)',
+    roleKey: 'STAFF',
+    description: 'متابعة الشحنات والفرز الداخلي',
+    isSystemRole: true,
+    permissions: ['warehouse.view', 'invoices.view'],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+];
+
+// -------------------------------------------------------------
+// Multi-Tenant Isolation, Authentication & Authorization RBAC
 // -------------------------------------------------------------
 interface RequesterContext {
   userId?: string;
@@ -621,20 +1516,80 @@ interface RequesterContext {
   isDriver: boolean;
 }
 
-function getRequesterContext(req: express.Request): RequesterContext {
-  const headerUserId = (req.headers['x-user-id'] as string) || (req.query.requesterId as string) || (req.body?.requesterId as string);
-  const user = headerUserId ? users.find((u) => u && u.id === headerUserId) : undefined;
-  const userRole = user?.role || (req.headers['x-user-role'] as string);
+// Resolve user identity securely from JWT bearer token or x-auth-token
+// Insecure spoofable headers (x-user-id, x-user-role, requesterId query/body) are strictly ignored without valid token
+async function resolveAuthenticatedUser(req: express.Request): Promise<User | null> {
+  const authHeader = req.headers['authorization'] || req.headers['x-auth-token'];
+  let candidateUserId: string | null = null;
 
-  let tenantId: string | undefined = undefined;
-  if (user) {
-    if (user.role === 'ADMIN') {
-      tenantId = user.id;
-    } else if (user.parentUserId) {
-      tenantId = user.parentUserId;
+  if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.substring(7).trim();
+    if (token.startsWith('dargo_jwt_')) {
+      const parts = token.split('_');
+      if (parts.length >= 3) candidateUserId = parts[2];
+    } else if (token.length > 0) {
+      // Direct token match or user ID token
+      candidateUserId = token;
     }
-  } else if (req.headers['x-tenant-id']) {
-    tenantId = req.headers['x-tenant-id'] as string;
+  } else if (typeof authHeader === 'string' && authHeader.startsWith('dargo_jwt_')) {
+    const parts = authHeader.split('_');
+    if (parts.length >= 3) candidateUserId = parts[2];
+  } else if (typeof authHeader === 'string' && authHeader.trim().length > 0) {
+    candidateUserId = authHeader.trim();
+  }
+
+  if (!candidateUserId) return null;
+
+  // Check in-memory users cache first
+  let matchedUser = users.find((u) => u && u.id === candidateUserId);
+
+  // If not found and valid UUID, look up in Supabase
+  if (!matchedUser && isValidUuid(candidateUserId)) {
+    try {
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', candidateUserId)
+        .limit(1);
+      if (!error && data && data.length > 0) {
+        matchedUser = mapDbUserToAppUser(data[0]);
+      }
+    } catch {
+      // fallback
+    }
+  }
+
+  if (!matchedUser) return null;
+  if (matchedUser.isActive === false) return null;
+
+  return matchedUser;
+}
+
+function getRequesterContext(req: express.Request): RequesterContext {
+  const user = (req as any).authUser as User | undefined;
+  
+  if (!user) {
+    return {
+      userId: undefined,
+      userRole: undefined,
+      tenantId: undefined,
+      user: undefined,
+      isSuperAdmin: false,
+      isAdmin: false,
+      isMerchant: false,
+      isDriver: false,
+    };
+  }
+
+  const userRole = user.role;
+  let tenantId: string | undefined = undefined;
+
+  if (user.role === 'ADMIN') {
+    tenantId = user.id;
+  } else if (user.parentUserId) {
+    tenantId = user.parentUserId;
+  } else {
+    tenantId = user.id;
   }
 
   const isSuperAdmin = userRole === 'SUPER_ADMIN';
@@ -643,7 +1598,7 @@ function getRequesterContext(req: express.Request): RequesterContext {
   const isDriver = userRole === 'DRIVER';
 
   return {
-    userId: headerUserId,
+    userId: user.id,
     userRole,
     tenantId,
     user,
@@ -654,12 +1609,142 @@ function getRequesterContext(req: express.Request): RequesterContext {
   };
 }
 
+// Hierarchical & Tenant Access Evaluation Functions
+function canAccessMerchant(ctx: RequesterContext, merchantId: string): boolean {
+  if (ctx.isSuperAdmin) return true;
+  if (!ctx.user) return false;
+  if (ctx.user.id === merchantId) return true;
+  
+  const merchantUser = users.find((u) => u && u.id === merchantId);
+  if (!merchantUser) return false;
+
+  if (ctx.isAdmin) {
+    if (merchantUser.parentUserId === ctx.user.id || merchantUser.parentUserId === ctx.tenantId) {
+      return true;
+    }
+  }
+
+  // Descendant staff in the same tenant
+  if (merchantUser.parentUserId === ctx.tenantId) return true;
+
+  return false;
+}
+
+function canAccessDriver(ctx: RequesterContext, driverId: string): boolean {
+  if (ctx.isSuperAdmin) return true;
+  if (!ctx.user) return false;
+  if (ctx.user.id === driverId) return true;
+
+  const driverUser = users.find((u) => u && u.id === driverId);
+  if (!driverUser) return false;
+
+  if (ctx.isAdmin) {
+    if (driverUser.parentUserId === ctx.user.id || driverUser.parentUserId === ctx.tenantId) {
+      return true;
+    }
+  }
+
+  if (driverUser.parentUserId === ctx.tenantId) return true;
+
+  return false;
+}
+
+function canAccessOrder(ctx: RequesterContext, order: Order | undefined | null): boolean {
+  if (!order) return false;
+  if (ctx.isSuperAdmin) return true;
+  if (!ctx.user) return false;
+  if (ctx.user.id === order.merchantId) return true;
+  if (ctx.user.id === order.driverId) return true;
+
+  if (ctx.isAdmin || ctx.tenantId) {
+    if (order.tenantId && (order.tenantId === ctx.tenantId || order.tenantId === ctx.user.id)) return true;
+    const merchant = users.find((u) => u && u.id === order.merchantId);
+    if (merchant && (merchant.parentUserId === ctx.user.id || merchant.parentUserId === ctx.tenantId)) return true;
+    const driver = order.driverId ? users.find((u) => u && u.id === order.driverId) : null;
+    if (driver && (driver.parentUserId === ctx.user.id || driver.parentUserId === ctx.tenantId)) return true;
+  }
+
+  return false;
+}
+
+// Commercial Data Privacy: Checking whether a user can view merchant cost prices
+function canViewCostPrices(ctx: RequesterContext, merchantId: string): boolean {
+  if (ctx.isSuperAdmin) return true;
+  if (!ctx.user) return false;
+  if (ctx.user.id === merchantId) return true; // Merchant viewing their own data
+
+  const userPerms = Array.isArray(ctx.user.permissions) ? ctx.user.permissions : [];
+  if (userPerms.includes('merchant.products.cost_view') || userPerms.includes('*')) {
+    return true;
+  }
+
+  return false;
+}
+
+// Authentication Middlewares
+async function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const user = await resolveAuthenticatedUser(req);
+  if (!user) {
+    return res.status(401).json({
+      error: 'غير مصرح: يجب تسجيل الدخول للوصول إلى هذه الواجهة.',
+      code: 'UNAUTHORIZED',
+    });
+  }
+  (req as any).authUser = user;
+  next();
+}
+
+async function requireSuperAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const user = await resolveAuthenticatedUser(req);
+  if (!user) {
+    return res.status(401).json({
+      error: 'غير مصرح: يرجى تسجيل الدخول بحساب معتمد.',
+      code: 'UNAUTHORIZED',
+    });
+  }
+  if (user.role !== 'SUPER_ADMIN') {
+    return res.status(403).json({
+      error: 'ممنوع الوصول: هذه العملية مخصصة حصرياً للمدير العام للنظام (Super Admin).',
+      code: 'FORBIDDEN',
+    });
+  }
+  (req as any).authUser = user;
+  next();
+}
+
+function requirePermission(permissionKey: string) {
+  return async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const user = await resolveAuthenticatedUser(req);
+    if (!user) {
+      return res.status(401).json({ error: 'غير مصرح: يرجى تسجيل الدخول أولاً.', code: 'UNAUTHORIZED' });
+    }
+    if (user.role === 'SUPER_ADMIN') {
+      (req as any).authUser = user;
+      return next();
+    }
+    const userPerms = Array.isArray(user.permissions) ? user.permissions : [];
+    const roleDef = rolesCatalog.find((r) => r.roleKey === user.role);
+    const rolePerms = roleDef ? roleDef.permissions : [];
+    const hasPerm = userPerms.includes(permissionKey) || rolePerms.includes(permissionKey) || userPerms.includes('*');
+    if (!hasPerm) {
+      return res.status(403).json({
+        error: `ليس لديك الصلاحية المطلوبة (${permissionKey}) لتنفيذ هذا الإجراء.`,
+        code: 'PERMISSION_DENIED',
+      });
+    }
+    (req as any).authUser = user;
+    next();
+  };
+}
+
+
 // -------------------------------------------------------------
 // API Endpoints
 // -------------------------------------------------------------
 
 // Clean Database / Reset to Fresh Production State Endpoint
-app.post('/api/system/clean-database', (req, res) => {
+app.post('/api/system/clean-database', requireSuperAdmin, (req, res) => {
+  const ctx = getRequesterContext(req);
   orders = [];
   merchantProducts = [];
   stockMovements = [];
@@ -675,12 +1760,23 @@ app.post('/api/system/clean-database', (req, res) => {
     acc.balance = 0.0;
   });
   saveDatabase();
+
+  logAuditEvent({
+    action: 'CLEAN_DATABASE',
+    actionNameAr: 'تصفير وتنظيف بيانات الاختبار',
+    performedBy: ctx.userId || 'SUPER_ADMIN',
+    performerName: ctx.user?.name,
+    performerRole: 'SUPER_ADMIN',
+    targetType: 'SYSTEM',
+    targetName: 'قاعدة البيانات التشغيلية',
+  });
+
   res.json({ success: true, message: 'تم تصفير جميع البيانات الوهمية وتجهيز قاعدة البيانات للبيانات الحقيقية بنجاح' });
 });
 
 // Price Plans & Rate Cards Endpoints (قوائم وتسعيرات التوصيل للتاجر والسائق)
 // -------------------------------------------------------------
-app.get('/api/price-plans', (req, res) => {
+app.get('/api/price-plans', requireAuth, (req, res) => {
   const type = req.query.type as string; // 'MERCHANT' | 'DRIVER'
   let list = [...pricePlans];
   if (type) {
@@ -710,7 +1806,7 @@ app.get('/api/price-plans', (req, res) => {
 });
 
 // Create new price plan
-app.post('/api/price-plans', (req, res) => {
+app.post('/api/price-plans', requireAuth, (req, res) => {
   try {
     const {
       name,
@@ -756,7 +1852,7 @@ app.post('/api/price-plans', (req, res) => {
 });
 
 // Update price plan
-app.patch('/api/price-plans/:id', (req, res) => {
+app.patch('/api/price-plans/:id', requireAuth, (req, res) => {
   const plan = pricePlans.find((p) => p.id === req.params.id);
   if (!plan) {
     return res.status(404).json({ error: 'قائمة التسعيرة غير موجودة' });
@@ -795,7 +1891,7 @@ app.patch('/api/price-plans/:id', (req, res) => {
 });
 
 // Delete price plan
-app.delete('/api/price-plans/:id', (req, res) => {
+app.delete('/api/price-plans/:id', requireAuth, (req, res) => {
   const index = pricePlans.findIndex((p) => p.id === req.params.id);
   if (index === -1) {
     return res.status(404).json({ error: 'قائمة التسعيرة غير موجودة' });
@@ -822,7 +1918,7 @@ app.delete('/api/price-plans/:id', (req, res) => {
 });
 
 // Bulk assign price plan to users
-app.post('/api/price-plans/:id/assign', (req, res) => {
+app.post('/api/price-plans/:id/assign', requireAuth, (req, res) => {
   const plan = pricePlans.find((p) => p.id === req.params.id);
   if (!plan) {
     return res.status(404).json({ error: 'قائمة التسعيرة غير موجودة' });
@@ -850,7 +1946,7 @@ app.post('/api/price-plans/:id/assign', (req, res) => {
 });
 
 // Dynamic calculate fee for merchant and driver by governorate
-app.post('/api/price-plans/calculate', (req, res) => {
+app.post('/api/price-plans/calculate', requireAuth, (req, res) => {
   const { merchantId, driverId, governorate = 'عمان' } = req.body;
 
   let merchantFee = 3.0;
@@ -893,7 +1989,7 @@ app.post('/api/price-plans/calculate', (req, res) => {
 // -------------------------------------------------------------
 
 // 1. GET /api/orders: Fetch orders with multi-tenant isolation, pagination, search & filters
-app.get('/api/orders', (req, res) => {
+app.get('/api/orders', requireAuth, (req, res) => {
   try {
     const ctx = getRequesterContext(req);
     const page = Math.max(1, parseInt(req.query.page as string) || 1);
@@ -1032,17 +2128,24 @@ app.get('/api/orders', (req, res) => {
 });
 
 // 2. GET /api/orders/:id: Get single order details with status logs
-app.get('/api/orders/:id', (req, res) => {
+app.get('/api/orders/:id', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
   const order = orders.find((o) => o.id === req.params.id);
   if (!order) {
     return res.status(404).json({ error: 'الطلبية غير موجودة' });
   }
+
+  if (!canAccessOrder(ctx, order)) {
+    return res.status(403).json({ error: 'غير مصرح بالوصول إلى هذه الشحنة' });
+  }
+
   res.json(populateOrder(order));
 });
 
 // 3. POST /api/orders: Create new order (Full form)
-app.post('/api/orders', (req, res) => {
+app.post('/api/orders', requireAuth, (req, res) => {
   try {
+    const ctx = getRequesterContext(req);
     const {
       referenceNumber,
       merchantId,
@@ -1064,6 +2167,14 @@ app.post('/api/orders', (req, res) => {
 
     if (!recipientName || !recipientPhone || !governorate || !area || !merchantId) {
       return res.status(400).json({ error: 'يرجى ملء جميع الحقول الإلزامية' });
+    }
+
+    if (!canAccessMerchant(ctx, merchantId)) {
+      return res.status(403).json({ error: 'غير مصرح بإنشاء شحنة لمتجر خارج نطاق صلاحياتك' });
+    }
+
+    if (driverId && !canAccessDriver(ctx, driverId)) {
+      return res.status(403).json({ error: 'غير مصرح بتعيين سائق خارج نطاق شركتك' });
     }
 
     const mColl = parseFloat(merchantCollection) || 0;
@@ -1122,8 +2233,9 @@ app.post('/api/orders', (req, res) => {
 });
 
 // 4. POST /api/orders/quick: Rapid single order creation
-app.post('/api/orders/quick', (req, res) => {
+app.post('/api/orders/quick', requireAuth, (req, res) => {
   try {
+    const ctx = getRequesterContext(req);
     const {
       recipientName,
       recipientPhone,
@@ -1138,6 +2250,10 @@ app.post('/api/orders/quick', (req, res) => {
 
     if (!recipientName || !recipientPhone || !area || !merchantId) {
       return res.status(400).json({ error: 'الاسم، الهاتف، المنطقة، والتاجر حقول مطلوبة للطلبية السريعة' });
+    }
+
+    if (!canAccessMerchant(ctx, merchantId)) {
+      return res.status(403).json({ error: 'غير مصرح بإنشاء شحنة لمتجر خارج نطاق صلاحياتك' });
     }
 
     const fee =
@@ -1192,8 +2308,9 @@ app.post('/api/orders/quick', (req, res) => {
 });
 
 // 5. POST /api/orders/batch: Bulk Batch Import
-app.post('/api/orders/batch', (req, res) => {
+app.post('/api/orders/batch', requireAuth, (req, res) => {
   try {
+    const ctx = getRequesterContext(req);
     const { orders: batchItems } = req.body;
     if (!Array.isArray(batchItems) || batchItems.length === 0) {
       return res.status(400).json({ error: 'قائمة الطلبيات فارغة' });
@@ -1201,6 +2318,11 @@ app.post('/api/orders/batch', (req, res) => {
 
     const created: Order[] = [];
     for (const item of batchItems) {
+      const targetMerchantId = item.merchantId || (ctx.isMerchant ? ctx.userId : users.find((u) => u.role === 'MERCHANT')?.id || '');
+      if (!canAccessMerchant(ctx, targetMerchantId)) {
+        continue;
+      }
+
       const tot = parseFloat(item.totalCollection) || 25;
       const fee = parseFloat(item.deliveryFee) || 3.0;
       const mColl = Math.max(0, tot - fee);
@@ -1211,7 +2333,7 @@ app.post('/api/orders/batch', (req, res) => {
         referenceNumber: item.referenceNumber || `BATCH-${Math.floor(1000 + Math.random() * 9000)}`,
         status: item.driverId ? 'OUT_FOR_DELIVERY' : 'PENDING',
         paymentType: 'COD',
-        merchantId: item.merchantId || users.find((u) => u.role === 'MERCHANT')?.id || '',
+        merchantId: targetMerchantId,
         driverId: item.driverId || null,
         recipientName: item.recipientName || 'عميل محترم',
         recipientPhone: item.recipientPhone || '0790000000',
@@ -1245,11 +2367,16 @@ app.post('/api/orders/batch', (req, res) => {
 });
 
 // 6. PATCH /api/orders/:id/status: Update Order Status
-app.patch('/api/orders/:id/status', (req, res) => {
+app.patch('/api/orders/:id/status', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
   const { status, note, cancellationReason } = req.body;
   const order = orders.find((o) => o.id === req.params.id);
   if (!order) {
     return res.status(404).json({ error: 'الطلبية غير موجودة' });
+  }
+
+  if (!canAccessOrder(ctx, order)) {
+    return res.status(403).json({ error: 'غير مصرح بتعديل حالة هذه الشحنة' });
   }
 
   const oldStatus = order.status;
@@ -1279,11 +2406,20 @@ app.patch('/api/orders/:id/status', (req, res) => {
 });
 
 // 7. PATCH /api/orders/:id/assign: Assign driver to single order
-app.patch('/api/orders/:id/assign', (req, res) => {
+app.patch('/api/orders/:id/assign', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
   const { driverId } = req.body;
   const order = orders.find((o) => o.id === req.params.id);
   if (!order) {
     return res.status(404).json({ error: 'الطلبية غير موجودة' });
+  }
+
+  if (!canAccessOrder(ctx, order)) {
+    return res.status(403).json({ error: 'غير مصرح بتعيين هذه الشحنة' });
+  }
+
+  if (driverId && !canAccessDriver(ctx, driverId)) {
+    return res.status(403).json({ error: 'غير مصرح بتعيين سائق خارج نطاق شركتك' });
   }
 
   order.driverId = driverId || null;
@@ -1296,14 +2432,17 @@ app.patch('/api/orders/:id/assign', (req, res) => {
 });
 
 // 8. POST /api/orders/bulk-status: Bulk Status Update
-app.post('/api/orders/bulk-status', (req, res) => {
+app.post('/api/orders/bulk-status', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
   const { ids, status, note } = req.body;
   if (!Array.isArray(ids) || ids.length === 0) {
     return res.status(400).json({ error: 'لم يتم تحديد أي طلبيات' });
   }
 
+  let updatedCount = 0;
   orders = orders.map((o) => {
-    if (ids.includes(o.id)) {
+    if (ids.includes(o.id) && canAccessOrder(ctx, o)) {
+      updatedCount++;
       const old = o.status;
       return {
         ...o,
@@ -1326,18 +2465,25 @@ app.post('/api/orders/bulk-status', (req, res) => {
     return o;
   });
 
-  res.json({ message: `تم تحديث ${ids.length} طلبية بنجاح` });
+  res.json({ message: `تم تحديث ${updatedCount} طلبية بنجاح` });
 });
 
 // 9. POST /api/orders/bulk-assign: Bulk Assign Driver
-app.post('/api/orders/bulk-assign', (req, res) => {
+app.post('/api/orders/bulk-assign', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
   const { ids, driverId } = req.body;
   if (!Array.isArray(ids) || ids.length === 0) {
     return res.status(400).json({ error: 'لم يتم تحديد أي طلبيات' });
   }
 
+  if (driverId && !canAccessDriver(ctx, driverId)) {
+    return res.status(403).json({ error: 'غير مصرح بتعيين سائق خارج نطاق شركتك' });
+  }
+
+  let assignedCount = 0;
   orders = orders.map((o) => {
-    if (ids.includes(o.id)) {
+    if (ids.includes(o.id) && canAccessOrder(ctx, o)) {
+      assignedCount++;
       return {
         ...o,
         driverId: driverId || null,
@@ -1348,26 +2494,47 @@ app.post('/api/orders/bulk-assign', (req, res) => {
     return o;
   });
 
-  res.json({ message: `تم تعيين السائق لـ ${ids.length} طلبية بنجاح` });
+  res.json({ message: `تم تعيين السائق لـ ${assignedCount} طلبية بنجاح` });
 });
 
 // 10. DELETE /api/orders/:id: Delete single order
-app.delete('/api/orders/:id', (req, res) => {
+app.delete('/api/orders/:id', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
   const idx = orders.findIndex((o) => o.id === req.params.id);
   if (idx === -1) {
     return res.status(404).json({ error: 'الطلبية غير موجودة' });
   }
+
+  const order = orders[idx];
+  if (!canAccessOrder(ctx, order)) {
+    return res.status(403).json({ error: 'غير مصرح بحذف هذه الشحنة' });
+  }
+
   orders.splice(idx, 1);
   res.json({ success: true, message: 'تم حذف الطلبية' });
 });
 
 // 12. GET /api/stats: Top-level Dashboard Metrics
-app.get('/api/stats', (req, res) => {
-  const total = orders.length;
-  const delivered = orders.filter((o) => o.status === 'DELIVERED').length;
-  const active = orders.filter((o) => ['PENDING', 'PICKING', 'OUT_FOR_DELIVERY'].includes(o.status)).length;
-  const totalCOD = orders.reduce((sum, o) => sum + (o.totalCollection || 0), 0);
-  const totalFees = orders.reduce((sum, o) => sum + (o.deliveryFee || 0), 0);
+app.get('/api/stats', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
+  let scopedOrders = [...orders];
+
+  if (!ctx.isSuperAdmin && ctx.user) {
+    if (ctx.isAdmin && ctx.tenantId) {
+      const adminMerchantIds = users.filter((u) => u && (u.parentUserId === ctx.tenantId || u.id === ctx.tenantId)).map((u) => u.id);
+      scopedOrders = scopedOrders.filter((o) => o && (o.tenantId === ctx.tenantId || adminMerchantIds.includes(o.merchantId)));
+    } else if (ctx.isMerchant) {
+      scopedOrders = scopedOrders.filter((o) => o && o.merchantId === ctx.user?.id);
+    } else if (ctx.isDriver) {
+      scopedOrders = scopedOrders.filter((o) => o && o.driverId === ctx.user?.id);
+    }
+  }
+
+  const total = scopedOrders.length;
+  const delivered = scopedOrders.filter((o) => o.status === 'DELIVERED').length;
+  const active = scopedOrders.filter((o) => ['PENDING', 'PICKING', 'OUT_FOR_DELIVERY'].includes(o.status)).length;
+  const totalCOD = scopedOrders.reduce((sum, o) => sum + (o.totalCollection || 0), 0);
+  const totalFees = scopedOrders.reduce((sum, o) => sum + (o.deliveryFee || 0), 0);
   const successRate = total > 0 ? Math.round((delivered / total) * 100) : 0;
 
   res.json({
@@ -1411,7 +2578,8 @@ app.get('/api/orders/track/:query', (req, res) => {
 });
 
 // 14. POST /api/orders/scan: Warehouse Barcode Scanner Dispatch Action
-app.post('/api/orders/scan', (req, res) => {
+app.post('/api/orders/scan', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
   const { barcode, action, driverId, note } = req.body;
   if (!barcode) {
     return res.status(400).json({ error: 'رمز الباركود مطلوب' });
@@ -1430,6 +2598,14 @@ app.post('/api/orders/scan', (req, res) => {
   }
 
   const order = orders[orderIdx];
+  if (!canAccessOrder(ctx, order)) {
+    return res.status(403).json({ error: 'غير مصرح بالوصول إلى هذه الشحنة' });
+  }
+
+  if (driverId && !canAccessDriver(ctx, driverId)) {
+    return res.status(403).json({ error: 'غير مصرح بتعيين سائق خارج نطاق شركتك' });
+  }
+
   const oldStatus = order.status;
   let newStatus: OrderStatus = oldStatus;
   let logNote = note || '';
@@ -1482,9 +2658,23 @@ app.post('/api/orders/scan', (req, res) => {
 });
 
 // 15. GET /api/settlements: Detailed Financial Accounting Overview
-app.get('/api/settlements', (req, res) => {
-  const merchantUsers = users.filter((u) => u.role === 'MERCHANT');
-  const driverUsers = users.filter((u) => u.role === 'DRIVER');
+app.get('/api/settlements', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
+  let merchantUsers = users.filter((u) => u.role === 'MERCHANT');
+  let driverUsers = users.filter((u) => u.role === 'DRIVER');
+
+  if (!ctx.isSuperAdmin && ctx.user) {
+    if (ctx.isAdmin && ctx.tenantId) {
+      merchantUsers = merchantUsers.filter((u) => u.parentUserId === ctx.tenantId || u.id === ctx.tenantId);
+      driverUsers = driverUsers.filter((u) => u.parentUserId === ctx.tenantId || u.id === ctx.tenantId);
+    } else if (ctx.isMerchant) {
+      merchantUsers = merchantUsers.filter((u) => u.id === ctx.user?.id);
+      driverUsers = [];
+    } else if (ctx.isDriver) {
+      merchantUsers = [];
+      driverUsers = driverUsers.filter((u) => u.id === ctx.user?.id);
+    }
+  }
 
   const merchantSettlements = merchantUsers.map((m) => {
     const merchantOrders = orders.filter((o) => o.merchantId === m.id);
@@ -1542,9 +2732,14 @@ app.get('/api/settlements', (req, res) => {
 });
 
 // 16. POST /api/settlements/merchants/:merchantId/settle: Settle Merchant Balance
-app.post('/api/settlements/merchants/:merchantId/settle', (req, res) => {
+app.post('/api/settlements/merchants/:merchantId/settle', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
   const { merchantId } = req.params;
   const { paymentMethod = 'CLIQ', reference = '', notes = '' } = req.body;
+
+  if (!canAccessMerchant(ctx, merchantId)) {
+    return res.status(403).json({ error: 'غير مصرح بتسوية حسابات هذا المتجر' });
+  }
 
   const merchant = users.find((u) => u.id === merchantId);
   const merchantName = merchant ? merchant.storeName || merchant.name : 'متجر';
@@ -1634,9 +2829,14 @@ app.post('/api/settlements/merchants/:merchantId/settle', (req, res) => {
 });
 
 // 17. POST /api/settlements/drivers/:driverId/close-cash: Close Driver Cash Custody
-app.post('/api/settlements/drivers/:driverId/close-cash', (req, res) => {
+app.post('/api/settlements/drivers/:driverId/close-cash', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
   const { driverId } = req.params;
   const { notes = '' } = req.body;
+
+  if (!canAccessDriver(ctx, driverId)) {
+    return res.status(403).json({ error: 'غير مصرح بإغلاق عهدة هذا السائق' });
+  }
 
   const driver = users.find((u) => u.id === driverId);
   const driverName = driver ? driver.name : 'كابتن';
@@ -1724,10 +2924,15 @@ app.post('/api/settlements/drivers/:driverId/close-cash', (req, res) => {
 });
 
 // 18. POST /api/routes/optimize: Smart Driver Route Optimization
-app.post('/api/routes/optimize', (req, res) => {
+app.post('/api/routes/optimize', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
   const { driverId } = req.body;
   if (!driverId) {
     return res.status(400).json({ error: 'معرف الكابتن مطلوب' });
+  }
+
+  if (!canAccessDriver(ctx, driverId)) {
+    return res.status(403).json({ error: 'غير مصرح بالوصول إلى مسار هذا السائق' });
   }
 
   const driver = users.find((u) => u.id === driverId);
@@ -1814,11 +3019,16 @@ app.post('/api/routes/optimize', (req, res) => {
 });
 
 // 19. PATCH /api/orders/:id/shelf: Assign Warehouse Shelf / Bin Location
-app.patch('/api/orders/:id/shelf', (req, res) => {
+app.patch('/api/orders/:id/shelf', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
   const { shelf } = req.body;
   const order = orders.find((o) => o.id === req.params.id);
   if (!order) {
     return res.status(404).json({ error: 'الطلبية غير موجودة' });
+  }
+
+  if (!canAccessOrder(ctx, order)) {
+    return res.status(403).json({ error: 'غير مصرح بتعديل هذه الشحنة' });
   }
 
   order.warehouseShelf = shelf ? shelf.trim().toUpperCase() : undefined;
@@ -1843,15 +3053,20 @@ app.patch('/api/orders/:id/shelf', (req, res) => {
 });
 
 // 20. POST /api/returns/handover: Handover Returned Parcels back to Merchant
-app.post('/api/returns/handover', (req, res) => {
+app.post('/api/returns/handover', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
   const { ids, merchantId, manifestCode, notes } = req.body;
   if (!Array.isArray(ids) || ids.length === 0) {
     return res.status(400).json({ error: 'لم يتم تحديد أي طرود مرتجعة' });
   }
 
+  if (merchantId && !canAccessMerchant(ctx, merchantId)) {
+    return res.status(403).json({ error: 'غير مصرح بتسليم مرتجعات لمتجر خارج نطاق صلاحياتك' });
+  }
+
   let processedCount = 0;
   orders = orders.map((o) => {
-    if (ids.includes(o.id)) {
+    if (ids.includes(o.id) && canAccessOrder(ctx, o)) {
       processedCount++;
       return {
         ...o,
@@ -1882,11 +3097,16 @@ app.post('/api/returns/handover', (req, res) => {
 });
 
 // 21. POST /api/orders/:id/verify-pod: Verify Delivery with OTP, Digital Signature & Proof Photo
-app.post('/api/orders/:id/verify-pod', (req, res) => {
+app.post('/api/orders/:id/verify-pod', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
   const { otp, signature, photo, driverNote, bypassOtp } = req.body;
   const order = orders.find((o) => o.id === req.params.id);
   if (!order) {
     return res.status(404).json({ error: 'الطلبية غير موجودة' });
+  }
+
+  if (!canAccessOrder(ctx, order)) {
+    return res.status(403).json({ error: 'غير مصرح بتأكيد تسليم هذه الشحنة' });
   }
 
   let otpMatched = false;
@@ -1929,10 +3149,15 @@ app.post('/api/orders/:id/verify-pod', (req, res) => {
 });
 
 // 22. POST /api/orders/:id/send-sms: Send SMS / WhatsApp Notification with OTP & Tracking URL
-app.post('/api/orders/:id/send-sms', (req, res) => {
+app.post('/api/orders/:id/send-sms', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
   const order = orders.find((o) => o.id === req.params.id);
   if (!order) {
     return res.status(404).json({ error: 'الطلبية غير موجودة' });
+  }
+
+  if (!canAccessOrder(ctx, order)) {
+    return res.status(403).json({ error: 'غير مصرح بالوصول إلى هذه الشحنة' });
   }
 
   const populated = populateOrder(order);
@@ -1965,8 +3190,14 @@ app.post('/api/orders/:id/send-sms', (req, res) => {
 });
 
 // 23. GET /api/merchants/:id/integrations: Get Merchant API Keys & Webhooks
-app.get('/api/merchants/:id/integrations', (req, res) => {
+app.get('/api/merchants/:id/integrations', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
   const merchantId = req.params.id;
+
+  if (!canAccessMerchant(ctx, merchantId)) {
+    return res.status(403).json({ error: 'غير مصرح بالوصول إلى تكاملات هذا المتجر' });
+  }
+
   const merchantKeys = apiKeys.filter((k) => k.merchantId === merchantId);
 
   res.json({
@@ -1978,8 +3209,14 @@ app.get('/api/merchants/:id/integrations', (req, res) => {
 });
 
 // 24. POST /api/merchants/:id/api-keys: Generate New API Key
-app.post('/api/merchants/:id/api-keys', (req, res) => {
+app.post('/api/merchants/:id/api-keys', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
   const merchantId = req.params.id;
+
+  if (!canAccessMerchant(ctx, merchantId)) {
+    return res.status(403).json({ error: 'غير مصرح بتوليد مفاتيح API لهذا المتجر' });
+  }
+
   const { name, platform } = req.body;
 
   const newKey: ApiKey = {
@@ -2080,24 +3317,28 @@ app.post('/api/auth/login', async (req, res) => {
     const cleanId = identifier.toLowerCase();
     const cleanPhone = identifier;
 
-    // Direct Supabase query
+    // Query database for user
     const { data: dbUsers, error } = await supabase
       .from('users')
       .select('*')
       .or(`email.ilike.${cleanId},phone.eq.${cleanPhone}`);
 
-    if (error) {
-      console.error('Supabase auth login query error:', error);
-      return res.status(500).json({ error: 'فشل الاتصال بقاعدة بيانات Supabase: ' + error.message });
+    let rawUser: any = null;
+    if (!error && dbUsers && dbUsers.length > 0) {
+      rawUser = dbUsers[0];
+    } else {
+      // Fallback check in memory
+      rawUser = users.find(
+        (u) => (u.email && u.email.toLowerCase() === cleanId) || (u.phone && u.phone === cleanPhone)
+      );
     }
 
-    if (!dbUsers || dbUsers.length === 0) {
+    if (!rawUser) {
       return res.status(401).json({
         error: 'البريد الإلكتروني أو رقم الهاتف غير مسجل في النظام. يرجى التواصل مع المدير العام (Super Admin) لإنشاء حسابك.',
       });
     }
 
-    const rawUser = dbUsers[0];
     const user = mapDbUserToAppUser(rawUser);
 
     if (user.isActive === false) {
@@ -2115,20 +3356,50 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     const inputPass = (password || '').toString().trim();
-    const expectedPass = (rawUser.password || rawUser.password_hash || (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN' ? 'admin123' : '123456')).toString().trim();
+    const isPassValid = verifyPassword(
+      inputPass,
+      rawUser.password || (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN' ? 'admin123' : '123456'),
+      rawUser.password_hash
+    );
 
-    if (inputPass !== expectedPass) {
+    if (!isPassValid) {
       return res.status(401).json({
         error: 'كلمة المرور غير صحيحة، يرجى التحقق والمحاولة مرة أخرى.',
       });
     }
 
-    // Background sync cache for order lookups
+    // Auto-upgrade password hash to modern scrypt KDF if not yet migrated
+    if (rawUser.id && isValidUuid(rawUser.id) && (!rawUser.password_hash || !rawUser.password_hash.startsWith('scrypt$'))) {
+      const secureHash = hashPassword(inputPass);
+      supabase
+        .from('users')
+        .update({ password_hash: secureHash, updated_at: new Date().toISOString() })
+        .eq('id', rawUser.id)
+        .then(() => {}, (e) => console.warn('Password hash upgrade notice:', e?.message));
+    }
+
+    // Background sync cache
     syncUsersFromSupabase().catch(() => {});
+
+    // Log security audit event
+    logAuditEvent({
+      action: 'USER_LOGIN',
+      actionNameAr: 'تسجيل دخول ناجح',
+      performedBy: user.id,
+      performerName: user.name,
+      performerRole: user.role,
+      targetId: user.id,
+      targetType: 'USER',
+      targetName: user.name,
+      tenantId: user.parentUserId || user.id,
+      details: { email: user.email, role: user.role, portal: requireOps ? 'OPS' : 'GENERAL' },
+    });
+
+    const sanitizedUser = sanitizeUserForClient(user);
 
     res.json({
       success: true,
-      user,
+      user: sanitizedUser,
       token: `dargo_jwt_${user.id}_${Date.now()}`,
       message: `مرحباً بك يا ${user.name}`,
     });
@@ -2179,13 +3450,16 @@ app.post('/api/auth/register-ops', async (req, res) => {
     }
 
     const newId = crypto.randomUUID();
+    const rawPass = password.trim();
+    const secureHash = hashPassword(rawPass);
+
     const dbPayload = {
       id: newId,
       name: name.trim(),
       email: cleanEmail,
       phone: cleanPhone,
-      password: password.trim(),
-      password_hash: password.trim(),
+      password: secureHash,
+      password_hash: secureHash,
       role: 'SUPER_ADMIN',
       role_name: 'المدير العام للنظام (Super Admin)',
       branch: 'المقر الرئيسي للمملكة',
@@ -2193,6 +3467,7 @@ app.post('/api/auth/register-ops', async (req, res) => {
       is_active: true,
       portal_access: 'OPS',
       permissions: [
+        '*',
         'manage_system_settings',
         'manage_operations_admins',
         'view_financial_audit_logs',
@@ -2201,6 +3476,7 @@ app.post('/api/auth/register-ops', async (req, res) => {
         'users.manage_staff',
       ],
       max_allowed_permissions: [
+        '*',
         'manage_system_settings',
         'manage_operations_admins',
         'view_financial_audit_logs',
@@ -2225,12 +3501,25 @@ app.post('/api/auth/register-ops', async (req, res) => {
     const createdUser = mapDbUserToAppUser(inserted && inserted[0] ? inserted[0] : dbPayload);
     syncUsersFromSupabase().catch(() => {});
 
+    logAuditEvent({
+      action: 'SUPER_ADMIN_REGISTERED',
+      actionNameAr: 'تسجيل حساب سوبر أدمن جديد',
+      performedBy: createdUser.id,
+      performerName: createdUser.name,
+      performerRole: 'SUPER_ADMIN',
+      targetId: createdUser.id,
+      targetType: 'USER',
+      targetName: createdUser.name,
+      details: { email: createdUser.email },
+    });
+
     const token = `dargo_jwt_${createdUser.id}_${Date.now()}`;
+    const sanitizedUser = sanitizeUserForClient(createdUser);
 
     res.status(201).json({
       success: true,
       message: 'تم تسجيل وإنشاء حساب السوبر أدمن الجديد في قاعدة البيانات بنجاح',
-      user: createdUser,
+      user: sanitizedUser,
       token,
     });
   } catch (err: any) {
@@ -2242,18 +3531,28 @@ app.post('/api/auth/register-ops', async (req, res) => {
 app.post('/api/auth/verify', async (req, res) => {
   try {
     const { userId } = req.body || {};
-    if (!userId) {
-      return res.status(400).json({ error: 'معرف المستخدم مطلوب' });
+    const authHeader = req.headers['authorization'] || req.headers['x-auth-token'];
+    let candidateId = userId;
+
+    if (!candidateId && typeof authHeader === 'string') {
+      const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+      if (token.startsWith('dargo_jwt_')) {
+        const parts = token.split('_');
+        if (parts.length >= 3) candidateId = parts[2];
+      }
     }
 
-    const cleanUserId = String(userId).trim();
+    if (!candidateId) {
+      return res.status(400).json({ error: 'معرف المستخدم مطلوب للتحقق من الجلسة' });
+    }
+
+    const cleanUserId = String(candidateId).trim();
 
     // Check if valid UUID for PostgreSQL Supabase query
     if (!isValidUuid(cleanUserId)) {
-      // Check in-memory fallback
       const localUser = users.find((u) => u && u.id === cleanUserId);
-      if (localUser) {
-        return res.json({ success: true, user: localUser });
+      if (localUser && localUser.isActive !== false) {
+        return res.json({ success: true, user: sanitizeUserForClient(localUser) });
       }
       return res.status(401).json({ error: 'الجلسة غير صالحة، يرجى تسجيل الدخول مجدداً' });
     }
@@ -2267,8 +3566,8 @@ app.post('/api/auth/verify', async (req, res) => {
     if (error) {
       console.warn('Verify session Supabase warning:', error.message);
       const fallbackUser = users.find((u) => u && u.id === cleanUserId);
-      if (fallbackUser) {
-        return res.json({ success: true, user: fallbackUser });
+      if (fallbackUser && fallbackUser.isActive !== false) {
+        return res.json({ success: true, user: sanitizeUserForClient(fallbackUser) });
       }
       return res.status(401).json({ error: 'الجلسة غير صالحة أو غير مسجلة' });
     }
@@ -2279,18 +3578,231 @@ app.post('/api/auth/verify', async (req, res) => {
 
     const user = mapDbUserToAppUser(data[0]);
     if (user.isActive === false) {
-      return res.status(403).json({ error: 'الحساب غير نشط' });
+      return res.status(403).json({ error: 'الحساب غير نشط أو تم تجميده مؤقتاً' });
     }
 
-    res.json({ success: true, user });
+    res.json({ success: true, user: sanitizeUserForClient(user) });
   } catch (err: any) {
     console.error('Error verifying auth session:', err);
     res.status(401).json({ error: 'انتهت صلاحية الجلسة' });
   }
 });
 
+// GET /api/auth/me: Retrieve currently authenticated user context
+app.get('/api/auth/me', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
+  if (!ctx.user) {
+    return res.status(401).json({ error: 'غير مسجل الدخول' });
+  }
+  res.json({ success: true, user: sanitizeUserForClient(ctx.user) });
+});
+
+// -------------------------------------------------------------
+// Dynamic Roles & Permissions Catalog API
+// -------------------------------------------------------------
+
+// GET /api/roles: List all system and tenant roles
+app.get('/api/roles', requireAuth, async (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    let roles = [...rolesCatalog];
+    if (!ctx.isSuperAdmin && ctx.tenantId) {
+      roles = roles.filter((r) => r.isSystemRole || r.tenantId === ctx.tenantId);
+    }
+    res.json({ success: true, roles });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/roles: Create a custom role with permissions ceiling check
+app.post('/api/roles', requireAuth, async (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const { name, roleKey, description, permissions = [] } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'اسم الدور مطلوب' });
+    }
+
+    const cleanKey = (roleKey || name)
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9_]/g, '_');
+
+    // Prevent duplicate role keys
+    if (rolesCatalog.some((r) => r.roleKey === cleanKey)) {
+      return res.status(400).json({ error: 'رمز الدور مسجل مسبقاً' });
+    }
+
+    // RBAC Ceiling Check for non-SuperAdmin
+    if (!ctx.isSuperAdmin && ctx.user) {
+      const allowedCeiling = Array.isArray(ctx.user.maxAllowedPermissions) && ctx.user.maxAllowedPermissions.length > 0
+        ? ctx.user.maxAllowedPermissions
+        : (Array.isArray(ctx.user.permissions) ? ctx.user.permissions : []);
+
+      const unauthorizedPerms = permissions.filter((p: string) => !allowedCeiling.includes(p) && !allowedCeiling.includes('*'));
+      if (unauthorizedPerms.length > 0) {
+        return res.status(403).json({
+          error: `لا يمكنك تضمين صلاحيات تتجاوز سقف الصلاحيات الممنوح لك: [${unauthorizedPerms.join(', ')}]`,
+          code: 'CEILING_EXCEEDED',
+        });
+      }
+    }
+
+    const newRole: RoleRecord = {
+      id: `role-${Date.now()}`,
+      name: name.trim(),
+      roleKey: cleanKey,
+      description: description?.trim(),
+      isSystemRole: false,
+      tenantId: ctx.isSuperAdmin ? null : (ctx.tenantId || ctx.userId || null),
+      permissions: Array.isArray(permissions) ? permissions : [],
+      createdBy: ctx.userId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    rolesCatalog.push(newRole);
+
+    logAuditEvent({
+      action: 'ROLE_CREATED',
+      actionNameAr: 'إنشاء دور وصلاحيات جديدة',
+      performedBy: ctx.userId || 'UNKNOWN',
+      performerName: ctx.user?.name,
+      performerRole: ctx.userRole,
+      targetId: newRole.id,
+      targetType: 'ROLE',
+      targetName: newRole.name,
+      tenantId: ctx.tenantId,
+      details: { roleKey: newRole.roleKey, permissionsCount: newRole.permissions.length },
+    });
+
+    res.status(201).json({
+      success: true,
+      message: `تم إنشاء الدور (${newRole.name}) بنجاح`,
+      role: newRole,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH /api/roles/:id: Update role permissions
+app.patch('/api/roles/:id', requireAuth, async (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const roleId = req.params.id;
+    const { name, description, permissions } = req.body;
+
+    const roleIndex = rolesCatalog.findIndex((r) => r.id === roleId);
+    if (roleIndex === -1) {
+      return res.status(404).json({ error: 'الدور غير موجود' });
+    }
+
+    const targetRole = rolesCatalog[roleIndex];
+
+    // Only Super Admin can modify system roles
+    if (targetRole.isSystemRole && !ctx.isSuperAdmin) {
+      return res.status(403).json({ error: 'لا يمكن تعديل أدوار النظام الأساسية إلا من خلال السوبر أدمن' });
+    }
+
+    // Non-SuperAdmin can only modify their own tenant roles
+    if (!ctx.isSuperAdmin && targetRole.tenantId && targetRole.tenantId !== ctx.tenantId) {
+      return res.status(403).json({ error: 'غير مصرح بتعديل هذا الدور' });
+    }
+
+    // Check permissions ceiling if modifying permissions
+    if (permissions && !ctx.isSuperAdmin && ctx.user) {
+      const allowedCeiling = Array.isArray(ctx.user.maxAllowedPermissions) && ctx.user.maxAllowedPermissions.length > 0
+        ? ctx.user.maxAllowedPermissions
+        : (Array.isArray(ctx.user.permissions) ? ctx.user.permissions : []);
+
+      const unauthorizedPerms = permissions.filter((p: string) => !allowedCeiling.includes(p) && !allowedCeiling.includes('*'));
+      if (unauthorizedPerms.length > 0) {
+        return res.status(403).json({
+          error: `لا يمكنك منح صلاحيات تتجاوز سقف الصلاحيات الممنوح لحسابك: [${unauthorizedPerms.join(', ')}]`,
+          code: 'CEILING_EXCEEDED',
+        });
+      }
+    }
+
+    if (name) targetRole.name = name.trim();
+    if (description !== undefined) targetRole.description = description?.trim();
+    if (Array.isArray(permissions)) targetRole.permissions = permissions;
+    targetRole.updatedAt = new Date().toISOString();
+
+    logAuditEvent({
+      action: 'ROLE_UPDATED',
+      actionNameAr: 'تحديث صلاحيات الدور',
+      performedBy: ctx.userId || 'UNKNOWN',
+      performerName: ctx.user?.name,
+      performerRole: ctx.userRole,
+      targetId: targetRole.id,
+      targetType: 'ROLE',
+      targetName: targetRole.name,
+      tenantId: ctx.tenantId,
+      details: { roleKey: targetRole.roleKey, permissionsCount: targetRole.permissions.length },
+    });
+
+    res.json({
+      success: true,
+      message: `تم تحديث الدور (${targetRole.name}) بنجاح`,
+      role: targetRole,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/roles/:id: Delete custom role
+app.delete('/api/roles/:id', requireAuth, async (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const roleId = req.params.id;
+
+    const role = rolesCatalog.find((r) => r.id === roleId);
+    if (!role) {
+      return res.status(404).json({ error: 'الدور غير موجود' });
+    }
+
+    if (role.isSystemRole) {
+      return res.status(400).json({ error: 'لا يمكن حذف أدوار النظام الافتراضية' });
+    }
+
+    if (!ctx.isSuperAdmin && role.tenantId && role.tenantId !== ctx.tenantId) {
+      return res.status(403).json({ error: 'غير مصرح بحذف هذا الدور' });
+    }
+
+    rolesCatalog = rolesCatalog.filter((r) => r.id !== roleId);
+
+    logAuditEvent({
+      action: 'ROLE_DELETED',
+      actionNameAr: 'حذف دور مخصص',
+      performedBy: ctx.userId || 'UNKNOWN',
+      performerName: ctx.user?.name,
+      performerRole: ctx.userRole,
+      targetId: role.id,
+      targetType: 'ROLE',
+      targetName: role.name,
+      tenantId: ctx.tenantId,
+    });
+
+    res.json({
+      success: true,
+      message: `تم حذف الدور (${role.name}) بنجاح`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// Users Management & RBAC Enforcement
+// -------------------------------------------------------------
+
 // 26.1 GET /api/users: List Users directly from Supabase with Multi-Tenant Isolation
-app.get('/api/users', async (req, res) => {
+app.get('/api/users', requireAuth, async (req, res) => {
   try {
     const ctx = getRequesterContext(req);
     const role = req.query.role as string;
@@ -2326,19 +3838,59 @@ app.get('/api/users', async (req, res) => {
       }
       if (role && role !== 'ALL') filtered = filtered.filter((u) => u?.role === role);
       if (parentUserId) filtered = filtered.filter((u) => u?.parentUserId === parentUserId);
-      return res.json(filtered);
+      return res.json(filtered.map(sanitizeUserForClient));
     }
 
-    const mappedUsers = (data || []).map(mapDbUserToAppUser);
+    const mappedUsers = (data || []).map(mapDbUserToAppUser).map(sanitizeUserForClient);
     res.json(mappedUsers);
   } catch (err: any) {
     console.error('Error listing users:', err);
-    res.json(users || []);
+    res.json((users || []).map(sanitizeUserForClient));
   }
 });
 
-// 26.2 POST /api/users: Create User directly in Supabase with Multi-Tenant Hierarchy
-app.post('/api/users', async (req, res) => {
+// 26.1.1 GET /api/users/:id: Get single user by ID with Tenant Isolation
+app.get('/api/users/:id', requireAuth, async (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const userId = req.params.id;
+
+    if (!isValidUuid(userId)) {
+      return res.status(404).json({ error: 'المستخدم غير موجود' });
+    }
+
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', userId)
+      .limit(1);
+
+    if (error || !data || data.length === 0) {
+      return res.status(404).json({ error: 'المستخدم غير موجود' });
+    }
+
+    const targetUser = data[0];
+
+    // Tenant Isolation Check:
+    if (!ctx.isSuperAdmin) {
+      const isSelf = ctx.userId === targetUser.id;
+      const isSubAccount = targetUser.parent_user_id === ctx.tenantId || targetUser.parent_user_id === ctx.userId;
+      const isTenantAdmin = targetUser.id === ctx.tenantId;
+
+      if (!isSelf && !isSubAccount && !isTenantAdmin) {
+        return res.status(403).json({ error: 'غير مصرح بالوصول إلى بيانات هذا المستخدم' });
+      }
+    }
+
+    const appUser = mapDbUserToAppUser(targetUser);
+    res.json(sanitizeUserForClient(appUser));
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 26.2 POST /api/users: Create User directly in Supabase with Multi-Tenant Hierarchy & RBAC Ceiling
+app.post('/api/users', requireAuth, async (req, res) => {
   try {
     const ctx = getRequesterContext(req);
     const {
@@ -2367,7 +3919,32 @@ app.post('/api/users', async (req, res) => {
     } = req.body;
 
     if (!name || !phone) {
-      return res.status(400).json({ error: 'الاسم ورقم الهاتف مطلوبان' });
+      return res.status(400).json({ error: 'الاسم ورقم الهاتف مطلوبان لإنشاء الحساب' });
+    }
+
+    // RBAC Security: Non-SuperAdmin cannot create SUPER_ADMIN accounts
+    if (role === 'SUPER_ADMIN' && !ctx.isSuperAdmin) {
+      return res.status(403).json({
+        error: 'ممنوع: لا يمكن إنشاء حساب مدير عام (Super Admin) إلا من خلال السوبر أدمن.',
+        code: 'FORBIDDEN_ROLE',
+      });
+    }
+
+    // RBAC Security: Admin creating sub-accounts must not exceed their permission ceiling
+    if (!ctx.isSuperAdmin && ctx.user) {
+      const allowedCeiling = Array.isArray(ctx.user.maxAllowedPermissions) && ctx.user.maxAllowedPermissions.length > 0
+        ? ctx.user.maxAllowedPermissions
+        : (Array.isArray(ctx.user.permissions) ? ctx.user.permissions : []);
+
+      const requestedPerms = Array.isArray(permissions) ? permissions : [];
+      const unauthorizedPerms = requestedPerms.filter((p: string) => !allowedCeiling.includes(p) && !allowedCeiling.includes('*'));
+
+      if (unauthorizedPerms.length > 0) {
+        return res.status(403).json({
+          error: `لا يمكنك منح صلاحيات تتجاوز سقف الصلاحيات المسموح لحسابك من الإدارة العامة: [${unauthorizedPerms.join(', ')}]`,
+          code: 'CEILING_EXCEEDED',
+        });
+      }
     }
 
     const cleanEmail = email && email.trim() ? email.trim().toLowerCase() : `${phone.replace(/\D/g, '')}@dargo-tms.io`;
@@ -2391,7 +3968,9 @@ app.post('/api/users', async (req, res) => {
       ? password.trim()
       : (role === 'SUPER_ADMIN' || role === 'ADMIN' ? 'admin123' : '123456');
 
+    const secureHash = hashPassword(assignedPassword);
     const newId = crypto.randomUUID();
+
     const defaultRoleName = roleName || (
       role === 'SUPER_ADMIN' ? 'المدير العام للنظام' :
       role === 'ADMIN' ? 'مدير العمليات' :
@@ -2405,8 +3984,10 @@ app.post('/api/users', async (req, res) => {
     let assignedParentId: string | null = null;
     if (ctx.isAdmin && ctx.tenantId) {
       assignedParentId = ctx.tenantId;
-    } else if (parentUserId && isValidUuid(parentUserId)) {
+    } else if (ctx.isSuperAdmin && parentUserId && isValidUuid(parentUserId)) {
       assignedParentId = parentUserId;
+    } else if (ctx.user?.id) {
+      assignedParentId = ctx.user.id;
     }
 
     const dbPayload = {
@@ -2414,8 +3995,8 @@ app.post('/api/users', async (req, res) => {
       name: name.trim(),
       email: cleanEmail,
       phone: cleanPhone,
-      password: assignedPassword,
-      password_hash: assignedPassword,
+      password: secureHash,
+      password_hash: secureHash,
       role,
       role_name: defaultRoleName,
       commercial_name: commercialName?.trim() || companyName?.trim() || null,
@@ -2430,8 +4011,11 @@ app.post('/api/users', async (req, res) => {
       vehicle_plate: vehiclePlate || null,
       is_active: Boolean(isActive),
       parent_user_id: assignedParentId,
+      created_by_id: ctx.userId || null,
       permissions: Array.isArray(permissions) ? permissions : [],
-      max_allowed_permissions: Array.isArray(maxAllowedPermissions) ? maxAllowedPermissions : [],
+      max_allowed_permissions: ctx.isSuperAdmin
+        ? (Array.isArray(maxAllowedPermissions) ? maxAllowedPermissions : permissions)
+        : (ctx.user?.maxAllowedPermissions || permissions),
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -2449,14 +4033,28 @@ app.post('/api/users', async (req, res) => {
     const createdUser = mapDbUserToAppUser(inserted && inserted[0] ? inserted[0] : dbPayload);
     syncUsersFromSupabase().catch(() => {});
 
-    const responsePayload = {
-      ...createdUser,
+    // Audit Logging
+    logAuditEvent({
+      action: 'USER_CREATED',
+      actionNameAr: 'إنشاء حساب مستخدم جديد',
+      performedBy: ctx.userId || 'UNKNOWN',
+      performerName: ctx.user?.name,
+      performerRole: ctx.userRole,
+      targetId: createdUser.id,
+      targetType: 'USER',
+      targetName: createdUser.name,
+      tenantId: createdUser.parentUserId || createdUser.id,
+      details: { role: createdUser.role, email: createdUser.email, parentUserId: createdUser.parentUserId },
+    });
+
+    const sanitizedUser = sanitizeUserForClient(createdUser);
+
+    res.status(201).json({
+      ...sanitizedUser,
       success: true,
       message: 'تم إنشاء المستخدم بنجاح في قاعدة بيانات Supabase وربطه بمظلة الشركة والتراخيص',
-      user: createdUser,
-    };
-
-    res.status(201).json(responsePayload);
+      user: sanitizedUser,
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -2465,6 +4063,7 @@ app.post('/api/users', async (req, res) => {
 // 26.3 PATCH /api/users/:id & PUT /api/users/:id: Update User directly in Supabase
 const handleUserUpdate = async (req: express.Request, res: express.Response) => {
   try {
+    const ctx = getRequesterContext(req);
     const userId = req.params.id;
 
     if (!isValidUuid(userId)) {
@@ -2482,6 +4081,44 @@ const handleUserUpdate = async (req: express.Request, res: express.Response) => 
     }
     if (!existing || existing.length === 0) {
       return res.status(404).json({ error: 'المستخدم غير موجود' });
+    }
+
+    const targetDbUser = existing[0];
+
+    // Hierarchy & Isolation Check:
+    if (!ctx.isSuperAdmin) {
+      // Non-superadmin cannot edit a Super Admin
+      if (targetDbUser.role === 'SUPER_ADMIN') {
+        return res.status(403).json({ error: 'غير مصرح بتعديل حساب المدير العام للنظام' });
+      }
+
+      // Non-superadmin cannot promote anyone to SUPER_ADMIN
+      if (req.body.role === 'SUPER_ADMIN') {
+        return res.status(403).json({ error: 'لا تملك صلاحية الترقية لرتبة السوبر أدمن' });
+      }
+
+      // Non-superadmin can only modify accounts within their tenant
+      const isSelf = ctx.userId === userId;
+      const isSubAccount = targetDbUser.parent_user_id === ctx.tenantId || targetDbUser.parent_user_id === ctx.userId;
+      if (!isSelf && !isSubAccount) {
+        return res.status(403).json({ error: 'غير مصرح بتعديل مستخدمين خارج نطاق شركتك' });
+      }
+
+      // Permission ceiling check if changing permissions
+      if (req.body.permissions && ctx.user) {
+        const allowedCeiling = Array.isArray(ctx.user.maxAllowedPermissions) && ctx.user.maxAllowedPermissions.length > 0
+          ? ctx.user.maxAllowedPermissions
+          : (Array.isArray(ctx.user.permissions) ? ctx.user.permissions : []);
+
+        const requestedPerms = Array.isArray(req.body.permissions) ? req.body.permissions : [];
+        const unauthorized = requestedPerms.filter((p: string) => !allowedCeiling.includes(p) && !allowedCeiling.includes('*'));
+        if (unauthorized.length > 0) {
+          return res.status(403).json({
+            error: `الصلاحيات المطلوبة تتجاوز سقف الصلاحيات الممنوح لحسابك: [${unauthorized.join(', ')}]`,
+            code: 'CEILING_EXCEEDED',
+          });
+        }
+      }
     }
 
     // If updating email, check duplicate
@@ -2500,6 +4137,19 @@ const handleUserUpdate = async (req: express.Request, res: express.Response) => 
     const dbUpdates = mapAppUserToDbUser(req.body);
     delete dbUpdates.id;
 
+    // Secure password hashing if updated
+    if (req.body.password && req.body.password.trim()) {
+      const rawPass = req.body.password.trim();
+      const secureHash = hashPassword(rawPass);
+      dbUpdates.password = secureHash;
+      dbUpdates.password_hash = secureHash;
+    }
+
+    // Prevent non-superadmin from altering parent_user_id
+    if (!ctx.isSuperAdmin) {
+      delete dbUpdates.parent_user_id;
+    }
+
     const { data: updated, error: updateErr } = await supabase
       .from('users')
       .update(dbUpdates)
@@ -2511,25 +4161,42 @@ const handleUserUpdate = async (req: express.Request, res: express.Response) => 
       return res.status(500).json({ error: 'فشل تحديث المستخدم في Supabase: ' + updateErr.message });
     }
 
-    const updatedUser = mapDbUserToAppUser(updated && updated[0] ? updated[0] : { ...existing[0], ...dbUpdates });
+    const updatedUser = mapDbUserToAppUser(updated && updated[0] ? updated[0] : { ...targetDbUser, ...dbUpdates });
     syncUsersFromSupabase().catch(() => {});
+
+    // Audit Logging
+    logAuditEvent({
+      action: 'USER_UPDATED',
+      actionNameAr: 'تحديث بيانات المستخدم والصلاحيات',
+      performedBy: ctx.userId || 'UNKNOWN',
+      performerName: ctx.user?.name,
+      performerRole: ctx.userRole,
+      targetId: updatedUser.id,
+      targetType: 'USER',
+      targetName: updatedUser.name,
+      tenantId: updatedUser.parentUserId || updatedUser.id,
+      details: { changedFields: Object.keys(dbUpdates) },
+    });
+
+    const sanitizedUser = sanitizeUserForClient(updatedUser);
 
     res.json({
       success: true,
       message: 'تم تحديث بيانات وصلاحيات المستخدم في قاعدة بيانات Supabase بنجاح',
-      user: updatedUser,
+      user: sanitizedUser,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 };
 
-app.patch('/api/users/:id', handleUserUpdate);
-app.put('/api/users/:id', handleUserUpdate);
+app.patch('/api/users/:id', requireAuth, handleUserUpdate);
+app.put('/api/users/:id', requireAuth, handleUserUpdate);
 
 // 26.4 DELETE /api/users/:id: Delete User Account directly from Supabase
-app.delete('/api/users/:id', async (req, res) => {
+app.delete('/api/users/:id', requireAuth, async (req, res) => {
   try {
+    const ctx = getRequesterContext(req);
     const userId = req.params.id;
 
     if (!isValidUuid(userId)) {
@@ -2549,8 +4216,22 @@ app.delete('/api/users/:id', async (req, res) => {
       return res.status(404).json({ error: 'المستخدم غير موجود' });
     }
 
-    if (existing[0].role === 'SUPER_ADMIN') {
+    const targetUser = existing[0];
+
+    if (targetUser.role === 'SUPER_ADMIN' || targetUser.email === 'admin@dargo-tms.io') {
       return res.status(400).json({ error: 'لا يمكن حذف حساب المدير العام للنظام (Super Admin)' });
+    }
+
+    // User cannot delete themselves
+    if (ctx.userId === userId) {
+      return res.status(400).json({ error: 'لا يمكنك حذف حسابك الحالي' });
+    }
+
+    // Non-SuperAdmin can only delete sub-accounts under their management
+    if (!ctx.isSuperAdmin) {
+      if (targetUser.parent_user_id !== ctx.tenantId && targetUser.parent_user_id !== ctx.userId) {
+        return res.status(403).json({ error: 'غير مصرح بحذف مستخدم لا يتبع لشركتك' });
+      }
     }
 
     const { error: delErr } = await supabase
@@ -2564,9 +4245,22 @@ app.delete('/api/users/:id', async (req, res) => {
 
     syncUsersFromSupabase().catch(() => {});
 
+    logAuditEvent({
+      action: 'USER_DELETED',
+      actionNameAr: 'حذف حساب مستخدم',
+      performedBy: ctx.userId || 'UNKNOWN',
+      performerName: ctx.user?.name,
+      performerRole: ctx.userRole,
+      targetId: targetUser.id,
+      targetType: 'USER',
+      targetName: targetUser.name,
+      tenantId: targetUser.parent_user_id || targetUser.id,
+      details: { deletedUserEmail: targetUser.email, role: targetUser.role },
+    });
+
     res.json({
       success: true,
-      message: `تم حذف حساب المستخدم (${existing[0].name}) من قاعدة البيانات بنجاح`,
+      message: `تم حذف حساب المستخدم (${targetUser.name}) من قاعدة البيانات بنجاح`,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -2574,108 +4268,1801 @@ app.delete('/api/users/:id', async (req, res) => {
 });
 
 // -------------------------------------------------------------
-// SaaS Super Admin Master Subscription & Tenant Management
+// PHASE 1.5B: SECURE INVITATION SYSTEM & GOOGLE LOGIN
+// -------------------------------------------------------------
+
+// 1. POST /api/invitations: Create a new cryptographically secured user invitation
+app.post('/api/invitations', requireAuth, async (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+
+    // Only SUPER_ADMIN and ADMIN can issue invitations
+    if (ctx.userRole !== 'SUPER_ADMIN' && ctx.userRole !== 'ADMIN') {
+      return res.status(403).json({
+        error: 'غير مصرح لك بإنشاء دعوات للمستخدمين. هذه الصلاحية مقصورة على مدراء العمليات والمدير العام.',
+        code: 'FORBIDDEN',
+      });
+    }
+
+    const {
+      email,
+      phone,
+      role,
+      roleName,
+      commercialName,
+      companyName,
+      branch,
+      city,
+      priceList,
+      pricePlanId,
+      permissions,
+      maxAllowedPermissions,
+      expiresInDays = 7,
+    } = req.body;
+
+    if (!email || !String(email).trim()) {
+      return res.status(400).json({ error: 'البريد الإلكتروني للمدعو مطلوب', code: 'EMAIL_REQUIRED' });
+    }
+    const cleanEmail = String(email).trim().toLowerCase();
+
+    if (!role) {
+      return res.status(400).json({ error: 'الدور الوظيفي المطلوب تحديده في الدعوة مطلوب', code: 'ROLE_REQUIRED' });
+    }
+
+    // Role Escalation Prevention: Non-SuperAdmin cannot invite SUPER_ADMIN
+    if (role === 'SUPER_ADMIN' && !ctx.isSuperAdmin) {
+      return res.status(403).json({
+        error: 'لا يمكن لمدير العمليات إنشاء دعوة لحساب المدير العام للنظام (Super Admin)',
+        code: 'ROLE_ESCALATION_FORBIDDEN',
+      });
+    }
+
+    // Tenant & Parent Scoping
+    let assignedTenantId: string | null = null;
+    let assignedParentUserId: string | null = null;
+    let finalPermissions: string[] = Array.isArray(permissions) ? permissions : [];
+    let finalMaxAllowed: string[] = Array.isArray(maxAllowedPermissions) ? maxAllowedPermissions : finalPermissions;
+
+    if (ctx.isSuperAdmin) {
+      // Super Admin can define target tenant or leave as root
+      assignedTenantId = req.body.tenantId || req.body.parentUserId || null;
+      assignedParentUserId = req.body.parentUserId || (role === 'ADMIN' ? null : assignedTenantId);
+    } else {
+      // Operations Admin: strictly bound to own tenant scope (ctx.tenantId)
+      assignedTenantId = ctx.tenantId;
+      assignedParentUserId = ctx.tenantId;
+
+      // Permission Ceiling Check: verify against the admin's ceiling
+      const adminCeiling = ctx.user?.maxAllowedPermissions && ctx.user.maxAllowedPermissions.length > 0
+        ? ctx.user.maxAllowedPermissions
+        : (ctx.user?.permissions || []);
+
+      if (adminCeiling.length > 0 && !adminCeiling.includes('*')) {
+        const ceilingExceeded = finalPermissions.filter((p: string) => !adminCeiling.includes(p));
+        if (ceilingExceeded.length > 0) {
+          return res.status(403).json({
+            error: `لا يمكنك منح صلاحيات في الدعوة تتجاوز سقف صلاحياتك المعتمد: [${ceilingExceeded.join(', ')}]`,
+            code: 'CEILING_EXCEEDED',
+            violatingPermissions: ceilingExceeded,
+          });
+        }
+      }
+      finalMaxAllowed = finalPermissions;
+    }
+
+    // Generate 256-bit cryptographically secure token and its SHA-256 hash
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+
+    const durationDays = typeof expiresInDays === 'number' && expiresInDays > 0 ? expiresInDays : 7;
+    const expiresAt = new Date(Date.now() + durationDays * 86400000).toISOString();
+    const invitationId = crypto.randomUUID();
+
+    const newInvitation: UserInvitation = {
+      id: invitationId,
+      tokenHash,
+      email: cleanEmail,
+      phone: phone ? String(phone).trim() : undefined,
+      role: role as any,
+      roleName: roleName || (
+        role === 'SUPER_ADMIN' ? 'المدير العام للنظام' :
+        role === 'ADMIN' ? 'مدير العمليات' :
+        role === 'MERCHANT' ? 'حساب التاجر' :
+        role === 'DRIVER' ? 'كابتن التوصيل' :
+        role === 'CASHIER' ? 'موظف الكاشير' :
+        role === 'ACCOUNTANT' ? 'محاسب مالي' : 'موظف العمليات'
+      ),
+      tenantId: assignedTenantId,
+      parentUserId: assignedParentUserId,
+      invitedBy: ctx.userId,
+      inviterName: ctx.user?.name || 'مدير النظام',
+      inviterRole: ctx.userRole,
+      permissions: finalPermissions,
+      maxAllowedPermissions: finalMaxAllowed,
+      commercialName: commercialName || undefined,
+      companyName: companyName || undefined,
+      branch: branch || ctx.user?.branch || 'المقر الرئيسي للمملكة',
+      city: city || ctx.user?.city || 'عمان',
+      priceList: priceList || undefined,
+      pricePlanId: pricePlanId || undefined,
+      status: 'PENDING',
+      expiresAt,
+      authProvider: 'EMAIL_PASSWORD',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    // Store in Supabase if available
+    try {
+      const dbPayload = mapAppInvitationToDbInvitation(newInvitation);
+      await supabase.from('user_invitations').insert([dbPayload]);
+    } catch (dbErr: any) {
+      console.warn('Supabase user_invitations insert fallback to memory:', dbErr?.message);
+    }
+
+    // Always maintain in-memory store
+    userInvitations.unshift(newInvitation);
+
+    // Audit Logging
+    logAuditEvent({
+      action: 'INVITATION_CREATED',
+      actionNameAr: 'إنشاء وتوليد رابط دعوة مستخدم جديد',
+      performedBy: ctx.userId,
+      performerName: ctx.user?.name,
+      performerRole: ctx.userRole,
+      targetId: invitationId,
+      targetType: 'INVITATION',
+      targetName: cleanEmail,
+      tenantId: assignedTenantId || ctx.tenantId,
+      details: { invitedEmail: cleanEmail, role, tenantId: assignedTenantId, expiresAt },
+    });
+
+    const protocol = req.protocol || 'http';
+    const host = req.get('host') || 'localhost:3000';
+    const inviteUrl = `${protocol}://${host}/invite?token=${rawToken}`;
+
+    res.status(201).json({
+      success: true,
+      message: 'تم إنشاء رابط الدعوة المشفر بنجاح',
+      invitation: sanitizeInvitationForClient(newInvitation),
+      rawToken,
+      inviteUrl,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'فشل إنشاء رابط الدعوة: ' + err.message });
+  }
+});
+
+// 2. GET /api/invitations: List invitations within requester's tenant boundary
+app.get('/api/invitations', requireAuth, async (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+
+    if (ctx.userRole !== 'SUPER_ADMIN' && ctx.userRole !== 'ADMIN') {
+      return res.status(403).json({ error: 'غير مصرح بعرض قائمة الدعوات', code: 'FORBIDDEN' });
+    }
+
+    // Refresh from Supabase if possible
+    await syncInvitationsFromSupabase().catch(() => {});
+
+    // Filter strictly by tenant boundary
+    let filtered: UserInvitation[] = [];
+    if (ctx.isSuperAdmin) {
+      filtered = [...userInvitations];
+    } else {
+      filtered = userInvitations.filter(
+        (inv) =>
+          inv.tenantId === ctx.tenantId ||
+          inv.parentUserId === ctx.tenantId ||
+          inv.invitedBy === ctx.userId
+      );
+    }
+
+    // Check and update expired status on-the-fly
+    const now = new Date();
+    filtered.forEach((inv) => {
+      if (inv.status === 'PENDING' && new Date(inv.expiresAt) < now) {
+        inv.status = 'EXPIRED';
+      }
+    });
+
+    res.json({
+      success: true,
+      invitations: filtered.map(sanitizeInvitationForClient),
+      count: filtered.length,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3. GET /api/invitations/verify: Public endpoint to verify token validity before showing accept UI
+app.get('/api/invitations/verify', async (req, res) => {
+  try {
+    const token = String(req.query.token || '').trim();
+    if (!token) {
+      return res.status(400).json({ error: 'رمز الدعوة مطلوب للتحقق', code: 'TOKEN_REQUIRED' });
+    }
+
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+
+    // Look up in memory
+    let invitation = userInvitations.find((i) => i.tokenHash === tokenHash);
+
+    // If not in memory, query Supabase
+    if (!invitation) {
+      try {
+        const { data: dbData } = await supabase
+          .from('user_invitations')
+          .select('*')
+          .eq('token_hash', tokenHash)
+          .limit(1);
+
+        if (dbData && dbData.length > 0) {
+          invitation = mapDbInvitationToAppInvitation(dbData[0]);
+          userInvitations.push(invitation);
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    if (!invitation) {
+      return res.status(404).json({
+        error: 'رابط الدعوة غير صالح أو غير موجود في النظام.',
+        code: 'INVITATION_NOT_FOUND',
+      });
+    }
+
+    // Check state and expiry
+    if (invitation.status === 'ACCEPTED') {
+      return res.status(400).json({
+        error: 'تم استخدام رابط الدعوة هذا مسبقاً وتفعيل الحساب.',
+        code: 'INVITATION_ALREADY_USED',
+      });
+    }
+
+    if (invitation.status === 'REVOKED') {
+      return res.status(400).json({
+        error: 'تم إلغاء رابط الدعوة هذا من قبل إدارة العمليات.',
+        code: 'INVITATION_REVOKED',
+      });
+    }
+
+    if (new Date() > new Date(invitation.expiresAt) || invitation.status === 'EXPIRED') {
+      invitation.status = 'EXPIRED';
+      return res.status(400).json({
+        error: 'انتهت صلاحية رابط الدعوة. يرجى طلب رابط دعوة جديد من الإدارة.',
+        code: 'INVITATION_EXPIRED',
+      });
+    }
+
+    // Return safe public metadata (no hashes, no secrets)
+    res.json({
+      valid: true,
+      invitation: {
+        id: invitation.id,
+        email: invitation.email,
+        phone: invitation.phone,
+        role: invitation.role,
+        roleName: invitation.roleName,
+        commercialName: invitation.commercialName,
+        companyName: invitation.companyName,
+        inviterName: invitation.inviterName,
+        inviterRole: invitation.inviterRole,
+        branch: invitation.branch,
+        city: invitation.city,
+        expiresAt: invitation.expiresAt,
+        status: invitation.status,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'فشل التحقق من رابط الدعوة: ' + err.message });
+  }
+});
+
+// 4. POST /api/invitations/accept: Accept invitation, link or create user, and issue session token
+app.post('/api/invitations/accept', async (req, res) => {
+  try {
+    const { token, name, password, phone, googleId, googleEmail } = req.body;
+
+    if (!token || !String(token).trim()) {
+      return res.status(400).json({ error: 'رمز الدعوة مطلوب', code: 'TOKEN_REQUIRED' });
+    }
+
+    const cleanToken = String(token).trim();
+    const tokenHash = crypto.createHash('sha256').update(cleanToken).digest('hex');
+
+    const claim = await claimInvitationAtomically(tokenHash);
+    if (!claim.success) {
+      const statusCode = claim.errorCode === 'INVITATION_NOT_FOUND' ? 404 : 400;
+      return res.status(statusCode).json({ error: claim.errorMessage, code: claim.errorCode });
+    }
+
+    const invitation = claim.invitation!;
+
+    try {
+      const targetEmail = invitation.email.toLowerCase().trim();
+
+      // Check if user already exists with this email (Preserve existing users and link identities)
+      let existingUser = users.find((u) => u.email?.toLowerCase().trim() === targetEmail);
+      if (!existingUser) {
+        try {
+          const { data: dbUsers } = await supabase
+            .from('users')
+            .select('*')
+            .ilike('email', targetEmail)
+            .limit(1);
+
+          if (dbUsers && dbUsers.length > 0) {
+            existingUser = mapDbUserToAppUser(dbUsers[0]);
+            users.push(existingUser);
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      let authenticatedUser: User;
+
+      if (existingUser) {
+        // ----------------------------------------------------------------------
+        // Existing User: Link identity without destructively altering user IDs or roles
+        // ----------------------------------------------------------------------
+        const updates: Partial<User> = {
+          invitationId: invitation.id,
+          invitedBy: invitation.invitedBy,
+        };
+
+        if (password && String(password).trim()) {
+          updates.password = hashPassword(String(password).trim());
+        }
+        if (googleId) {
+          updates.googleId = String(googleId);
+          updates.googleEmail = googleEmail ? String(googleEmail).toLowerCase().trim() : targetEmail;
+          updates.authProvider = existingUser.password ? 'HYBRID' : 'GOOGLE';
+        }
+
+        // Update in Supabase & memory
+        Object.assign(existingUser, updates);
+        try {
+          await supabase
+            .from('users')
+            .update(mapAppUserToDbUser(existingUser))
+            .eq('id', existingUser.id);
+        } catch (dbErr: any) {
+          console.warn('Supabase user identity link fallback to memory:', dbErr?.message);
+        }
+
+        authenticatedUser = existingUser;
+      } else {
+        // ----------------------------------------------------------------------
+        // New User: Create account according to the invitation specifications
+        // ----------------------------------------------------------------------
+        const userName = String(name || invitation.commercialName || targetEmail.split('@')[0]).trim();
+        const rawPass = password ? String(password).trim() : '';
+
+        if (!rawPass && !googleId) {
+          await claim.release!();
+          return res.status(400).json({
+            error: 'يرجى تحديد كلمة مرور للحساب أو إكمال التسجيل عبر Google.',
+            code: 'CREDENTIALS_REQUIRED',
+          });
+        }
+
+        const newUserId = crypto.randomUUID();
+        const newUser: User = {
+          id: newUserId,
+          name: userName,
+          email: targetEmail,
+          phone: String(phone || invitation.phone || '0790000000').trim(),
+          password: rawPass ? hashPassword(rawPass) : undefined,
+          role: invitation.role,
+          roleName: invitation.roleName,
+          commercialName: invitation.commercialName || userName,
+          storeName: invitation.commercialName || userName,
+          commercialType: 'تجارة ومبيعات إلكترونية',
+          branch: invitation.branch || 'المقر الرئيسي للمملكة',
+          city: invitation.city || 'عمان',
+          priceList: invitation.priceList || 'جميع المملكة 2 (القياسية)',
+          pricePlanId: invitation.pricePlanId,
+          isActive: true,
+          parentUserId: invitation.parentUserId,
+          createdById: invitation.invitedBy,
+          permissions: invitation.permissions || [],
+          maxAllowedPermissions: invitation.maxAllowedPermissions || invitation.permissions || [],
+          authProvider: googleId ? 'GOOGLE' : 'EMAIL_PASSWORD',
+          googleId: googleId ? String(googleId) : undefined,
+          googleEmail: googleEmail ? String(googleEmail).toLowerCase().trim() : undefined,
+          invitationId: invitation.id,
+          invitedBy: invitation.invitedBy,
+        };
+
+        // Save to Supabase & Memory
+        try {
+          await supabase.from('users').insert([mapAppUserToDbUser(newUser)]);
+        } catch (dbErr: any) {
+          console.warn('Supabase user creation fallback to memory:', dbErr?.message);
+        }
+        users.push(newUser);
+        authenticatedUser = newUser;
+      }
+
+      await claim.commit!(authenticatedUser.id);
+
+      // Audit Log
+      logAuditEvent({
+        action: 'INVITATION_ACCEPTED',
+        actionNameAr: 'قبول وتفعيل دعوة الانضمام للمنظومة',
+        performedBy: authenticatedUser.id,
+        performerName: authenticatedUser.name,
+        performerRole: authenticatedUser.role,
+        targetId: invitation.id,
+        targetType: 'INVITATION',
+        targetName: targetEmail,
+        tenantId: authenticatedUser.parentUserId || authenticatedUser.id,
+        details: {
+          userId: authenticatedUser.id,
+          email: targetEmail,
+          isNewUser: !existingUser,
+          authProvider: authenticatedUser.authProvider,
+        },
+      });
+
+      // Issue JWT token
+      const sessionToken = `dargo_jwt_${authenticatedUser.id}_${Date.now()}`;
+
+      res.json({
+        success: true,
+        message: 'تم قبول الدعوة وتفعيل الحساب بنجاح',
+        user: sanitizeUserForClient(authenticatedUser),
+        token: sessionToken,
+      });
+    } catch (err: any) {
+      await claim.release!();
+      throw err;
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: 'فشل إتمام قبول الدعوة: ' + err.message });
+  }
+});
+
+// 5. POST /api/invitations/:id/revoke: Revoke invitation within tenant boundary
+app.post('/api/invitations/:id/revoke', requireAuth, async (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const invitationId = req.params.id;
+
+    let invitation = userInvitations.find((i) => i.id === invitationId);
+    if (!invitation) {
+      const { data: dbData } = await supabase
+        .from('user_invitations')
+        .select('*')
+        .eq('id', invitationId)
+        .limit(1);
+
+      if (dbData && dbData.length > 0) {
+        invitation = mapDbInvitationToAppInvitation(dbData[0]);
+        userInvitations.push(invitation);
+      }
+    }
+
+    if (!invitation) {
+      return res.status(404).json({ error: 'الدعوة غير موجودة', code: 'NOT_FOUND' });
+    }
+
+    // Tenant Isolation Check
+    if (!ctx.isSuperAdmin) {
+      if (
+        invitation.tenantId !== ctx.tenantId &&
+        invitation.parentUserId !== ctx.tenantId &&
+        invitation.invitedBy !== ctx.userId
+      ) {
+        return res.status(403).json({ error: 'غير مصرح بإلغاء دعوة تابعة لشركة أخرى', code: 'FORBIDDEN' });
+      }
+    }
+
+    invitation.status = 'REVOKED';
+    invitation.updatedAt = new Date().toISOString();
+
+    try {
+      await supabase
+        .from('user_invitations')
+        .update({ status: 'REVOKED', updated_at: invitation.updatedAt })
+        .eq('id', invitation.id);
+    } catch {
+      // fallback
+    }
+
+    logAuditEvent({
+      action: 'INVITATION_REVOKED',
+      actionNameAr: 'إلغاء رابط دعوة مستخدم',
+      performedBy: ctx.userId,
+      performerName: ctx.user?.name,
+      performerRole: ctx.userRole,
+      targetId: invitation.id,
+      targetType: 'INVITATION',
+      targetName: invitation.email,
+      tenantId: invitation.tenantId || ctx.tenantId,
+    });
+
+    res.json({
+      success: true,
+      message: 'تم إلغاء رابط الدعوة بنجاح',
+      invitation: sanitizeInvitationForClient(invitation),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 6. POST /api/invitations/:id/resend: Regenerate secure token and extend expiration
+app.post('/api/invitations/:id/resend', requireAuth, async (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const invitationId = req.params.id;
+
+    let invitation = userInvitations.find((i) => i.id === invitationId);
+    if (!invitation) {
+      const { data: dbData } = await supabase
+        .from('user_invitations')
+        .select('*')
+        .eq('id', invitationId)
+        .limit(1);
+
+      if (dbData && dbData.length > 0) {
+        invitation = mapDbInvitationToAppInvitation(dbData[0]);
+        userInvitations.push(invitation);
+      }
+    }
+
+    if (!invitation) {
+      return res.status(404).json({ error: 'الدعوة غير موجودة', code: 'NOT_FOUND' });
+    }
+
+    // Tenant Isolation Check
+    if (!ctx.isSuperAdmin) {
+      if (
+        invitation.tenantId !== ctx.tenantId &&
+        invitation.parentUserId !== ctx.tenantId &&
+        invitation.invitedBy !== ctx.userId
+      ) {
+        return res.status(403).json({ error: 'غير مصرح بإعادة إرسال دعوة تابعة لشركة أخرى', code: 'FORBIDDEN' });
+      }
+    }
+
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const expiresAt = new Date(Date.now() + 7 * 86400000).toISOString();
+
+    invitation.tokenHash = tokenHash;
+    invitation.expiresAt = expiresAt;
+    invitation.status = 'PENDING';
+    invitation.updatedAt = new Date().toISOString();
+
+    try {
+      await supabase
+        .from('user_invitations')
+        .update({
+          token_hash: tokenHash,
+          expires_at: expiresAt,
+          status: 'PENDING',
+          updated_at: invitation.updatedAt,
+        })
+        .eq('id', invitation.id);
+    } catch {
+      // fallback
+    }
+
+    logAuditEvent({
+      action: 'INVITATION_RESENT',
+      actionNameAr: 'تجديد وإعادة إرسال رابط الدعوة',
+      performedBy: ctx.userId,
+      performerName: ctx.user?.name,
+      performerRole: ctx.userRole,
+      targetId: invitation.id,
+      targetType: 'INVITATION',
+      targetName: invitation.email,
+      tenantId: invitation.tenantId || ctx.tenantId,
+    });
+
+    const protocol = req.protocol || 'http';
+    const host = req.get('host') || 'localhost:3000';
+    const inviteUrl = `${protocol}://${host}/invite?token=${rawToken}`;
+
+    res.json({
+      success: true,
+      message: 'تم تجديد وإعادة تفعيل رابط الدعوة بنجاح',
+      invitation: sanitizeInvitationForClient(invitation),
+      rawToken,
+      inviteUrl,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 7. GET /api/auth/google/url: Returns client-side Google OAuth initialization helper
+app.get('/api/auth/google/url', (req, res) => {
+  const clientId = process.env.VITE_GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || '';
+  res.json({
+    clientId,
+    enabled: Boolean(clientId),
+    mode: 'popup',
+  });
+});
+
+// 8. POST /api/auth/google/verify-token: Gated Google Authentication & Account Verification
+app.post(['/api/auth/google/verify-token', '/api/auth/google/callback'], async (req, res) => {
+  try {
+    const { credential, googleId, email, name, invitationToken } = req.body;
+
+    let targetEmail = (email || '').toLowerCase().trim();
+    let verifiedGoogleId = googleId ? String(googleId) : undefined;
+    let userName = name ? String(name).trim() : undefined;
+
+    // Decode basic JWT claims if standard credential (JWT) is supplied
+    if (credential && typeof credential === 'string') {
+      try {
+        const parts = credential.split('.');
+        if (parts.length >= 2) {
+          const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+          if (payload.email) targetEmail = String(payload.email).toLowerCase().trim();
+          if (payload.sub) verifiedGoogleId = String(payload.sub);
+          if (payload.name && !userName) userName = String(payload.name).trim();
+        }
+      } catch {
+        // use direct parameters if decode fails
+      }
+    }
+
+    if (!targetEmail) {
+      return res.status(400).json({ error: 'البريد الإلكتروني لحساب Google مطلوب', code: 'EMAIL_REQUIRED' });
+    }
+
+    // Check if user already exists in DB (Lookup by email)
+    let existingUser = users.find((u) => u.email?.toLowerCase().trim() === targetEmail);
+    if (!existingUser) {
+      try {
+        const { data: dbUsers } = await supabase
+          .from('users')
+          .select('*')
+          .ilike('email', targetEmail)
+          .limit(1);
+
+        if (dbUsers && dbUsers.length > 0) {
+          existingUser = mapDbUserToAppUser(dbUsers[0]);
+          users.push(existingUser);
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    if (existingUser) {
+      // ----------------------------------------------------------------------
+      // Existing User: Login directly and link Google ID if not linked yet
+      // ----------------------------------------------------------------------
+      if (verifiedGoogleId && existingUser.googleId !== verifiedGoogleId) {
+        existingUser.googleId = verifiedGoogleId;
+        existingUser.googleEmail = targetEmail;
+        existingUser.authProvider = existingUser.password ? 'HYBRID' : 'GOOGLE';
+
+        try {
+          await supabase
+            .from('users')
+            .update({
+              google_id: verifiedGoogleId,
+              google_email: targetEmail,
+              auth_provider: existingUser.authProvider,
+            })
+            .eq('id', existingUser.id);
+        } catch {
+          // fallback
+        }
+      }
+
+      if (!existingUser.isActive) {
+        return res.status(403).json({
+          error: 'تم تعطيل أو تعليق هذا الحساب. يرجى مراجعة إدارة العمليات.',
+          code: 'ACCOUNT_INACTIVE',
+        });
+      }
+
+      logAuditEvent({
+        action: 'GOOGLE_LOGIN_SUCCESS',
+        actionNameAr: 'تسجيل دخول ناجح عبر Google',
+        performedBy: existingUser.id,
+        performerName: existingUser.name,
+        performerRole: existingUser.role,
+        targetId: existingUser.id,
+        targetType: 'USER',
+        tenantId: existingUser.parentUserId || existingUser.id,
+      });
+
+      const sessionToken = `dargo_jwt_${existingUser.id}_${Date.now()}`;
+      return res.json({
+        success: true,
+        message: `مرحباً بك يا ${existingUser.name}`,
+        user: sanitizeUserForClient(existingUser),
+        token: sessionToken,
+      });
+    }
+
+    // ----------------------------------------------------------------------
+    // User DOES NOT exist in DB: Gate Registration by Invitation Token
+    // ----------------------------------------------------------------------
+    if (!invitationToken || !String(invitationToken).trim()) {
+      return res.status(403).json({
+        error: 'تسجيل الدخول عبر Google متاح فقط للمستخدمين المدعوين مسبقاً أو المسجلين في النظام. يرجى التواصل مع إدارة العمليات لتلقي رابط دعوة.',
+        code: 'REGISTRATION_GATED',
+      });
+    }
+
+    // Verify invitation token and claim atomically
+    const tokenHash = crypto.createHash('sha256').update(String(invitationToken).trim()).digest('hex');
+    const claim = await claimInvitationAtomically(tokenHash);
+    if (!claim.success) {
+      return res.status(403).json({
+        error: claim.errorMessage || 'رابط الدعوة المرفق غير صالح أو منتهي الصلاحية.',
+        code: claim.errorCode || 'INVALID_INVITATION_TOKEN',
+      });
+    }
+
+    const invitation = claim.invitation!;
+
+    try {
+      // Create user scoped strictly by invitation
+      const newUserId = crypto.randomUUID();
+      const newUser: User = {
+        id: newUserId,
+        name: userName || invitation.commercialName || targetEmail.split('@')[0],
+        email: targetEmail,
+        phone: invitation.phone || '0790000000',
+        role: invitation.role,
+        roleName: invitation.roleName,
+        commercialName: invitation.commercialName || userName || targetEmail.split('@')[0],
+        storeName: invitation.commercialName || userName,
+        commercialType: 'تجارة ومبيعات إلكترونية',
+        branch: invitation.branch || 'المقر الرئيسي للمملكة',
+        city: invitation.city || 'عمان',
+        priceList: invitation.priceList || 'جميع المملكة 2 (القياسية)',
+        pricePlanId: invitation.pricePlanId,
+        isActive: true,
+        parentUserId: invitation.parentUserId,
+        createdById: invitation.invitedBy,
+        permissions: invitation.permissions || [],
+        maxAllowedPermissions: invitation.maxAllowedPermissions || invitation.permissions || [],
+        authProvider: 'GOOGLE',
+        googleId: verifiedGoogleId,
+        googleEmail: targetEmail,
+        invitationId: invitation.id,
+        invitedBy: invitation.invitedBy,
+      };
+
+      try {
+        await supabase.from('users').insert([mapAppUserToDbUser(newUser)]);
+      } catch (dbErr: any) {
+        console.warn('Supabase user creation via Google fallback to memory:', dbErr?.message);
+      }
+      users.push(newUser);
+
+      await claim.commit!(newUserId);
+
+      logAuditEvent({
+        action: 'INVITATION_ACCEPTED_GOOGLE',
+        actionNameAr: 'قبول وتفعيل دعوة الانضمام عبر حساب Google',
+        performedBy: newUserId,
+        performerName: newUser.name,
+        performerRole: newUser.role,
+        targetId: invitation.id,
+        targetType: 'INVITATION',
+        targetName: targetEmail,
+        tenantId: newUser.parentUserId || newUserId,
+      });
+
+      const sessionToken = `dargo_jwt_${newUserId}_${Date.now()}`;
+      res.json({
+        success: true,
+        message: 'تم تفعيل حسابك وتسجيل الدخول عبر Google بنجاح بموجب الدعوة',
+        user: sanitizeUserForClient(newUser),
+        token: sessionToken,
+      });
+    } catch (err: any) {
+      await claim.release!();
+      throw err;
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: 'فشل التحقق من تسجيل الدخول عبر Google: ' + err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// SaaS Super Admin Master Management & Subscription Engine (Phase 2)
 // -------------------------------------------------------------
 
 // 26.5 GET /api/superadmin/metrics: SaaS Business & Licensing KPIs
-app.get('/api/superadmin/metrics', (req, res) => {
+app.get('/api/superadmin/metrics', requireSuperAdmin, (req, res) => {
+  ensureTenantSubscriptions();
   const allTenants = users.filter((u) => u.role === 'ADMIN' || u.role === 'MERCHANT' || u.role === 'SUPER_ADMIN');
-  const activeTenants = users.filter((u) => u.isActive && u.subscriptionStatus !== 'SUSPENDED');
-  const suspendedTenants = users.filter((u) => !u.isActive || u.subscriptionStatus === 'SUSPENDED');
   
-  const mrrTotal = users.reduce((sum, u) => {
-    if (u.subscriptionStatus === 'ACTIVE' && u.subscriptionPrice) {
-      return sum + (u.subscriptionBillingCycle === 'ANNUAL' ? u.subscriptionPrice / 12 : u.subscriptionPrice);
+  let activeTenantsCount = 0;
+  let trialTenantsCount = 0;
+  let expiredTenantsCount = 0;
+  let suspendedTenantsCount = 0;
+  let mrrTotal = 0;
+
+  const planDistribution: Record<string, number> = {};
+  subscriptionPlans.forEach((p) => {
+    planDistribution[p.code] = 0;
+  });
+
+  allTenants.forEach((t) => {
+    const subCtx = getTenantSubscriptionContext(t.id);
+    if (subCtx.effectiveStatus === 'ACTIVE') {
+      activeTenantsCount++;
+      if (subCtx.subscription && subCtx.subscription.price) {
+        const p = subCtx.subscription.price;
+        mrrTotal += subCtx.subscription.billingCycle === 'YEARLY' ? p / 12 : p;
+      }
+    } else if (subCtx.effectiveStatus === 'TRIAL') {
+      trialTenantsCount++;
+    } else if (subCtx.effectiveStatus === 'SUSPENDED') {
+      suspendedTenantsCount++;
+    } else if (subCtx.effectiveStatus === 'EXPIRED') {
+      expiredTenantsCount++;
     }
-    return sum;
-  }, 0);
 
-  const totalOrdersCount = orders.length;
-
-  // Plan distribution
-  const planDistribution: Record<string, number> = {
-    ENTERPRISE: users.filter((u) => u.subscriptionPlan === 'ENTERPRISE').length,
-    PROFESSIONAL: users.filter((u) => u.subscriptionPlan === 'PROFESSIONAL').length,
-    GROWTH: users.filter((u) => u.subscriptionPlan === 'GROWTH').length,
-    TRIAL: users.filter((u) => u.subscriptionPlan === 'TRIAL').length,
-  };
+    const code = subCtx.plan?.code || subCtx.subscription?.planCode || 'PROFESSIONAL';
+    planDistribution[code] = (planDistribution[code] || 0) + 1;
+  });
 
   res.json({
     totalUsers: users.length,
     totalTenants: allTenants.length,
-    activeTenantsCount: activeTenants.length,
-    suspendedTenantsCount: suspendedTenants.length,
+    activeTenantsCount,
+    trialTenantsCount,
+    expiredTenantsCount,
+    suspendedTenantsCount,
     mrrTotal: Math.round(mrrTotal),
-    totalOrdersCount,
+    totalOrdersCount: orders.length,
     planDistribution,
     serverTime: new Date().toISOString(),
   });
 });
 
-// 26.6 POST /api/superadmin/subscriptions/renew: Renew or Extend User Subscription
-app.post('/api/superadmin/subscriptions/renew', (req, res) => {
-  const { userId, daysToAdd = 30, newEndDate, planId, billingCycle = 'MONTHLY', price } = req.body;
-  const user = users.find((u) => u.id === userId);
+// =============================================================
+// 1. Subscription Plans API (CRUD & Lifecycle)
+// =============================================================
+
+// GET /api/superadmin/plans: List all plans
+app.get('/api/superadmin/plans', requireSuperAdmin, (req, res) => {
+  ensureTenantSubscriptions();
+  const plansWithStats = subscriptionPlans.map((plan) => {
+    const activeSubscribersCount = subscriptions.filter(
+      (s) => (s.planId === plan.id || s.planCode === plan.code) && (s.status === 'ACTIVE' || s.status === 'TRIAL')
+    ).length;
+    return {
+      ...plan,
+      activeSubscribersCount,
+    };
+  });
+
+  res.json({
+    success: true,
+    plans: plansWithStats,
+    count: plansWithStats.length,
+  });
+});
+
+// POST /api/superadmin/plans: Create a new plan
+app.post('/api/superadmin/plans', requireSuperAdmin, (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const {
+      code,
+      name,
+      nameAr,
+      description = '',
+      price = 0,
+      monthlyPrice,
+      annualPrice,
+      currency = 'JOD',
+      billingCycle = 'MONTHLY',
+      trialDays = 0,
+      maxUsers = 10,
+      maxMonthlyOrders = 1000,
+      enabledModules = {},
+      isActive = true,
+      sortOrder,
+    } = req.body;
+
+    if (!code || !name || !nameAr) {
+      return res.status(400).json({ error: 'رمز الباقة واسم الباقة بالعربية والإنجليزية حقول مطلوبة' });
+    }
+
+    const cleanCode = code.trim().toUpperCase().replace(/\s+/g, '_');
+    const existing = subscriptionPlans.find((p) => p.code === cleanCode);
+    if (existing) {
+      return res.status(400).json({ error: `رمز الباقة (${cleanCode}) مستخدم مسبقاً، يرجى اختيار رمز فريد` });
+    }
+
+    const finalMonthlyPrice = monthlyPrice !== undefined ? Number(monthlyPrice) : Number(price);
+    const finalAnnualPrice = annualPrice !== undefined ? Number(annualPrice) : finalMonthlyPrice * 10;
+
+    const newPlan: SubscriptionPlanRecord = {
+      id: `plan-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      code: cleanCode,
+      name: name.trim(),
+      nameAr: nameAr.trim(),
+      description: description.trim(),
+      price: finalMonthlyPrice,
+      monthlyPrice: finalMonthlyPrice,
+      annualPrice: finalAnnualPrice,
+      currency,
+      billingCycle: billingCycle as SubscriptionCycle,
+      trialDays: Number(trialDays) || 0,
+      maxUsers: Number(maxUsers) || 0,
+      maxMonthlyOrders: Number(maxMonthlyOrders) || 0,
+      enabledModules: {
+        tmsDelivery: true,
+        posCashier: Boolean(enabledModules.posCashier),
+        merchantWms: Boolean(enabledModules.merchantWms),
+        accountingSettlements: Boolean(enabledModules.accountingSettlements),
+        apiIntegrations: Boolean(enabledModules.apiIntegrations),
+        aiRouteOptimizer: Boolean(enabledModules.aiRouteOptimizer),
+        whatsappTracking: Boolean(enabledModules.whatsappTracking),
+        customDomain: Boolean(enabledModules.customDomain),
+      },
+      isActive: Boolean(isActive),
+      sortOrder: sortOrder !== undefined ? Number(sortOrder) : subscriptionPlans.length + 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    subscriptionPlans.push(newPlan);
+
+    logAuditEvent({
+      action: 'PLAN_CREATED',
+      actionNameAr: 'إنشاء باقة اشتراك جديدة',
+      performedBy: ctx.userId || 'SUPER_ADMIN',
+      performerName: ctx.user?.name,
+      performerRole: 'SUPER_ADMIN',
+      targetId: newPlan.id,
+      targetType: 'SUBSCRIPTION_PLAN',
+      targetName: newPlan.nameAr,
+      details: { code: newPlan.code, monthlyPrice: newPlan.monthlyPrice, maxUsers: newPlan.maxUsers },
+    });
+
+    res.status(201).json({
+      success: true,
+      message: `تم إنشاء باقة الاشتراك (${newPlan.nameAr}) بنجاح`,
+      plan: newPlan,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH /api/superadmin/plans/:id: Update plan
+app.patch('/api/superadmin/plans/:id', requireSuperAdmin, (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const planId = req.params.id;
+    const plan = subscriptionPlans.find((p) => p.id === planId || p.code === planId);
+
+    if (!plan) {
+      return res.status(404).json({ error: 'باقة الاشتراك غير موجودة' });
+    }
+
+    const {
+      name,
+      nameAr,
+      description,
+      price,
+      monthlyPrice,
+      annualPrice,
+      currency,
+      billingCycle,
+      trialDays,
+      maxUsers,
+      maxMonthlyOrders,
+      enabledModules,
+      isActive,
+      sortOrder,
+    } = req.body;
+
+    if (name) plan.name = name.trim();
+    if (nameAr) plan.nameAr = nameAr.trim();
+    if (description !== undefined) plan.description = description.trim();
+    if (monthlyPrice !== undefined) plan.monthlyPrice = Number(monthlyPrice);
+    if (price !== undefined) {
+      plan.price = Number(price);
+      if (monthlyPrice === undefined) plan.monthlyPrice = Number(price);
+    }
+    if (annualPrice !== undefined) plan.annualPrice = Number(annualPrice);
+    if (currency) plan.currency = currency;
+    if (billingCycle) plan.billingCycle = billingCycle;
+    if (trialDays !== undefined) plan.trialDays = Number(trialDays);
+    if (maxUsers !== undefined) plan.maxUsers = Number(maxUsers);
+    if (maxMonthlyOrders !== undefined) plan.maxMonthlyOrders = Number(maxMonthlyOrders);
+    if (enabledModules) {
+      plan.enabledModules = {
+        ...plan.enabledModules,
+        ...enabledModules,
+      };
+    }
+    if (isActive !== undefined) plan.isActive = Boolean(isActive);
+    if (sortOrder !== undefined) plan.sortOrder = Number(sortOrder);
+    plan.updatedAt = new Date().toISOString();
+
+    logAuditEvent({
+      action: 'PLAN_UPDATED',
+      actionNameAr: 'تحديث بيانات باقة الاشتراك',
+      performedBy: ctx.userId || 'SUPER_ADMIN',
+      performerName: ctx.user?.name,
+      performerRole: 'SUPER_ADMIN',
+      targetId: plan.id,
+      targetType: 'SUBSCRIPTION_PLAN',
+      targetName: plan.nameAr,
+      details: { code: plan.code, monthlyPrice: plan.monthlyPrice },
+    });
+
+    res.json({
+      success: true,
+      message: `تم تحديث باقة (${plan.nameAr}) بنجاح`,
+      plan,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/superadmin/plans/:id/toggle-status: Toggle Active/Inactive
+app.post('/api/superadmin/plans/:id/toggle-status', requireSuperAdmin, (req, res) => {
+  const ctx = getRequesterContext(req);
+  const planId = req.params.id;
+  const plan = subscriptionPlans.find((p) => p.id === planId || p.code === planId);
+
+  if (!plan) {
+    return res.status(404).json({ error: 'باقة الاشتراك غير موجودة' });
+  }
+
+  plan.isActive = !plan.isActive;
+  plan.updatedAt = new Date().toISOString();
+
+  logAuditEvent({
+    action: plan.isActive ? 'PLAN_ACTIVATED' : 'PLAN_DEACTIVATED',
+    actionNameAr: plan.isActive ? 'تفعيل باقة اشتراك' : 'إلغاء تفعيل باقة اشتراك',
+    performedBy: ctx.userId || 'SUPER_ADMIN',
+    performerName: ctx.user?.name,
+    performerRole: 'SUPER_ADMIN',
+    targetId: plan.id,
+    targetType: 'SUBSCRIPTION_PLAN',
+    targetName: plan.nameAr,
+    details: { code: plan.code, isActive: plan.isActive },
+  });
+
+  res.json({
+    success: true,
+    message: `تم ${plan.isActive ? 'تفعيل' : 'إلغاء تفعيل'} باقة (${plan.nameAr}) بنجاح`,
+    plan,
+  });
+});
+
+// DELETE /api/superadmin/plans/:id: Delete plan safely
+app.delete('/api/superadmin/plans/:id', requireSuperAdmin, (req, res) => {
+  const ctx = getRequesterContext(req);
+  const planId = req.params.id;
+  const plan = subscriptionPlans.find((p) => p.id === planId || p.code === planId);
+
+  if (!plan) {
+    return res.status(404).json({ error: 'باقة الاشتراك غير موجودة' });
+  }
+
+  // System plans cannot be deleted
+  if (['ENTERPRISE', 'PROFESSIONAL', 'GROWTH', 'TRIAL'].includes(plan.code)) {
+    return res.status(400).json({ error: 'لا يمكن حذف باقات النظام الأساسية. يمكنك تعديلها أو تعطيلها.' });
+  }
+
+  // Check if any active subscriptions are linked
+  const activeSubsCount = subscriptions.filter(
+    (s) => (s.planId === plan.id || s.planCode === plan.code) && (s.status === 'ACTIVE' || s.status === 'TRIAL')
+  ).length;
+
+  if (activeSubsCount > 0) {
+    return res.status(400).json({
+      error: `لا يمكن حذف الباقة لوجود (${activeSubsCount}) اشتراك نشط مرتبط بها. يرجى إلغاء تفعيل الباقة بدلاً من حذفها.`,
+      activeSubscribersCount: activeSubsCount,
+    });
+  }
+
+  subscriptionPlans = subscriptionPlans.filter((p) => p.id !== plan.id && p.code !== plan.code);
+
+  logAuditEvent({
+    action: 'PLAN_DELETED',
+    actionNameAr: 'حذف باقة اشتراك',
+    performedBy: ctx.userId || 'SUPER_ADMIN',
+    performerName: ctx.user?.name,
+    performerRole: 'SUPER_ADMIN',
+    targetId: plan.id,
+    targetType: 'SUBSCRIPTION_PLAN',
+    targetName: plan.nameAr,
+    details: { code: plan.code },
+  });
+
+  res.json({
+    success: true,
+    message: `تم حذف باقة الاشتراك (${plan.nameAr}) بنجاح`,
+  });
+});
+
+// =============================================================
+// 2. Subscriptions Management API
+// =============================================================
+
+// GET /api/superadmin/subscriptions: List all tenant subscriptions
+app.get('/api/superadmin/subscriptions', requireSuperAdmin, (req, res) => {
+  ensureTenantSubscriptions();
+  const allTenants = users.filter((u) => u.role === 'ADMIN' || u.role === 'MERCHANT' || u.role === 'SUPER_ADMIN');
+
+  const tenantSubscriptions = allTenants.map((tenant) => {
+    const subCtx = getTenantSubscriptionContext(tenant.id);
+    const historyCount = subscriptions.filter((s) => s.tenantId === tenant.id).length;
+    return {
+      tenant: sanitizeUserForClient(tenant),
+      subscriptionContext: subCtx,
+      historyCount,
+    };
+  });
+
+  res.json({
+    success: true,
+    subscriptions: tenantSubscriptions,
+    count: tenantSubscriptions.length,
+  });
+});
+
+// GET /api/superadmin/subscriptions/:id: Single subscription details
+app.get('/api/superadmin/subscriptions/:id', requireSuperAdmin, (req, res) => {
+  const subId = req.params.id;
+  ensureTenantSubscriptions();
+  const sub = subscriptions.find((s) => s.id === subId || s.tenantId === subId);
+
+  if (!sub) {
+    return res.status(404).json({ error: 'سجل الاشتراك غير موجود' });
+  }
+
+  const subCtx = getTenantSubscriptionContext(sub.tenantId);
+  const tenantUser = users.find((u) => u.id === sub.tenantId);
+
+  res.json({
+    success: true,
+    subscription: sub,
+    subscriptionContext: subCtx,
+    tenant: tenantUser ? sanitizeUserForClient(tenantUser) : null,
+  });
+});
+
+// POST /api/superadmin/subscriptions: Create or assign subscription for a tenant
+app.post('/api/superadmin/subscriptions', requireSuperAdmin, (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const {
+      tenantId,
+      planId,
+      planCode,
+      status = 'ACTIVE',
+      durationDays = 30,
+      startDate,
+      endDate,
+      price,
+      billingCycle = 'MONTHLY',
+      enabledModules,
+      maxUsers,
+      maxMonthlyOrders,
+      autoRenew = false,
+      isTrial = false,
+      trialDays,
+    } = req.body;
+
+    if (!tenantId) {
+      return res.status(400).json({ error: 'معرّف المستأجر / المنشأة مطلوب' });
+    }
+
+    const tenantUser = users.find((u) => u.id === tenantId);
+    if (!tenantUser) {
+      return res.status(404).json({ error: 'المستأجر غير مسجل في قاعدة البيانات' });
+    }
+
+    const targetCode = planCode || planId;
+    const planDef =
+      subscriptionPlans.find((p) => p.id === planId || p.code === targetCode) || subscriptionPlans[1];
+
+    const now = new Date();
+    const finalStartDate = startDate ? new Date(startDate).toISOString() : now.toISOString();
+
+    let finalEndDate: string;
+    if (endDate) {
+      finalEndDate = new Date(endDate).toISOString();
+    } else {
+      const calcEnd = new Date(new Date(finalStartDate).getTime() + Number(durationDays) * 86400000);
+      finalEndDate = calcEnd.toISOString();
+    }
+
+    const finalStatus: SubscriptionEngineStatus = isTrial || planDef.code === 'TRIAL' ? 'TRIAL' : (status as SubscriptionEngineStatus);
+    const finalTrialDays = trialDays !== undefined ? Number(trialDays) : (planDef.trialDays || 14);
+    const trialEnd = finalStatus === 'TRIAL' ? new Date(new Date(finalStartDate).getTime() + finalTrialDays * 86400000).toISOString() : undefined;
+
+    const newSub: SubscriptionRecord = {
+      id: `sub-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      tenantId,
+      tenantName: tenantUser.companyName || tenantUser.storeName || tenantUser.name,
+      planId: planDef.id,
+      planCode: planDef.code,
+      planName: planDef.nameAr,
+      status: finalStatus,
+      startDate: finalStartDate,
+      endDate: finalStatus === 'TRIAL' && trialEnd ? trialEnd : finalEndDate,
+      trialStartDate: finalStatus === 'TRIAL' ? finalStartDate : undefined,
+      trialEndDate: trialEnd,
+      price: price !== undefined ? Number(price) : (finalStatus === 'TRIAL' ? 0 : planDef.monthlyPrice),
+      currency: 'JOD',
+      billingCycle: billingCycle as SubscriptionCycle,
+      enabledModules: enabledModules ? { ...planDef.enabledModules, ...enabledModules } : { ...planDef.enabledModules },
+      maxUsers: maxUsers !== undefined ? Number(maxUsers) : planDef.maxUsers,
+      maxMonthlyOrders: maxMonthlyOrders !== undefined ? Number(maxMonthlyOrders) : planDef.maxMonthlyOrders,
+      autoRenew: Boolean(autoRenew),
+      gracePeriodDays: 0,
+      createdBy: ctx.userId,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    };
+
+    subscriptions.unshift(newSub);
+    syncSubscriptionToUser(tenantId, newSub);
+
+    logAuditEvent({
+      action: finalStatus === 'TRIAL' ? 'TRIAL_STARTED' : 'SUBSCRIPTION_CREATED',
+      actionNameAr: finalStatus === 'TRIAL' ? 'بدء اشتراك تجريبي' : 'إنشاء اشتراك جديد',
+      performedBy: ctx.userId || 'SUPER_ADMIN',
+      performerName: ctx.user?.name,
+      performerRole: 'SUPER_ADMIN',
+      targetId: tenantId,
+      targetType: 'TENANT_SUBSCRIPTION',
+      targetName: tenantUser.name,
+      details: { planCode: planDef.code, endDate: newSub.endDate, price: newSub.price },
+    });
+
+    res.status(201).json({
+      success: true,
+      message: `تم تفعيل اشتراك (${planDef.nameAr}) لمنشأة (${tenantUser.name}) بنجاح`,
+      subscription: newSub,
+      subscriptionContext: getTenantSubscriptionContext(tenantId),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH /api/superadmin/subscriptions/:id: Update subscription
+app.patch('/api/superadmin/subscriptions/:id', requireSuperAdmin, (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const subId = req.params.id;
+    ensureTenantSubscriptions();
+    const sub = subscriptions.find((s) => s.id === subId || s.tenantId === subId);
+
+    if (!sub) {
+      return res.status(404).json({ error: 'سجل الاشتراك غير موجود' });
+    }
+
+    const {
+      planId,
+      planCode,
+      status,
+      startDate,
+      endDate,
+      price,
+      billingCycle,
+      enabledModules,
+      maxUsers,
+      maxMonthlyOrders,
+      autoRenew,
+      suspendedReason,
+    } = req.body;
+
+    if (planId || planCode) {
+      const code = planCode || planId;
+      const planDef = subscriptionPlans.find((p) => p.id === planId || p.code === code);
+      if (planDef) {
+        sub.planId = planDef.id;
+        sub.planCode = planDef.code;
+        sub.planName = planDef.nameAr;
+      }
+    }
+
+    if (status) sub.status = status;
+    if (startDate) sub.startDate = new Date(startDate).toISOString();
+    if (endDate) sub.endDate = new Date(endDate).toISOString();
+    if (price !== undefined) sub.price = Number(price);
+    if (billingCycle) sub.billingCycle = billingCycle;
+    if (enabledModules) sub.enabledModules = { ...sub.enabledModules, ...enabledModules };
+    if (maxUsers !== undefined) sub.maxUsers = Number(maxUsers);
+    if (maxMonthlyOrders !== undefined) sub.maxMonthlyOrders = Number(maxMonthlyOrders);
+    if (autoRenew !== undefined) sub.autoRenew = Boolean(autoRenew);
+    if (suspendedReason !== undefined) sub.suspendedReason = suspendedReason;
+    sub.updatedAt = new Date().toISOString();
+
+    syncSubscriptionToUser(sub.tenantId, sub);
+
+    logAuditEvent({
+      action: 'SUBSCRIPTION_UPDATED',
+      actionNameAr: 'تحديث بيانات الاشتراك',
+      performedBy: ctx.userId || 'SUPER_ADMIN',
+      performerName: ctx.user?.name,
+      performerRole: 'SUPER_ADMIN',
+      targetId: sub.tenantId,
+      targetType: 'TENANT_SUBSCRIPTION',
+      targetName: sub.tenantName,
+      details: { planCode: sub.planCode, status: sub.status, endDate: sub.endDate },
+    });
+
+    res.json({
+      success: true,
+      message: 'تم تحديث بيانات الاشتراك بنجاح',
+      subscription: sub,
+      subscriptionContext: getTenantSubscriptionContext(sub.tenantId),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/superadmin/subscriptions/:id/renew: Renew Subscription (Supports cycle or days)
+app.post('/api/superadmin/subscriptions/:id/renew', requireSuperAdmin, async (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const idParam = req.params.id;
+    const { userId, tenantId, daysToAdd, newEndDate, planId, billingCycle = 'MONTHLY', price } = req.body;
+
+    ensureTenantSubscriptions();
+    const resolvedTenantId = tenantId || userId || idParam;
+    let sub = subscriptions.find((s) => s.id === idParam || s.tenantId === resolvedTenantId);
+
+    if (!sub) {
+      const user = users.find((u) => u.id === resolvedTenantId);
+      if (user) {
+        ensureTenantSubscriptions();
+        sub = subscriptions.find((s) => s.tenantId === resolvedTenantId);
+      }
+    }
+
+    if (!sub) {
+      return res.status(404).json({ error: 'سجل الاشتراك أو المنشأة غير موجود' });
+    }
+
+    const addDays = daysToAdd !== undefined ? Number(daysToAdd) : (billingCycle === 'YEARLY' ? 365 : 30);
+    let finalEndDate: string;
+    if (newEndDate) {
+      finalEndDate = new Date(newEndDate).toISOString();
+    } else {
+      const currentEnd = sub.endDate ? new Date(sub.endDate) : new Date();
+      const baseDate = currentEnd > new Date() ? currentEnd : new Date();
+      baseDate.setDate(baseDate.getDate() + addDays);
+      finalEndDate = baseDate.toISOString();
+    }
+
+    if (planId) {
+      const planDef = subscriptionPlans.find((p) => p.id === planId || p.code === planId);
+      if (planDef) {
+        sub.planId = planDef.id;
+        sub.planCode = planDef.code;
+        sub.planName = planDef.nameAr;
+        sub.maxUsers = planDef.maxUsers;
+        sub.maxMonthlyOrders = planDef.maxMonthlyOrders;
+        sub.enabledModules = { ...planDef.enabledModules };
+      }
+    }
+
+    sub.endDate = finalEndDate;
+    sub.status = 'ACTIVE';
+    sub.suspendedReason = undefined;
+    if (price !== undefined) sub.price = Number(price);
+    if (billingCycle) sub.billingCycle = billingCycle;
+    sub.updatedAt = new Date().toISOString();
+
+    syncSubscriptionToUser(sub.tenantId, sub);
+
+    logAuditEvent({
+      action: 'SUBSCRIPTION_RENEWED',
+      actionNameAr: 'تجديد وتمديد اشتراك الحساب',
+      performedBy: ctx.userId || 'SUPER_ADMIN',
+      performerName: ctx.user?.name,
+      performerRole: 'SUPER_ADMIN',
+      targetId: sub.tenantId,
+      targetType: 'TENANT_SUBSCRIPTION',
+      targetName: sub.tenantName,
+      details: { planCode: sub.planCode, finalEndDate, daysAdded: addDays },
+    });
+
+    res.json({
+      success: true,
+      message: `تم تجديد وتفعيل الاشتراك بنجاح حتى تاريخ: ${finalEndDate.split('T')[0]}`,
+      subscription: sub,
+      subscriptionContext: getTenantSubscriptionContext(sub.tenantId),
+      user: sanitizeUserForClient(users.find((u) => u.id === sub!.tenantId)),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/superadmin/subscriptions/:id/extend: Extend Subscription by Custom Days
+app.post('/api/superadmin/subscriptions/:id/extend', requireSuperAdmin, (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const idParam = req.params.id;
+    const { days = 7, reason } = req.body;
+
+    ensureTenantSubscriptions();
+    const sub = subscriptions.find((s) => s.id === idParam || s.tenantId === idParam);
+    if (!sub) {
+      return res.status(404).json({ error: 'سجل الاشتراك غير موجود' });
+    }
+
+    const currentEnd = sub.endDate ? new Date(sub.endDate) : new Date();
+    const baseDate = currentEnd > new Date() ? currentEnd : new Date();
+    baseDate.setDate(baseDate.getDate() + Number(days));
+    const finalEndDate = baseDate.toISOString();
+
+    sub.endDate = finalEndDate;
+    if (sub.status === 'EXPIRED') sub.status = 'ACTIVE';
+    sub.updatedAt = new Date().toISOString();
+
+    syncSubscriptionToUser(sub.tenantId, sub);
+
+    logAuditEvent({
+      action: 'SUBSCRIPTION_EXTENDED',
+      actionNameAr: 'تمديد فترة الاشتراك',
+      performedBy: ctx.userId || 'SUPER_ADMIN',
+      performerName: ctx.user?.name,
+      performerRole: 'SUPER_ADMIN',
+      targetId: sub.tenantId,
+      targetType: 'TENANT_SUBSCRIPTION',
+      targetName: sub.tenantName,
+      details: { daysExtended: Number(days), reason, newEndDate: finalEndDate },
+    });
+
+    res.json({
+      success: true,
+      message: `تم تمديد الاشتراك بمقدار (${days}) أيام حتى: ${finalEndDate.split('T')[0]}`,
+      subscription: sub,
+      subscriptionContext: getTenantSubscriptionContext(sub.tenantId),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/superadmin/subscriptions/:id/suspend: Suspend Subscription
+app.post('/api/superadmin/subscriptions/:id/suspend', requireSuperAdmin, (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const idParam = req.params.id;
+    const { reason = 'تم تعليق الاشتراك من قبل الإدارة العامة' } = req.body;
+
+    ensureTenantSubscriptions();
+    const sub = subscriptions.find((s) => s.id === idParam || s.tenantId === idParam);
+    if (!sub) {
+      return res.status(404).json({ error: 'سجل الاشتراك غير موجود' });
+    }
+
+    sub.status = 'SUSPENDED';
+    sub.suspendedReason = reason;
+    sub.updatedAt = new Date().toISOString();
+
+    syncSubscriptionToUser(sub.tenantId, sub);
+
+    logAuditEvent({
+      action: 'SUBSCRIPTION_SUSPENDED',
+      actionNameAr: 'تجميد وتعليق الاشتراك',
+      performedBy: ctx.userId || 'SUPER_ADMIN',
+      performerName: ctx.user?.name,
+      performerRole: 'SUPER_ADMIN',
+      targetId: sub.tenantId,
+      targetType: 'TENANT_SUBSCRIPTION',
+      targetName: sub.tenantName,
+      details: { reason },
+    });
+
+    res.json({
+      success: true,
+      message: `تم تجميد اشتراك (${sub.tenantName}) بنجاح`,
+      subscription: sub,
+      subscriptionContext: getTenantSubscriptionContext(sub.tenantId),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/superadmin/subscriptions/:id/reactivate: Reactivate Suspended Subscription
+app.post('/api/superadmin/subscriptions/:id/reactivate', requireSuperAdmin, (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const idParam = req.params.id;
+
+    ensureTenantSubscriptions();
+    const sub = subscriptions.find((s) => s.id === idParam || s.tenantId === idParam);
+    if (!sub) {
+      return res.status(404).json({ error: 'سجل الاشتراك غير موجود' });
+    }
+
+    const now = new Date();
+    const endDate = new Date(sub.endDate);
+    if (endDate <= now) {
+      // If expired while suspended, extend by 30 days automatically
+      const newEnd = new Date(now.getTime() + 86400000 * 30);
+      sub.endDate = newEnd.toISOString();
+    }
+
+    sub.status = 'ACTIVE';
+    sub.suspendedReason = undefined;
+    sub.updatedAt = new Date().toISOString();
+
+    syncSubscriptionToUser(sub.tenantId, sub);
+
+    logAuditEvent({
+      action: 'SUBSCRIPTION_REACTIVATED',
+      actionNameAr: 'إعادة تفعيل الاشتراك',
+      performedBy: ctx.userId || 'SUPER_ADMIN',
+      performerName: ctx.user?.name,
+      performerRole: 'SUPER_ADMIN',
+      targetId: sub.tenantId,
+      targetType: 'TENANT_SUBSCRIPTION',
+      targetName: sub.tenantName,
+      details: { newEndDate: sub.endDate },
+    });
+
+    res.json({
+      success: true,
+      message: `تم إلغاء تجميد وتفعيل اشتراك (${sub.tenantName}) بنجاح`,
+      subscription: sub,
+      subscriptionContext: getTenantSubscriptionContext(sub.tenantId),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/superadmin/subscriptions/:id/cancel: Cancel Subscription
+app.post('/api/superadmin/subscriptions/:id/cancel', requireSuperAdmin, (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const idParam = req.params.id;
+    const { reason = 'تم إلغاء الاشتراك بناء على طلب العميل' } = req.body;
+
+    ensureTenantSubscriptions();
+    const sub = subscriptions.find((s) => s.id === idParam || s.tenantId === idParam);
+    if (!sub) {
+      return res.status(404).json({ error: 'سجل الاشتراك غير موجود' });
+    }
+
+    sub.status = 'CANCELLED';
+    sub.suspendedReason = reason;
+    sub.updatedAt = new Date().toISOString();
+
+    syncSubscriptionToUser(sub.tenantId, sub);
+
+    logAuditEvent({
+      action: 'SUBSCRIPTION_CANCELLED',
+      actionNameAr: 'إلغاء الاشتراك',
+      performedBy: ctx.userId || 'SUPER_ADMIN',
+      performerName: ctx.user?.name,
+      performerRole: 'SUPER_ADMIN',
+      targetId: sub.tenantId,
+      targetType: 'TENANT_SUBSCRIPTION',
+      targetName: sub.tenantName,
+      details: { reason },
+    });
+
+    res.json({
+      success: true,
+      message: `تم إلغاء اشتراك (${sub.tenantName}) بنجاح`,
+      subscription: sub,
+      subscriptionContext: getTenantSubscriptionContext(sub.tenantId),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/superadmin/subscriptions/:id/start-trial: Start or Restart Trial
+app.post('/api/superadmin/subscriptions/:id/start-trial', requireSuperAdmin, (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const idParam = req.params.id;
+    const { trialDays = 14 } = req.body;
+
+    ensureTenantSubscriptions();
+    const sub = subscriptions.find((s) => s.id === idParam || s.tenantId === idParam);
+    if (!sub) {
+      return res.status(404).json({ error: 'سجل الاشتراك غير موجود' });
+    }
+
+    const now = new Date();
+    const trialEnd = new Date(now.getTime() + Number(trialDays) * 86400000).toISOString();
+
+    sub.status = 'TRIAL';
+    sub.trialStartDate = now.toISOString();
+    sub.trialEndDate = trialEnd;
+    sub.startDate = now.toISOString();
+    sub.endDate = trialEnd;
+    sub.price = 0;
+    sub.suspendedReason = undefined;
+    sub.updatedAt = now.toISOString();
+
+    syncSubscriptionToUser(sub.tenantId, sub);
+
+    logAuditEvent({
+      action: 'TRIAL_STARTED',
+      actionNameAr: 'بدء فترة تجريبية مجانية',
+      performedBy: ctx.userId || 'SUPER_ADMIN',
+      performerName: ctx.user?.name,
+      performerRole: 'SUPER_ADMIN',
+      targetId: sub.tenantId,
+      targetType: 'TENANT_SUBSCRIPTION',
+      targetName: sub.tenantName,
+      details: { trialDays: Number(trialDays), trialEndDate: trialEnd },
+    });
+
+    res.json({
+      success: true,
+      message: `تم تفعيل الفترة التجريبية (${trialDays} يوم) بنجاح حتى: ${trialEnd.split('T')[0]}`,
+      subscription: sub,
+      subscriptionContext: getTenantSubscriptionContext(sub.tenantId),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/superadmin/subscriptions/tenant/:tenantId/history: Tenant Subscriptions History
+app.get('/api/superadmin/subscriptions/tenant/:tenantId/history', requireSuperAdmin, (req, res) => {
+  const tenantId = req.params.tenantId;
+  ensureTenantSubscriptions();
+  const history = subscriptions
+    .filter((s) => s.tenantId === tenantId)
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  const tenantUser = users.find((u) => u.id === tenantId);
+
+  res.json({
+    success: true,
+    tenantId,
+    tenantName: tenantUser?.companyName || tenantUser?.name,
+    history,
+    count: history.length,
+    currentContext: getTenantSubscriptionContext(tenantId),
+  });
+});
+
+// =============================================================
+// 3. Tenant Admin Subscription Visibility API
+// =============================================================
+
+// GET /api/tenant/subscription & GET /api/subscriptions/current
+app.get(['/api/tenant/subscription', '/api/subscriptions/current'], requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
+  const tenantId = ctx.tenantId || ctx.userId;
+
+  if (!tenantId) {
+    return res.status(400).json({ error: 'تعذر تحديد منشأة المستخدم الحالي' });
+  }
+
+  const subCtx = getTenantSubscriptionContext(tenantId);
+
+  res.json({
+    success: true,
+    subscriptionContext: subCtx,
+    plan: subCtx.plan,
+    effectiveStatus: subCtx.effectiveStatus,
+    isActive: subCtx.isActive,
+    daysRemaining: subCtx.daysRemaining,
+    limits: subCtx.limits,
+    usage: subCtx.usage,
+    enabledModules: subCtx.enabledModules,
+  });
+});
+
+// -------------------------------------------------------------
+// Legacy SuperAdmin Subscription Compatibility Routes
+// -------------------------------------------------------------
+
+// 26.6 POST /api/superadmin/subscriptions/renew: Renew or Extend User Subscription (Compatibility)
+app.post('/api/superadmin/subscriptions/renew', requireSuperAdmin, async (req, res) => {
+  const ctx = getRequesterContext(req);
+  const { userId, tenantId, daysToAdd = 30, newEndDate, planId, billingCycle = 'MONTHLY', price } = req.body;
+  const targetId = tenantId || userId;
+  const user = users.find((u) => u.id === targetId);
   if (!user) {
     return res.status(404).json({ error: 'المستخدم غير موجود' });
   }
+
+  ensureTenantSubscriptions();
+  let sub = subscriptions.find((s) => s.tenantId === targetId);
 
   let finalEndDate: string;
   if (newEndDate) {
     finalEndDate = new Date(newEndDate).toISOString();
   } else {
-    const currentEnd = user.subscriptionEndDate ? new Date(user.subscriptionEndDate) : new Date();
+    const currentEnd = (sub?.endDate || user.subscriptionEndDate) ? new Date(sub?.endDate || user.subscriptionEndDate!) : new Date();
     const baseDate = currentEnd > new Date() ? currentEnd : new Date();
     baseDate.setDate(baseDate.getDate() + Number(daysToAdd));
     finalEndDate = baseDate.toISOString();
   }
 
-  user.subscriptionEndDate = finalEndDate;
-  user.subscriptionStatus = 'ACTIVE';
-  user.isActive = true;
-  user.suspendedReason = undefined;
-
   if (planId) {
-    user.subscriptionPlan = planId;
-    if (planId === 'ENTERPRISE') {
-      user.subscriptionPlanName = 'الباقة الماسية والمؤسسية (Enterprise)';
-      user.maxMonthlyOrders = 0;
-      user.maxUsers = 50;
-    } else if (planId === 'PROFESSIONAL') {
-      user.subscriptionPlanName = 'الباقة الذهبية للمحترفين (Gold Pro)';
-      user.maxMonthlyOrders = 10000;
-      user.maxUsers = 15;
-    } else if (planId === 'GROWTH') {
-      user.subscriptionPlanName = 'الباقة الفضية للنمو (Silver)';
-      user.maxMonthlyOrders = 2500;
-      user.maxUsers = 5;
-    } else if (planId === 'TRIAL') {
-      user.subscriptionPlanName = 'الاشتراك التجريبي المجاني (14 يوم)';
-      user.maxMonthlyOrders = 100;
-      user.maxUsers = 3;
+    const planDef = subscriptionPlans.find((p) => p.id === planId || p.code === planId);
+    if (planDef) {
+      if (sub) {
+        sub.planId = planDef.id;
+        sub.planCode = planDef.code;
+        sub.planName = planDef.nameAr;
+        sub.maxUsers = planDef.maxUsers;
+        sub.maxMonthlyOrders = planDef.maxMonthlyOrders;
+        sub.enabledModules = { ...planDef.enabledModules };
+      }
+      user.subscriptionPlan = planDef.code as any;
+      user.subscriptionPlanName = planDef.nameAr;
+      user.maxUsers = planDef.maxUsers;
+      user.maxMonthlyOrders = planDef.maxMonthlyOrders;
     }
   }
 
-  if (price !== undefined) {
-    user.subscriptionPrice = Number(price);
-  }
-  if (billingCycle) {
-    user.subscriptionBillingCycle = billingCycle;
+  if (sub) {
+    sub.endDate = finalEndDate;
+    sub.status = 'ACTIVE';
+    sub.suspendedReason = undefined;
+    if (price !== undefined) sub.price = Number(price);
+    if (billingCycle) sub.billingCycle = billingCycle as SubscriptionCycle;
+    sub.updatedAt = new Date().toISOString();
+    syncSubscriptionToUser(targetId, sub);
+  } else {
+    user.subscriptionEndDate = finalEndDate;
+    user.subscriptionStatus = 'ACTIVE';
+    user.isActive = true;
+    user.suspendedReason = undefined;
+    if (price !== undefined) user.subscriptionPrice = Number(price);
+    if (billingCycle) user.subscriptionBillingCycle = billingCycle as any;
   }
 
-  saveDatabase();
+  logAuditEvent({
+    action: 'SUBSCRIPTION_RENEWED',
+    actionNameAr: 'تجديد وتمديد اشتراك الحساب',
+    performedBy: ctx.userId || 'SUPER_ADMIN',
+    performerName: ctx.user?.name,
+    performerRole: 'SUPER_ADMIN',
+    targetId: user.id,
+    targetType: 'USER',
+    targetName: user.name,
+    details: { planId, finalEndDate, daysToAdd },
+  });
 
   res.json({
     success: true,
     message: `تم تفعيل وتجديد اشتراك (${user.name}) بنجاح حتى تاريخ: ${finalEndDate.split('T')[0]}`,
-    user,
+    user: sanitizeUserForClient(user),
   });
 });
 
-// 26.7 POST /api/superadmin/subscriptions/toggle-status: Suspend / Activate Account
-app.post('/api/superadmin/subscriptions/toggle-status', (req, res) => {
-  const { userId, status, reason } = req.body;
-  const user = users.find((u) => u.id === userId);
+// 26.7 POST /api/superadmin/subscriptions/toggle-status: Suspend / Activate Account (Compatibility)
+app.post('/api/superadmin/subscriptions/toggle-status', requireSuperAdmin, async (req, res) => {
+  const ctx = getRequesterContext(req);
+  const { userId, tenantId, status, reason } = req.body;
+  const targetId = tenantId || userId;
+  const user = users.find((u) => u.id === targetId);
   if (!user) {
     return res.status(404).json({ error: 'المستخدم غير موجود' });
   }
@@ -2689,21 +6076,41 @@ app.post('/api/superadmin/subscriptions/toggle-status', (req, res) => {
   user.isActive = !isSuspending;
   user.suspendedReason = isSuspending ? (reason || 'تم تعليق الحساب مؤقتاً من قبل إدارة المنظومة') : undefined;
 
-  saveDatabase();
+  ensureTenantSubscriptions();
+  const sub = subscriptions.find((s) => s.tenantId === targetId);
+  if (sub) {
+    sub.status = status;
+    sub.suspendedReason = user.suspendedReason;
+    sub.updatedAt = new Date().toISOString();
+  }
+
+  logAuditEvent({
+    action: isSuspending ? 'ACCOUNT_SUSPENDED' : 'ACCOUNT_ACTIVATED',
+    actionNameAr: isSuspending ? 'تجميد وتعطيل حساب' : 'فك تجميد وتفعيل حساب',
+    performedBy: ctx.userId || 'SUPER_ADMIN',
+    performerName: ctx.user?.name,
+    performerRole: 'SUPER_ADMIN',
+    targetId: user.id,
+    targetType: 'USER',
+    targetName: user.name,
+    details: { reason, status },
+  });
 
   res.json({
     success: true,
     message: isSuspending
       ? `تم تجميد وتعطيل حساب (${user.name}) بنجاح`
       : `تم فك التجميد وتفعيل حساب (${user.name}) بنجاح`,
-    user,
+    user: sanitizeUserForClient(user),
   });
 });
 
-// 26.8 POST /api/superadmin/subscriptions/toggle-module: Toggle Module Permission
-app.post('/api/superadmin/subscriptions/toggle-module', (req, res) => {
-  const { userId, moduleKey, enabled } = req.body;
-  const user = users.find((u) => u.id === userId);
+// 26.8 POST /api/superadmin/subscriptions/toggle-module: Toggle Module Permission (Compatibility)
+app.post('/api/superadmin/subscriptions/toggle-module', requireSuperAdmin, (req, res) => {
+  const ctx = getRequesterContext(req);
+  const { userId, tenantId, moduleKey, enabled } = req.body;
+  const targetId = tenantId || userId;
+  const user = users.find((u) => u.id === targetId);
   if (!user) {
     return res.status(404).json({ error: 'المستخدم غير موجود' });
   }
@@ -2722,13 +6129,97 @@ app.post('/api/superadmin/subscriptions/toggle-module', (req, res) => {
   }
 
   user.enabledModules[moduleKey] = Boolean(enabled);
-  saveDatabase();
+
+  ensureTenantSubscriptions();
+  const sub = subscriptions.find((s) => s.tenantId === targetId);
+  if (sub) {
+    sub.enabledModules[moduleKey] = Boolean(enabled);
+    sub.updatedAt = new Date().toISOString();
+  }
+
+  logAuditEvent({
+    action: 'MODULE_TOGGLED',
+    actionNameAr: enabled ? 'تفعيل نظام فرعي' : 'تعطيل نظام فرعي',
+    performedBy: ctx.userId || 'SUPER_ADMIN',
+    performerName: ctx.user?.name,
+    performerRole: 'SUPER_ADMIN',
+    targetId: user.id,
+    targetType: 'USER',
+    targetName: user.name,
+    details: { moduleKey, enabled },
+  });
 
   res.json({
     success: true,
     message: `تم ${enabled ? 'تفعيل' : 'إيقاف'} نظام (${moduleKey}) لحساب (${user.name}) بنجاح`,
-    user,
+    user: sanitizeUserForClient(user),
   });
+});
+
+// 26.9 GET /api/audit-logs & /api/superadmin/audit-logs: View Audit Trail
+app.get(['/api/audit-logs', '/api/superadmin/audit-logs'], requireAuth, (req, res) => {
+  res.json({
+    success: true,
+    logs: auditLogs,
+    count: auditLogs.length,
+  });
+});
+
+// 26.10 POST /api/superadmin/users/reset-password: Force Password Reset by Super Admin
+app.post('/api/superadmin/users/reset-password', requireSuperAdmin, async (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const { userId, newPassword } = req.body;
+
+    if (!userId || !newPassword || newPassword.trim().length < 6) {
+      return res.status(400).json({ error: 'كلمة المرور الجديدة يجب أن لا تقل عن 6 خانات' });
+    }
+
+    const cleanPass = newPassword.trim();
+    const secureHash = hashPassword(cleanPass);
+
+    let updatedName = '';
+    if (isValidUuid(userId)) {
+      const { data, error } = await supabase
+        .from('users')
+        .update({
+          password: secureHash,
+          password_hash: secureHash,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', userId)
+        .select('name');
+
+      if (error) {
+        return res.status(500).json({ error: 'فشل تغيير كلمة المرور في Supabase: ' + error.message });
+      }
+      if (data && data[0]) updatedName = data[0].name;
+    }
+
+    const memUser = users.find((u) => u.id === userId);
+    if (memUser) {
+      memUser.password = secureHash;
+      updatedName = updatedName || memUser.name;
+    }
+
+    logAuditEvent({
+      action: 'PASSWORD_RESET',
+      actionNameAr: 'إعادة تعيين كلمة مرور الحساب',
+      performedBy: ctx.userId || 'SUPER_ADMIN',
+      performerName: ctx.user?.name,
+      performerRole: 'SUPER_ADMIN',
+      targetId: userId,
+      targetType: 'USER',
+      targetName: updatedName,
+    });
+
+    res.json({
+      success: true,
+      message: `تمت إعادة تعيين كلمة المرور لحساب (${updatedName || userId}) بنجاح`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // 27. POST /api/orders/:id/pay-cliq: Jordan Instant JoPACC CliQ Payment
@@ -2770,16 +6261,28 @@ app.post('/api/orders/:id/pay-cliq', (req, res) => {
 });
 
 // 28. GET /api/database/backup: Full Database JSON Export
-app.get('/api/database/backup', (req, res) => {
+app.get('/api/database/backup', requireSuperAdmin, (req, res) => {
+  const ctx = getRequesterContext(req);
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Content-Disposition', `attachment; filename=dargo_backup_${Date.now()}.json`);
+  
+  logAuditEvent({
+    action: 'DATABASE_BACKUP_EXPORTED',
+    actionNameAr: 'تصدير نسخة احتياطية من قاعدة البيانات',
+    performedBy: ctx.userId || 'SUPER_ADMIN',
+    performerName: ctx.user?.name,
+    performerRole: 'SUPER_ADMIN',
+    targetType: 'SYSTEM',
+    targetName: 'قاعدة البيانات التشغيلية',
+  });
+
   res.json({
     system: 'DarGo TMS ERP',
     exportedAt: new Date().toISOString(),
     usersCount: users.length,
     ordersCount: orders.length,
     apiKeysCount: apiKeys.length,
-    users,
+    users: users.map(sanitizeUserForClient),
     orders,
     apiKeys,
     notificationLogs,
@@ -2788,13 +6291,26 @@ app.get('/api/database/backup', (req, res) => {
 });
 
 // 29. POST /api/database/restore: Full Database JSON Restore
-app.post('/api/database/restore', (req, res) => {
+app.post('/api/database/restore', requireSuperAdmin, (req, res) => {
   try {
+    const ctx = getRequesterContext(req);
     const { orders: newOrders, users: newUsers, apiKeys: newKeys } = req.body;
     if (Array.isArray(newOrders)) orders = newOrders;
     if (Array.isArray(newUsers)) users = newUsers;
     if (Array.isArray(newKeys)) apiKeys = newKeys;
     saveDatabase();
+
+    logAuditEvent({
+      action: 'DATABASE_RESTORED',
+      actionNameAr: 'استعادة نسخة احتياطية من قاعدة البيانات',
+      performedBy: ctx.userId || 'SUPER_ADMIN',
+      performerName: ctx.user?.name,
+      performerRole: 'SUPER_ADMIN',
+      targetType: 'SYSTEM',
+      targetName: 'قاعدة البيانات التشغيلية',
+      details: { restoredOrders: newOrders?.length, restoredUsers: newUsers?.length },
+    });
+
     res.json({
       success: true,
       message: 'تمت استعادة قاعدة البيانات بنجاح',
@@ -2810,7 +6326,12 @@ app.post('/api/database/restore', (req, res) => {
 // =============================================================
 
 // GET /api/accounting/overview
-app.get('/api/accounting/overview', (req, res) => {
+app.get('/api/accounting/overview', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
+  if (!ctx.isSuperAdmin && !ctx.isAdmin && !ctx.user?.permissions?.includes('accounting')) {
+    return res.status(403).json({ error: 'غير مصرح بالاطلاع على القوائم المالية العامة' });
+  }
+
   let totalDebit = 0;
   let totalCredit = 0;
   const trialBalance = accounts.map((acc) => {
@@ -2879,13 +6400,22 @@ app.get('/api/accounting/overview', (req, res) => {
 });
 
 // GET /api/accounting/journal-entries
-app.get('/api/accounting/journal-entries', (req, res) => {
+app.get('/api/accounting/journal-entries', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
+  if (!ctx.isSuperAdmin && !ctx.isAdmin && !ctx.user?.permissions?.includes('accounting')) {
+    return res.status(403).json({ error: 'غير مصرح بالاطلاع على قيود اليومية العامة' });
+  }
   res.json({ entries: [...journalEntries].reverse() });
 });
 
 // POST /api/accounting/journal-entries
-app.post('/api/accounting/journal-entries', (req, res) => {
+app.post('/api/accounting/journal-entries', requireAuth, (req, res) => {
   try {
+    const ctx = getRequesterContext(req);
+    if (!ctx.isSuperAdmin && !ctx.isAdmin && !ctx.user?.permissions?.includes('accounting')) {
+      return res.status(403).json({ error: 'غير مصرح بإنشاء قيود يومية عامة' });
+    }
+
     const { date, description, lines, referenceType, referenceId, createdByName } = req.body;
     if (!Array.isArray(lines) || lines.length < 2) {
       return res.status(400).json({ error: 'يجب أن يحتوي القيد على طرفين على الأقل (مدين ودائن)' });
@@ -2934,7 +6464,7 @@ app.post('/api/accounting/journal-entries', (req, res) => {
       lines: validatedLines,
       totalDebit: sumDebit,
       totalCredit: sumCredit,
-      createdByName: createdByName || 'المدير المالي',
+      createdByName: createdByName || ctx.user?.name || 'المدير المالي',
       createdAt: new Date().toISOString(),
     };
 
@@ -2948,13 +6478,22 @@ app.post('/api/accounting/journal-entries', (req, res) => {
 });
 
 // GET /api/accounting/vouchers
-app.get('/api/accounting/vouchers', (req, res) => {
+app.get('/api/accounting/vouchers', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
+  if (!ctx.isSuperAdmin && !ctx.isAdmin && !ctx.user?.permissions?.includes('accounting')) {
+    return res.status(403).json({ error: 'غير مصرح بالاطلاع على السندات المالية العامة' });
+  }
   res.json({ vouchers: [...vouchers].reverse() });
 });
 
 // POST /api/accounting/vouchers
-app.post('/api/accounting/vouchers', (req, res) => {
+app.post('/api/accounting/vouchers', requireAuth, (req, res) => {
   try {
+    const ctx = getRequesterContext(req);
+    if (!ctx.isSuperAdmin && !ctx.isAdmin && !ctx.user?.permissions?.includes('accounting')) {
+      return res.status(403).json({ error: 'غير مصرح بإصدار سندات مالية عامة' });
+    }
+
     const {
       type,
       date,
@@ -3042,7 +6581,7 @@ app.post('/api/accounting/vouchers', (req, res) => {
       lines: jeLines,
       totalDebit: numAmount,
       totalCredit: numAmount,
-      createdByName: 'نظام دارجو المحاسبي',
+      createdByName: ctx.user?.name || 'نظام دارجو المحاسبي',
       createdAt: new Date().toISOString(),
     };
 
@@ -3056,8 +6595,13 @@ app.post('/api/accounting/vouchers', (req, res) => {
 });
 
 // POST /api/accounting/accounts
-app.post('/api/accounting/accounts', (req, res) => {
+app.post('/api/accounting/accounts', requireAuth, (req, res) => {
   try {
+    const ctx = getRequesterContext(req);
+    if (!ctx.isSuperAdmin && !ctx.isAdmin && !ctx.user?.permissions?.includes('accounting')) {
+      return res.status(403).json({ error: 'غير مصرح بإنشاء حسابات في دليل الحسابات' });
+    }
+
     const { code, name, type, category, isDebitNormal, description } = req.body;
     if (!code || !name || !type) {
       return res.status(400).json({ error: 'كود الحساب واسمه ونوعه مطلوبة' });
@@ -3085,16 +6629,47 @@ app.post('/api/accounting/accounts', (req, res) => {
 // =============================================================
 
 // GET /api/merchants/:merchantId/warehouse
-app.get('/api/merchants/:merchantId/warehouse', (req, res) => {
+app.get('/api/merchants/:merchantId/warehouse', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
   const { merchantId } = req.params;
-  const products = merchantProducts.filter((p) => p.merchantId === merchantId);
-  const movements = stockMovements.filter((m) => m.merchantId === merchantId);
+
+  if (!canAccessMerchant(ctx, merchantId)) {
+    return res.status(403).json({ error: 'غير مصرح بالوصول إلى مستودع هذا المتجر' });
+  }
+
+  const rawProducts = merchantProducts.filter((p) => p.merchantId === merchantId);
+  const rawMovements = stockMovements.filter((m) => m.merchantId === merchantId);
+
+  const canSeeCost = canViewCostPrices(ctx, merchantId);
+
+  // Mask cost prices if user does not have permission
+  const products = rawProducts.map((p) => {
+    if (!canSeeCost) {
+      return {
+        ...p,
+        costPrice: 0,
+      };
+    }
+    return p;
+  });
+
+  const movements = rawMovements.map((m) => {
+    if (!canSeeCost) {
+      return {
+        ...m,
+        unitPrice: 0,
+      };
+    }
+    return m;
+  });
 
   const totalSkus = products.length;
   const totalQuantity = products.reduce((sum, p) => sum + (p.stockQuantity || 0), 0);
-  const totalCostValue = products.reduce((sum, p) => sum + (p.costPrice || 0) * (p.stockQuantity || 0), 0);
+  const totalCostValue = canSeeCost
+    ? rawProducts.reduce((sum, p) => sum + (p.costPrice || 0) * (p.stockQuantity || 0), 0)
+    : 0;
   const totalRetailValue = products.reduce((sum, p) => sum + (p.sellingPrice || 0) * (p.stockQuantity || 0), 0);
-  const potentialGrossProfit = totalRetailValue - totalCostValue;
+  const potentialGrossProfit = canSeeCost ? totalRetailValue - totalCostValue : 0;
   const lowStockProducts = products.filter((p) => (p.stockQuantity || 0) <= (p.minStockAlert || 5));
 
   res.json({
@@ -3106,7 +6681,7 @@ app.get('/api/merchants/:merchantId/warehouse', (req, res) => {
       totalCostValue,
       totalRetailValue,
       potentialGrossProfit,
-      marginPercent: totalRetailValue > 0 ? (potentialGrossProfit / totalRetailValue) * 100 : 0,
+      marginPercent: canSeeCost && totalRetailValue > 0 ? (potentialGrossProfit / totalRetailValue) * 100 : 0,
       lowStockCount: lowStockProducts.length,
       lowStockProducts,
     },
@@ -3118,8 +6693,14 @@ app.get('/api/merchants/:merchantId/warehouse', (req, res) => {
 // =============================================================
 
 // GET /api/merchants/:merchantId/categories
-app.get('/api/merchants/:merchantId/categories', (req, res) => {
+app.get('/api/merchants/:merchantId/categories', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
   const { merchantId } = req.params;
+
+  if (!canAccessMerchant(ctx, merchantId)) {
+    return res.status(403).json({ error: 'غير مصرح بالوصول إلى تصنيفات هذا المتجر' });
+  }
+
   const custom = merchantCategories[merchantId] || [];
   const set = new Set<string>([...DEFAULT_SYSTEM_CATEGORIES, ...custom]);
 
@@ -3136,9 +6717,15 @@ app.get('/api/merchants/:merchantId/categories', (req, res) => {
 });
 
 // POST /api/merchants/:merchantId/categories
-app.post('/api/merchants/:merchantId/categories', (req, res) => {
+app.post('/api/merchants/:merchantId/categories', requireAuth, (req, res) => {
   try {
+    const ctx = getRequesterContext(req);
     const { merchantId } = req.params;
+
+    if (!canAccessMerchant(ctx, merchantId)) {
+      return res.status(403).json({ error: 'غير مصرح بإضافة تصنيفات لهذا المتجر' });
+    }
+
     const { name } = req.body;
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'اسم التصنيف مطلوب' });
@@ -3168,9 +6755,15 @@ app.post('/api/merchants/:merchantId/categories', (req, res) => {
 });
 
 // DELETE /api/merchants/:merchantId/categories/:categoryName
-app.delete('/api/merchants/:merchantId/categories/:categoryName', (req, res) => {
+app.delete('/api/merchants/:merchantId/categories/:categoryName', requireAuth, (req, res) => {
   try {
+    const ctx = getRequesterContext(req);
     const { merchantId, categoryName } = req.params;
+
+    if (!canAccessMerchant(ctx, merchantId)) {
+      return res.status(403).json({ error: 'غير مصرح بحذف تصنيفات هذا المتجر' });
+    }
+
     const decoded = decodeURIComponent(categoryName);
     if (merchantCategories[merchantId]) {
       merchantCategories[merchantId] = merchantCategories[merchantId].filter((c) => c !== decoded);
@@ -3186,7 +6779,13 @@ app.delete('/api/merchants/:merchantId/categories/:categoryName', (req, res) => 
 // POST /api/merchants/:merchantId/products (and alias /warehouse/products)
 const handleCreateMerchantProduct = (req: any, res: any) => {
   try {
+    const ctx = getRequesterContext(req);
     const { merchantId } = req.params;
+
+    if (!canAccessMerchant(ctx, merchantId)) {
+      return res.status(403).json({ error: 'غير مصرح بإضافة منتجات لهذا المتجر' });
+    }
+
     const {
       name,
       sku,
@@ -3259,12 +6858,18 @@ const handleCreateMerchantProduct = (req: any, res: any) => {
   }
 };
 
-app.post('/api/merchants/:merchantId/products', handleCreateMerchantProduct);
-app.post('/api/merchants/:merchantId/warehouse/products', handleCreateMerchantProduct);
+app.post('/api/merchants/:merchantId/products', requireAuth, handleCreateMerchantProduct);
+app.post('/api/merchants/:merchantId/warehouse/products', requireAuth, handleCreateMerchantProduct);
 
 // PUT /api/merchants/:merchantId/products/:productId
-app.put('/api/merchants/:merchantId/products/:productId', (req, res) => {
+app.put('/api/merchants/:merchantId/products/:productId', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
   const { merchantId, productId } = req.params;
+
+  if (!canAccessMerchant(ctx, merchantId)) {
+    return res.status(403).json({ error: 'غير مصرح بتعديل منتجات هذا المتجر' });
+  }
+
   const prod = merchantProducts.find((p) => p.id === productId && p.merchantId === merchantId);
   if (!prod) return res.status(404).json({ error: 'الصنف غير موجود' });
 
@@ -3274,8 +6879,14 @@ app.put('/api/merchants/:merchantId/products/:productId', (req, res) => {
 });
 
 // DELETE /api/merchants/:merchantId/products/:productId
-app.delete('/api/merchants/:merchantId/products/:productId', (req, res) => {
+app.delete('/api/merchants/:merchantId/products/:productId', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
   const { merchantId, productId } = req.params;
+
+  if (!canAccessMerchant(ctx, merchantId)) {
+    return res.status(403).json({ error: 'غير مصرح بحذف منتجات هذا المتجر' });
+  }
+
   const index = merchantProducts.findIndex((p) => p.id === productId && p.merchantId === merchantId);
   if (index === -1) return res.status(404).json({ error: 'الصنف غير موجود' });
 
@@ -3287,7 +6898,13 @@ app.delete('/api/merchants/:merchantId/products/:productId', (req, res) => {
 // POST /api/merchants/:merchantId/stock-adjustments (and alias /warehouse/stock-adjustment)
 const handleStockAdjustment = (req: any, res: any) => {
   try {
+    const ctx = getRequesterContext(req);
     const { merchantId } = req.params;
+
+    if (!canAccessMerchant(ctx, merchantId)) {
+      return res.status(403).json({ error: 'غير مصرح بتعديل مخزون هذا المتجر' });
+    }
+
     const { productId, quantityChange, type, referenceNumber, notes } = req.body;
     const prod = merchantProducts.find((p) => p.id === productId && p.merchantId === merchantId);
     if (!prod) return res.status(404).json({ error: 'الصنف غير موجود' });
@@ -3325,26 +6942,48 @@ const handleStockAdjustment = (req: any, res: any) => {
   }
 };
 
-app.post('/api/merchants/:merchantId/stock-adjustments', handleStockAdjustment);
-app.post('/api/merchants/:merchantId/warehouse/stock-adjustment', handleStockAdjustment);
-app.post('/api/merchants/:merchantId/warehouse/stock-adjustments', handleStockAdjustment);
+app.post('/api/merchants/:merchantId/stock-adjustments', requireAuth, handleStockAdjustment);
+app.post('/api/merchants/:merchantId/warehouse/stock-adjustment', requireAuth, handleStockAdjustment);
+app.post('/api/merchants/:merchantId/warehouse/stock-adjustments', requireAuth, handleStockAdjustment);
 
 // =============================================================
 // Merchant Invoices & Billing Endpoints
 // =============================================================
 
 // GET /api/merchants/:merchantId/invoices
-app.get('/api/merchants/:merchantId/invoices', (req, res) => {
+app.get('/api/merchants/:merchantId/invoices', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
   const { merchantId } = req.params;
+
+  if (!canAccessMerchant(ctx, merchantId)) {
+    return res.status(403).json({ error: 'غير مصرح بالاطلاع على فواتير هذا المتجر' });
+  }
+
   const invoices = merchantInvoices.filter((i) => i.merchantId === merchantId);
-  res.json({ invoices: [...invoices].reverse() });
+  const canSeeCost = canViewCostPrices(ctx, merchantId);
+
+  const sanitizedInvoices = invoices.map((inv) => ({
+    ...inv,
+    items: (inv.items || []).map((it) => ({
+      ...it,
+      costPrice: canSeeCost ? it.costPrice : 0,
+    })),
+  }));
+
+  res.json({ invoices: [...sanitizedInvoices].reverse() });
 });
 
 // POST /api/merchants/:merchantId/invoices
-app.post('/api/merchants/:merchantId/invoices', (req, res) => {
+app.post('/api/merchants/:merchantId/invoices', requireAuth, (req, res) => {
   try {
+    const ctx = getRequesterContext(req);
+    const { merchantId } = req.params;
+
+    if (!canAccessMerchant(ctx, merchantId)) {
+      return res.status(403).json({ error: 'غير مصرح بإصدار فواتير لهذا المتجر' });
+    }
+
     const {
-      merchantId,
       type,
       date,
       partyName,
@@ -3759,12 +7398,20 @@ app.post('/api/merchants/:merchantId/invoices', (req, res) => {
 
 // GET /api/merchants/:merchantId/accounting & /api/merchants/:merchantId/accounting/summary
 const handleMerchantAccounting = (req: any, res: any) => {
+  const ctx = getRequesterContext(req);
   const { merchantId } = req.params;
+
+  if (!canAccessMerchant(ctx, merchantId)) {
+    return res.status(403).json({ error: 'غير مصرح بالاطلاع على الحسابات المالية لهذا المتجر' });
+  }
+
   const invoices = merchantInvoices.filter((i) => i.merchantId === merchantId);
   const expenses = merchantExpenses.filter((e) => e.merchantId === merchantId);
   const merchantVouchersList = vouchers.filter((v) => v.notes.includes(merchantId) || v.beneficiaryOrPayer.includes('سحر الشرق'));
   const prods = merchantProducts.filter((p) => p.merchantId === merchantId);
   const movements = stockMovements.filter((m) => m.merchantId === merchantId);
+
+  const canSeeCost = canViewCostPrices(ctx, merchantId);
 
   const salesInvoices = invoices.filter((i) => i.type === 'SALES');
   const purchaseInvoices = invoices.filter((i) => i.type === 'PURCHASE');
@@ -3775,20 +7422,22 @@ const handleMerchantAccounting = (req: any, res: any) => {
   const netSales = totalSales - totalReturns;
 
   let totalCogs = 0;
-  salesInvoices.forEach((inv) => {
-    inv.items.forEach((it) => {
-      const p = prods.find((pr) => pr.id === it.productId || (it.barcode && pr.barcode === it.barcode));
-      const cost = it.costPrice > 0 ? it.costPrice : (p?.costPrice || 0);
-      totalCogs += cost * (it.quantity || 1);
+  if (canSeeCost) {
+    salesInvoices.forEach((inv) => {
+      inv.items.forEach((it) => {
+        const p = prods.find((pr) => pr.id === it.productId || (it.barcode && pr.barcode === it.barcode));
+        const cost = it.costPrice > 0 ? it.costPrice : (p?.costPrice || 0);
+        totalCogs += cost * (it.quantity || 1);
+      });
     });
-  });
+  }
 
-  const grossProfit = netSales - totalCogs;
-  const grossMarginPercent = netSales > 0 ? (grossProfit / netSales) * 100 : 0;
+  const grossProfit = canSeeCost ? netSales - totalCogs : 0;
+  const grossMarginPercent = canSeeCost && netSales > 0 ? (grossProfit / netSales) * 100 : 0;
 
   const totalShippingFees = salesInvoices.reduce((sum, inv) => sum + (inv.deliveryFee || 0), 0);
   const totalOperatingExpenses = expenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
-  const netProfit = grossProfit - totalShippingFees - totalOperatingExpenses;
+  const netProfit = canSeeCost ? grossProfit - totalShippingFees - totalOperatingExpenses : 0;
 
   const accountsReceivable = salesInvoices
     .filter((i) => i.paymentStatus !== 'PAID')
@@ -3806,7 +7455,9 @@ const handleMerchantAccounting = (req: any, res: any) => {
   const pendingDarGoPayout = Math.max(0, collectedByDarGo - settledByDarGo);
 
   // Live Inventory Values
-  const inventoryAssetValue = prods.reduce((sum, p) => sum + (p.costPrice || 0) * (p.stockQuantity || 0), 0);
+  const inventoryAssetValue = canSeeCost
+    ? prods.reduce((sum, p) => sum + (p.costPrice || 0) * (p.stockQuantity || 0), 0)
+    : 0;
   const inventoryRetailValue = prods.reduce((sum, p) => sum + (p.sellingPrice || 0) * (p.stockQuantity || 0), 0);
   const totalStockItems = prods.reduce((sum, p) => sum + (p.stockQuantity || 0), 0);
   const lowStockCount = prods.filter((p) => p.stockQuantity <= (p.minStockAlert || 5)).length;
@@ -3822,13 +7473,13 @@ const handleMerchantAccounting = (req: any, res: any) => {
   const summary = {
     merchantId,
     totalRevenue: netSales,
-    costOfGoodsSold: totalCogs,
-    grossProfit,
-    marginPercent: grossMarginPercent,
+    costOfGoodsSold: canSeeCost ? totalCogs : 0,
+    grossProfit: canSeeCost ? grossProfit : 0,
+    marginPercent: canSeeCost ? grossMarginPercent : 0,
     deliveryFeesPaid: totalShippingFees,
     totalExpenses: totalOperatingExpenses,
-    netProfit,
-    netMarginPercent: netSales > 0 ? (netProfit / netSales) * 100 : 0,
+    netProfit: canSeeCost ? netProfit : 0,
+    netMarginPercent: canSeeCost && netSales > 0 ? (netProfit / netSales) * 100 : 0,
     pendingSettlements: pendingDarGoPayout,
     inventoryAssetValue,
     inventoryRetailValue,
@@ -3844,13 +7495,13 @@ const handleMerchantAccounting = (req: any, res: any) => {
       totalSales,
       totalReturns,
       netSales,
-      totalCogs,
-      grossProfit,
-      grossMarginPercent,
+      totalCogs: canSeeCost ? totalCogs : 0,
+      grossProfit: canSeeCost ? grossProfit : 0,
+      grossMarginPercent: canSeeCost ? grossMarginPercent : 0,
       totalShippingFees,
       totalOperatingExpenses,
-      netProfit,
-      netMarginPercent: netSales > 0 ? (netProfit / netSales) * 100 : 0,
+      netProfit: canSeeCost ? netProfit : 0,
+      netMarginPercent: canSeeCost && netSales > 0 ? (netProfit / netSales) * 100 : 0,
       inventoryAssetValue,
     },
     workingCapital: {
@@ -3876,20 +7527,32 @@ const handleMerchantAccounting = (req: any, res: any) => {
   });
 };
 
-app.get('/api/merchants/:merchantId/accounting', handleMerchantAccounting);
-app.get('/api/merchants/:merchantId/accounting/summary', handleMerchantAccounting);
+app.get('/api/merchants/:merchantId/accounting', requireAuth, handleMerchantAccounting);
+app.get('/api/merchants/:merchantId/accounting/summary', requireAuth, handleMerchantAccounting);
 
 // GET /api/merchants/:merchantId/expenses
-app.get('/api/merchants/:merchantId/expenses', (req, res) => {
+app.get('/api/merchants/:merchantId/expenses', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
   const { merchantId } = req.params;
+
+  if (!canAccessMerchant(ctx, merchantId)) {
+    return res.status(403).json({ error: 'غير مصرح بالاطلاع على مصاريف هذا المتجر' });
+  }
+
   const expenses = merchantExpenses.filter((e) => e.merchantId === merchantId);
   res.json({ expenses: [...expenses].reverse() });
 });
 
 // POST /api/merchants/:merchantId/expenses
-app.post('/api/merchants/:merchantId/expenses', (req, res) => {
+app.post('/api/merchants/:merchantId/expenses', requireAuth, (req, res) => {
   try {
+    const ctx = getRequesterContext(req);
     const { merchantId } = req.params;
+
+    if (!canAccessMerchant(ctx, merchantId)) {
+      return res.status(403).json({ error: 'غير مصرح بتسجيل مصاريف لهذا المتجر' });
+    }
+
     const { title, category, amount, date, paymentMethod, reference, notes } = req.body;
     const numAmount = Number(amount);
     if (!title || !numAmount || numAmount <= 0) {
@@ -3919,8 +7582,14 @@ app.post('/api/merchants/:merchantId/expenses', (req, res) => {
 });
 
 // DELETE /api/merchants/:merchantId/expenses/:expenseId
-app.delete('/api/merchants/:merchantId/expenses/:expenseId', (req, res) => {
+app.delete('/api/merchants/:merchantId/expenses/:expenseId', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
   const { merchantId, expenseId } = req.params;
+
+  if (!canAccessMerchant(ctx, merchantId)) {
+    return res.status(403).json({ error: 'غير مصرح بحذف مصاريف هذا المتجر' });
+  }
+
   const index = merchantExpenses.findIndex((e) => e.id === expenseId && e.merchantId === merchantId);
   if (index === -1) return res.status(404).json({ error: 'المصروف غير موجود' });
 

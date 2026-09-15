@@ -27,6 +27,7 @@ import { StaffPortal } from './components/StaffPortal';
 import { AccessDeniedView } from './components/AccessDeniedView';
 import { AdminSettings } from './components/AdminSettings';
 import { LoginPage } from './components/LoginPage';
+import { InviteAcceptancePage } from './components/InviteAcceptancePage';
 import { OpsSuperAdminLogin } from './components/OpsSuperAdminLogin';
 import { SuperAdminMasterHub } from './components/SuperAdminMasterHub';
 import { Order, OrderStatus, User, Role, OrdersQueryResponse } from './types/logistics';
@@ -88,6 +89,18 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isAuthChecking, setIsAuthChecking] = useState<boolean>(true);
   const [cliqOrder, setCliqOrder] = useState<Order | null>(null);
+
+  // Invite Token URL detector
+  const [inviteToken, setInviteToken] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    const searchParams = new URLSearchParams(window.location.search);
+    const tokenParam = searchParams.get('token') || searchParams.get('invite_token') || searchParams.get('invitation');
+    if (tokenParam) return tokenParam;
+    if (window.location.pathname.startsWith('/invite')) {
+      return searchParams.get('token') || '';
+    }
+    return null;
+  });
 
   // Active User Role & RBAC Security Matrix
   const currentRole: Role = currentUser?.role || 'ADMIN';
@@ -827,6 +840,26 @@ export default function App() {
   }
 
   if (!currentUser) {
+    if (inviteToken) {
+      return (
+        <InviteAcceptancePage
+          token={inviteToken}
+          onLoginSuccess={(user, token) => {
+            setInviteToken(null);
+            handleLoginSuccess(user, token);
+          }}
+          onNavigateToLogin={() => {
+            setInviteToken(null);
+            try {
+              window.history.pushState(null, '', '/');
+            } catch {
+              // ignore
+            }
+          }}
+        />
+      );
+    }
+
     return (
       <>
         {isOpsMode ? (
@@ -838,6 +871,7 @@ export default function App() {
           <LoginPage
             onLoginSuccess={handleLoginSuccess}
             onSwitchToOpsLogin={handleSwitchToOps}
+            onOpenInvite={(token) => setInviteToken(token)}
           />
         )}
         {toastMessage && (

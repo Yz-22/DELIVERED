@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { User, Role } from '../types/logistics';
 import { PermissionsManager } from './PermissionsManager';
+import { InvitationsManager } from './InvitationsManager';
 
 interface UsersManagementProps {
   users: User[];
@@ -38,7 +39,7 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
   onAddUser,
   onUpdateUser,
 }) => {
-  const [activeTab, setActiveTab] = useState<'ALL' | 'STAFF' | 'MERCHANT' | 'DRIVER' | 'HIERARCHY_RBAC'>('HIERARCHY_RBAC');
+  const [activeTab, setActiveTab] = useState<'ALL' | 'STAFF' | 'MERCHANT' | 'DRIVER' | 'HIERARCHY_RBAC' | 'INVITATIONS'>('HIERARCHY_RBAC');
   const [searchQuery, setSearchQuery] = useState('');
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
@@ -230,10 +231,23 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
             <Car className="w-3.5 h-3.5" />
             <span>كباتن التوصيل ({users.filter((u) => u.role === 'DRIVER').length})</span>
           </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('INVITATIONS')}
+            className={`px-3.5 py-1.5 text-xs font-bold rounded-md transition-all flex items-center gap-1.5 ${
+              activeTab === 'INVITATIONS'
+                ? 'bg-indigo-600 text-white shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Mail className="w-3.5 h-3.5" />
+            <span>نظام الدعوات والتسجيل (Invitations)</span>
+          </button>
         </div>
 
         {/* Search */}
-        {activeTab !== 'HIERARCHY_RBAC' && (
+        {activeTab !== 'HIERARCHY_RBAC' && activeTab !== 'INVITATIONS' && (
           <div className="relative min-w-[240px]">
             <input
               type="text"
@@ -247,8 +261,10 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
         )}
       </div>
 
-      {/* Render Permissions Manager or Regular Table */}
-      {activeTab === 'HIERARCHY_RBAC' ? (
+      {/* Render Permissions Manager, Invitations Manager, or Regular Table */}
+      {activeTab === 'INVITATIONS' ? (
+        <InvitationsManager currentUser={currentUser} />
+      ) : activeTab === 'HIERARCHY_RBAC' ? (
         <PermissionsManager
           users={users}
           onUpdateUserPermissions={(userId, permissions, maxAllowed) => {

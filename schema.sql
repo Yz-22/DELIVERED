@@ -32,6 +32,16 @@ CREATE TABLE IF NOT EXISTS public.subscription_plans (
     created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
 );
 
+-- Idempotent upgrades for subscription_plans
+ALTER TABLE public.subscription_plans ADD COLUMN IF NOT EXISTS name_ar TEXT;
+ALTER TABLE public.subscription_plans ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE public.subscription_plans ADD COLUMN IF NOT EXISTS currency TEXT DEFAULT 'JOD';
+ALTER TABLE public.subscription_plans ADD COLUMN IF NOT EXISTS billing_cycle TEXT DEFAULT 'MONTHLY';
+ALTER TABLE public.subscription_plans ADD COLUMN IF NOT EXISTS trial_days INTEGER DEFAULT 0;
+ALTER TABLE public.subscription_plans ADD COLUMN IF NOT EXISTS sort_order INTEGER DEFAULT 0;
+ALTER TABLE public.subscription_plans ADD COLUMN IF NOT EXISTS enabled_modules JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE public.subscription_plans ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+
 CREATE TABLE IF NOT EXISTS public.tenants (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name TEXT NOT NULL,
@@ -44,6 +54,36 @@ CREATE TABLE IF NOT EXISTS public.tenants (
     created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
     updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
 );
+
+-- Real Subscriptions Engine Table (Phase 2)
+CREATE TABLE IF NOT EXISTS public.subscriptions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL,
+    plan_id UUID,
+    plan_code TEXT NOT NULL DEFAULT 'PROFESSIONAL',
+    plan_name TEXT NOT NULL DEFAULT 'الباقة الذهبية للمحترفين (Gold Pro)',
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    start_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    end_date TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '30 days'),
+    trial_start_date TIMESTAMPTZ,
+    trial_end_date TIMESTAMPTZ,
+    price NUMERIC(12, 3) NOT NULL DEFAULT 85.000,
+    currency TEXT NOT NULL DEFAULT 'JOD',
+    billing_cycle TEXT NOT NULL DEFAULT 'MONTHLY',
+    enabled_modules JSONB NOT NULL DEFAULT '{"tmsDelivery": true, "posCashier": true, "merchantWms": true, "accountingSettlements": true, "apiIntegrations": true, "aiRouteOptimizer": true}'::jsonb,
+    max_users INTEGER NOT NULL DEFAULT 15,
+    max_monthly_orders INTEGER NOT NULL DEFAULT 10000,
+    auto_renew BOOLEAN NOT NULL DEFAULT FALSE,
+    suspended_reason TEXT,
+    grace_period_days INTEGER NOT NULL DEFAULT 0,
+    created_by UUID,
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_subscriptions_tenant ON public.subscriptions(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON public.subscriptions(status);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_end_date ON public.subscriptions(end_date);
 
 INSERT INTO public.tenants (id, name, subdomain, subscription_status)
 VALUES ('00000000-0000-0000-0000-000000000000', 'المؤسسة الافتراضية الرئيسية (Main Tenant)', 'default', 'ACTIVE')
