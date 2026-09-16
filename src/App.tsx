@@ -33,6 +33,7 @@ import { SuperAdminMasterHub } from './components/SuperAdminMasterHub';
 import { TenantBrandingProvider } from './context/TenantBrandingContext';
 import { Order, OrderStatus, User, Role, OrdersQueryResponse } from './types/logistics';
 import { CheckCircle2, AlertCircle, X } from 'lucide-react';
+import { getAuthHeaders as getAppAuthHeaders, getAuthToken } from './lib/auth';
 
 export default function App() {
   // Check OPS portal from subdomain, path, query param, or hash
@@ -332,25 +333,7 @@ export default function App() {
 
   // Helper to extract session authorization headers
   const getAuthHeaders = useCallback((): Record<string, string> => {
-    const headers: Record<string, string> = {};
-    try {
-      const savedSession = localStorage.getItem('dargo_user_session');
-      if (savedSession) {
-        const parsed = JSON.parse(savedSession);
-        if (parsed?.token) {
-          headers['Authorization'] = `Bearer ${parsed.token}`;
-        } else if (parsed?.user?.id) {
-          headers['Authorization'] = `Bearer ${parsed.user.id}`;
-        }
-      } else if (currentUser?.id) {
-        headers['Authorization'] = `Bearer ${currentUser.id}`;
-      }
-    } catch {
-      if (currentUser?.id) {
-        headers['Authorization'] = `Bearer ${currentUser.id}`;
-      }
-    }
-    return headers;
+    return getAppAuthHeaders(currentUser);
   }, [currentUser?.id]);
 
   // Fetch Users & Authenticate Session
@@ -389,14 +372,54 @@ export default function App() {
     showToast(`مرحباً بك: ${user.name} (${user.roleName || user.role})`);
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      const headers = getAppAuthHeaders(currentUser);
+      if (headers['Authorization']) {
+        await fetch('/api/auth/logout', { method: 'POST', headers });
+      }
+    } catch {
+      // Ignore network errors on logout
+    }
     localStorage.removeItem('dargo_user_session');
+    localStorage.removeItem('dargo_tms_session');
+    localStorage.removeItem('dargo_token');
+    localStorage.removeItem('dargo_jwt_token');
+    localStorage.removeItem('delivere_auth_token');
+    sessionStorage.removeItem('dargo_user_session');
+    sessionStorage.removeItem('dargo_tms_session');
+    sessionStorage.removeItem('dargo_token');
+    sessionStorage.removeItem('dargo_jwt_token');
     setCurrentUser(null);
     showToast('تم تسجيل الخروج من النظام بنجاح');
   };
 
-  const handleSelectUser = (user: User) => {
+  const handleSelectUser = async (user: User) => {
     setCurrentUser(user);
+    let switchToken = getAuthToken(user);
+    try {
+      const res = await fetch('/api/auth/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user.id }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.token) switchToken = data.token;
+      }
+    } catch {
+      // Ignore network errors
+    }
+
+    const sessionObj = JSON.stringify({
+      user,
+      token: switchToken,
+      savedAt: new Date().toISOString(),
+    });
+    localStorage.setItem('dargo_user_session', sessionObj);
+    localStorage.setItem('dargo_token', switchToken);
+    localStorage.setItem('dargo_jwt_token', switchToken);
+
     if (user.role === 'SUPER_ADMIN') {
       setActiveSection('super_admin_hub');
       showToast(`تم التبديل إلى مركز تحكم السوبر أدمن: ${user.name}`);
@@ -503,7 +526,20 @@ export default function App() {
       // If updating the currently logged in user, refresh session
       if (currentUser && currentUser.id === id) {
         setCurrentUser(updatedUser);
-        localStorage.setItem('dargo_user_session', JSON.stringify(updatedUser));
+        let existingToken = '';
+        try {
+          const prev = localStorage.getItem('dargo_user_session');
+          if (prev) existingToken = JSON.parse(prev)?.token || '';
+        } catch {}
+        const sessionToken = existingToken;
+        const sessionObj = JSON.stringify({
+          user: updatedUser,
+          token: sessionToken,
+          savedAt: new Date().toISOString(),
+        });
+        localStorage.setItem('dargo_user_session', sessionObj);
+        localStorage.setItem('dargo_token', sessionToken);
+        localStorage.setItem('dargo_jwt_token', sessionToken);
       }
 
       showToast('تم حفظ وتحديث تعديلات المستخدم والصلاحيات في قاعدة البيانات بنجاح');
@@ -575,15 +611,15 @@ export default function App() {
   ]);
 
   useEffect(() => {
+    let isMounted = true;
     const initAuthAndUsers = async () => {
       try {
-        const savedSession = localStorage.getItem('dargo_user_session');
+        const savedSession = localStorage.getItem('dargo_user_session') || sessionStorage.getItem('dargo_user_session');
         if (savedSession) {
           try {
             const parsed = JSON.parse(savedSession);
             if (parsed?.user?.id) {
-              // Optimistically set currentUser so user is never abruptly logged out during server reboot
-              setCurrentUser(parsed.user);
+              if (isMounted) setCurrentUser((prev) => prev || parsed.user);
 
               try {
                 const verifyRes = await fetch('/api/auth/verify', {
@@ -593,16 +629,17 @@ export default function App() {
                 });
                 if (verifyRes.ok) {
                   const verified = await verifyRes.json();
-                  if (verified.user) {
+                  if (verified.user && isMounted) {
                     setCurrentUser(verified.user);
                   }
                 } else if (verifyRes.status === 401 || verifyRes.status === 403) {
-                  // Explicit rejection by server: account deactivated or invalid
-                  localStorage.removeItem('dargo_user_session');
-                  setCurrentUser(null);
+                  if (isMounted) {
+                    localStorage.removeItem('dargo_user_session');
+                    sessionStorage.removeItem('dargo_user_session');
+                    setCurrentUser(null);
+                  }
                 }
               } catch (netErr) {
-                // If network/server is restarting, do NOT wipe local session; keep the optimistic user logged in
                 console.warn('Server temporarily unreachable during session check, retaining local session:', netErr);
               }
             }
@@ -610,18 +647,18 @@ export default function App() {
             console.error('Session verify error:', e);
           }
         }
-
-        // Now attempt fetching users with authenticated session headers
-        await fetchUsers();
       } catch (e) {
         console.error('Auth init error:', e);
       } finally {
-        setIsAuthChecking(false);
+        if (isMounted) setIsAuthChecking(false);
       }
     };
 
     initAuthAndUsers();
-  }, [fetchUsers]);
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     fetchOrders();

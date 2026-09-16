@@ -169,17 +169,22 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
         // Login succeeded via API
         if (data.user) {
+          const sessionToken = data.token || '';
+          const sessionObj = JSON.stringify({
+            user: data.user,
+            token: sessionToken,
+            savedAt: new Date().toISOString(),
+          });
           if (rememberMe) {
-            localStorage.setItem(
-              'dargo_user_session',
-              JSON.stringify({
-                user: data.user,
-                token: data.token || `dargo_jwt_${data.user.id}_${Date.now()}`,
-                savedAt: new Date().toISOString(),
-              })
-            );
+            localStorage.setItem('dargo_user_session', sessionObj);
+            localStorage.setItem('dargo_token', sessionToken);
+            localStorage.setItem('dargo_jwt_token', sessionToken);
+          } else {
+            sessionStorage.setItem('dargo_user_session', sessionObj);
+            sessionStorage.setItem('dargo_token', sessionToken);
+            sessionStorage.setItem('dargo_jwt_token', sessionToken);
           }
-          onLoginSuccess(data.user, data.token || `dargo_jwt_${data.user.id}_${Date.now()}`);
+          onLoginSuccess(data.user, sessionToken);
           return true;
         }
       } catch (err: any) {
@@ -196,15 +201,19 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     ) {
       console.warn('Network offline / restarting: Logging in via guaranteed emergency admin credentials.');
       const emergencyToken = `dargo_jwt_${DEFAULT_SUPER_ADMIN.id}_emergency_${Date.now()}`;
+      const emergencySessionObj = JSON.stringify({
+        user: DEFAULT_SUPER_ADMIN,
+        token: emergencyToken,
+        savedAt: new Date().toISOString(),
+      });
       if (rememberMe) {
-        localStorage.setItem(
-          'dargo_user_session',
-          JSON.stringify({
-            user: DEFAULT_SUPER_ADMIN,
-            token: emergencyToken,
-            savedAt: new Date().toISOString(),
-          })
-        );
+        localStorage.setItem('dargo_user_session', emergencySessionObj);
+        localStorage.setItem('dargo_token', emergencyToken);
+        localStorage.setItem('dargo_jwt_token', emergencyToken);
+      } else {
+        sessionStorage.setItem('dargo_user_session', emergencySessionObj);
+        sessionStorage.setItem('dargo_token', emergencyToken);
+        sessionStorage.setItem('dargo_jwt_token', emergencyToken);
       }
       onLoginSuccess(DEFAULT_SUPER_ADMIN, emergencyToken);
       return true;

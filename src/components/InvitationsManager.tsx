@@ -10,6 +10,7 @@ import {
   Clock,
   CheckCircle2,
   Shield,
+  ShieldAlert,
   Building2,
   Car,
   Briefcase,
@@ -18,6 +19,7 @@ import {
   Lock,
 } from 'lucide-react';
 import { User, UserInvitation, Role } from '../types/logistics';
+import { getAuthToken } from '../lib/auth';
 
 interface InvitationsManagerProps {
   currentUser?: User | null;
@@ -57,18 +59,29 @@ export const InvitationsManager: React.FC<InvitationsManagerProps> = ({ currentU
     : (currentUser?.permissions || []);
 
   const fetchInvitations = async () => {
+    const token = getAuthToken(currentUser);
+    if (!token) {
+      setIsLoading(false);
+      return;
+    }
+
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const token = localStorage.getItem('dargo_token') || sessionStorage.getItem('dargo_token') || '';
       const res = await fetch('/api/invitations', {
         headers: {
           'Content-Type': 'application/json',
-          Authorization: token ? `Bearer ${token}` : '',
+          Authorization: `Bearer ${token}`,
         },
       });
       const data = await res.json();
       if (!res.ok) {
+        if (res.status === 401) {
+          throw new Error('انتهت صلاحية الجلسة، يرجى إعادة تسجيل الدخول للوصول إلى نظام الدعوات (401 Unauthorized)');
+        }
+        if (res.status === 403) {
+          throw new Error(data.error || 'غير مصرح لك بعرض قائمة الدعوات (403 Forbidden)');
+        }
         throw new Error(data.error || 'فشل تحميل قائمة الدعوات');
       }
       setInvitations(data.invitations || []);
@@ -80,11 +93,24 @@ export const InvitationsManager: React.FC<InvitationsManagerProps> = ({ currentU
   };
 
   useEffect(() => {
-    fetchInvitations();
-  }, []);
+    if (currentUser) {
+      const token = getAuthToken(currentUser);
+      if (token) {
+        fetchInvitations();
+      } else {
+        setIsLoading(false);
+      }
+    }
+  }, [currentUser?.id]);
 
   const handleCreateInvitation = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    const token = getAuthToken(currentUser);
+    if (!token) {
+      setErrorMessage('لا توجد جلسة عمل نشطة مصادق عليها. يرجى إعادة تسجيل الدخول.');
+      return;
+    }
 
     setIsSubmitting(true);
     setErrorMessage(null);
@@ -92,12 +118,11 @@ export const InvitationsManager: React.FC<InvitationsManagerProps> = ({ currentU
     setGeneratedInviteUrl(null);
 
     try {
-      const token = localStorage.getItem('dargo_token') || sessionStorage.getItem('dargo_token') || '';
       const res = await fetch('/api/invitations', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: token ? `Bearer ${token}` : '',
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
           ...formData,
@@ -107,6 +132,12 @@ export const InvitationsManager: React.FC<InvitationsManagerProps> = ({ currentU
 
       const data = await res.json();
       if (!res.ok) {
+        if (res.status === 401) {
+          throw new Error('انتهت صلاحية الجلسة، يرجى تسجيل الدخول مجدداً (401 Unauthorized)');
+        }
+        if (res.status === 403) {
+          throw new Error(data.error || 'غير مصرح لك بإنشاء هذه الدعوة (403 Forbidden)');
+        }
         throw new Error(data.error || 'فشل إنشاء رابط الدعوة');
       }
 
@@ -123,13 +154,18 @@ export const InvitationsManager: React.FC<InvitationsManagerProps> = ({ currentU
   };
 
   const handleRevokeInvitation = async (id: string) => {
+    const token = getAuthToken(currentUser);
+    if (!token) {
+      setErrorMessage('لا توجد جلسة عمل نشطة لإلغاء الدعوة.');
+      return;
+    }
+
     try {
-      const token = localStorage.getItem('dargo_token') || sessionStorage.getItem('dargo_token') || '';
       const res = await fetch(`/api/invitations/${id}/revoke`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: token ? `Bearer ${token}` : '',
+          Authorization: `Bearer ${token}`,
         },
       });
       const data = await res.json();
@@ -142,13 +178,18 @@ export const InvitationsManager: React.FC<InvitationsManagerProps> = ({ currentU
   };
 
   const handleResendInvitation = async (id: string) => {
+    const token = getAuthToken(currentUser);
+    if (!token) {
+      setErrorMessage('لا توجد جلسة عمل نشطة لتجديد الدعوة.');
+      return;
+    }
+
     try {
-      const token = localStorage.getItem('dargo_token') || sessionStorage.getItem('dargo_token') || '';
       const res = await fetch(`/api/invitations/${id}/resend`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: token ? `Bearer ${token}` : '',
+          Authorization: `Bearer ${token}`,
         },
       });
       const data = await res.json();
@@ -170,6 +211,49 @@ export const InvitationsManager: React.FC<InvitationsManagerProps> = ({ currentU
     setTimeout(() => setCopiedId(null), 2500);
   };
 
+  const canCreateInvitations =
+    currentUser?.role === 'SUPER_ADMIN' ||
+    currentUser?.role === 'ADMIN' ||
+    currentUser?.role === 'MERCHANT' ||
+    (Array.isArray(currentUser?.permissions) &&
+      (currentUser?.permissions.includes('invitations.create') ||
+       currentUser?.permissions.includes('users.manage_staff') ||
+       currentUser?.permissions.includes('users.manage_operations') ||
+       currentUser?.permissions.includes('*')));
+
+  const canViewInvitations =
+    currentUser?.role === 'SUPER_ADMIN' ||
+    currentUser?.role === 'ADMIN' ||
+    currentUser?.role === 'MERCHANT' ||
+    (Array.isArray(currentUser?.permissions) &&
+      (currentUser?.permissions.includes('invitations.view') ||
+       currentUser?.permissions.includes('invitations.create') ||
+       currentUser?.permissions.includes('users.manage_staff') ||
+       currentUser?.permissions.includes('users.manage_operations') ||
+       currentUser?.permissions.includes('*')));
+
+  if (!currentUser) {
+    return (
+      <div className="bg-white rounded-2xl p-8 border border-slate-200 text-center space-y-3" dir="rtl">
+        <RefreshCw className="w-6 h-6 text-indigo-600 animate-spin mx-auto" />
+        <p className="text-sm font-bold text-slate-700">جاري التحقق من جلسة العمل والصلاحيات...</p>
+        <p className="text-xs text-slate-400">يرجى الانتظار حتى اكتمال استعادة بيانات الحساب</p>
+      </div>
+    );
+  }
+
+  if (!canViewInvitations) {
+    return (
+      <div className="bg-white rounded-2xl p-8 border border-slate-200 text-center space-y-3" dir="rtl">
+        <ShieldAlert className="w-10 h-10 text-rose-500 mx-auto" />
+        <h3 className="text-base font-bold text-slate-900">غير مصرح بالوصول إلى نظام الدعوات (403 Forbidden)</h3>
+        <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
+          حسابك الحالي لا يمتلك الصلاحيات الكافية لعرض أو إدارة دعوات المستخدمين. هذه الواجهة متاحة فقط لمدراء العمليات والجهات المعتمدة.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-5" dir="rtl">
       {/* Header Banner */}
@@ -189,19 +273,21 @@ export const InvitationsManager: React.FC<InvitationsManagerProps> = ({ currentU
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            setGeneratedInviteUrl(null);
-            setErrorMessage(null);
-            setSuccessMessage(null);
-            setIsCreateModalOpen(true);
-          }}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs sm:text-sm px-4 py-2.5 rounded-xl shadow-xs flex items-center gap-2 transition-colors cursor-pointer"
-        >
-          <UserPlus className="w-4 h-4 text-white" />
-          <span>إنشاء دعوة مستخدم جديد</span>
-        </button>
+        {canCreateInvitations && (
+          <button
+            type="button"
+            onClick={() => {
+              setGeneratedInviteUrl(null);
+              setErrorMessage(null);
+              setSuccessMessage(null);
+              setIsCreateModalOpen(true);
+            }}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs sm:text-sm px-4 py-2.5 rounded-xl shadow-xs flex items-center gap-2 transition-colors cursor-pointer"
+          >
+            <UserPlus className="w-4 h-4 text-white" />
+            <span>إنشاء دعوة مستخدم جديد</span>
+          </button>
+        )}
       </div>
 
       {/* Messages */}

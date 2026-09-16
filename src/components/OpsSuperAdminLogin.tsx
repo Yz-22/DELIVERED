@@ -68,11 +68,12 @@ export const OpsSuperAdminLogin: React.FC<OpsSuperAdminLoginProps> = ({
       }
 
       if (res.ok && data?.user) {
+        const sessionToken = data.token || '';
         localStorage.setItem(
           'dargo_user_session',
           JSON.stringify({
             user: data.user,
-            token: data.token,
+            token: sessionToken,
             savedAt: new Date().toISOString(),
           })
         );
@@ -80,10 +81,12 @@ export const OpsSuperAdminLogin: React.FC<OpsSuperAdminLoginProps> = ({
           'dargo_tms_session',
           JSON.stringify({
             user: data.user,
-            token: data.token,
+            token: sessionToken,
           })
         );
-        onLoginSuccess(data.user, data.token);
+        localStorage.setItem('dargo_token', sessionToken);
+        localStorage.setItem('dargo_jwt_token', sessionToken);
+        onLoginSuccess(data.user, sessionToken);
         return;
       }
 
@@ -128,6 +131,8 @@ export const OpsSuperAdminLogin: React.FC<OpsSuperAdminLoginProps> = ({
         const token = `dargo_jwt_${defaultSuper.id}_${Date.now()}`;
         localStorage.setItem('dargo_user_session', JSON.stringify({ user: defaultSuper, token }));
         localStorage.setItem('dargo_tms_session', JSON.stringify({ user: defaultSuper, token }));
+        localStorage.setItem('dargo_token', token);
+        localStorage.setItem('dargo_jwt_token', token);
         onLoginSuccess(defaultSuper, token);
         return;
       }

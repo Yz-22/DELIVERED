@@ -1,7 +1,8 @@
 import { TenantBranding } from '../types/logistics';
+import { getAuthToken } from './auth';
 
 export async function fetchCompanyBranding(tenantId?: string): Promise<TenantBranding> {
-  const token = localStorage.getItem('delivere_auth_token');
+  const token = getAuthToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
@@ -20,7 +21,7 @@ export async function fetchCompanyBranding(tenantId?: string): Promise<TenantBra
 }
 
 export async function updateCompanyBranding(branding: Partial<TenantBranding>): Promise<TenantBranding> {
-  const token = localStorage.getItem('delivere_auth_token');
+  const token = getAuthToken();
   const res = await fetch('/api/company/branding', {
     method: 'PUT',
     headers: {
@@ -39,7 +40,7 @@ export async function updateCompanyBranding(branding: Partial<TenantBranding>): 
 }
 
 export async function uploadCompanyLogo(file: File): Promise<string> {
-  const token = localStorage.getItem('delivere_auth_token');
+  const token = getAuthToken();
 
   return new Promise((resolve, reject) => {
     const reader = new FileReader();

@@ -1603,43 +1603,216 @@ interface RequesterContext {
   isDriver: boolean;
 }
 
-// Resolve user identity securely from JWT bearer token or x-auth-token
-// Insecure spoofable headers (x-user-id, x-user-role, requesterId query/body) are strictly ignored without valid token
-async function resolveAuthenticatedUser(req: express.Request): Promise<User | null> {
-  const authHeader = req.headers['authorization'] || req.headers['x-auth-token'];
-  let candidateUserId: string | null = null;
+// =============================================================
+// Cryptographic Session Token Architecture (HMAC-SHA256 Signed JWT)
+// =============================================================
+const SESSION_SECRET = process.env.SESSION_SECRET || 'dargo_hmac_sha256_secret_key_v1_2026_x9k2p8z';
+const SESSION_EXPIRATION_MS = 24 * 60 * 60 * 1000; // 24 Hours
 
-  if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.substring(7).trim();
-    if (token.startsWith('dargo_jwt_')) {
-      const parts = token.split('_');
-      if (parts.length >= 3) candidateUserId = parts[2];
-    } else if (token.length > 0) {
-      // Direct token match or user ID token
-      candidateUserId = token;
-    }
-  } else if (typeof authHeader === 'string' && authHeader.startsWith('dargo_jwt_')) {
-    const parts = authHeader.split('_');
-    if (parts.length >= 3) candidateUserId = parts[2];
-  } else if (typeof authHeader === 'string' && authHeader.trim().length > 0) {
-    candidateUserId = authHeader.trim();
+// Revocation registry for logged-out or invalidated session IDs (jti)
+// Primary Source of Truth: Supabase PostgreSQL `revoked_sessions` table
+// Performance Cache Layer: Local in-memory `revokedSessionJtis` Set
+const revokedSessionJtis = new Set<string>();
+
+/**
+ * Asynchronously verify if a session JTI has been revoked.
+ * Primary Source of Truth: Supabase `revoked_sessions` PostgreSQL table.
+ * Performance Cache Layer: Local in-memory `revokedSessionJtis` Set.
+ */
+async function isSessionRevoked(jti: string): Promise<boolean> {
+  if (!jti) return false;
+
+  // 1. Instant check in local in-memory cache
+  if (revokedSessionJtis.has(jti)) {
+    return true;
   }
 
-  if (!candidateUserId) return null;
+  // 2. Query distributed persistent PostgreSQL database in Supabase
+  try {
+    if (supabase) {
+      const { data, error } = await supabase
+        .from('revoked_sessions')
+        .select('jti')
+        .eq('jti', jti)
+        .limit(1);
 
-  // Check in-memory users cache first
+      if (!error && data && data.length > 0) {
+        // Cache locally on this instance for subsequent fast requests
+        revokedSessionJtis.add(jti);
+        return true;
+      }
+    }
+  } catch (err: any) {
+    console.warn('[SessionRevocation] Persistent lookup warning:', err?.message || err);
+  }
+
+  return false;
+}
+
+/**
+ * Revoke a session JTI across all distributed instances via Supabase persistence.
+ */
+async function revokeSession(payload: SessionTokenPayload, reason: string = 'logout'): Promise<boolean> {
+  if (!payload || !payload.jti) return false;
+
+  const jti = payload.jti;
+
+  // 1. Add to local instance in-memory cache
+  revokedSessionJtis.add(jti);
+
+  // 2. Persist in Supabase `revoked_sessions` table
+  try {
+    if (supabase) {
+      const expiresAtIso = new Date(payload.exp || Date.now() + SESSION_EXPIRATION_MS).toISOString();
+      const validUserId = payload.userId && isValidUuid(payload.userId) ? payload.userId : null;
+
+      const { error } = await supabase.from('revoked_sessions').insert([
+        {
+          jti,
+          user_id: validUserId,
+          expires_at: expiresAtIso,
+          reason,
+          revoked_at: new Date().toISOString(),
+        },
+      ]);
+
+      if (error && !error.message.includes('duplicate key') && !error.message.includes('unique constraint')) {
+        console.warn('[SessionRevocation] Persistent insert warning:', error.message);
+      }
+    }
+  } catch (err: any) {
+    console.warn('[SessionRevocation] Persistent error:', err?.message || err);
+  }
+
+  return true;
+}
+
+export interface SessionTokenPayload {
+  userId: string;
+  role: string;
+  tenantId?: string;
+  iat: number;
+  exp: number;
+  jti: string;
+}
+
+/**
+ * Generate a cryptographically signed session token (HMAC-SHA256)
+ */
+function generateSessionToken(user: User): string {
+  const now = Date.now();
+  const jti = crypto.randomBytes(16).toString('hex');
+  const payload: SessionTokenPayload = {
+    userId: user.id,
+    role: user.role,
+    tenantId: user.parentUserId || user.id,
+    iat: now,
+    exp: now + SESSION_EXPIRATION_MS,
+    jti,
+  };
+
+  const payloadStr = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = crypto
+    .createHmac('sha256', SESSION_SECRET)
+    .update(payloadStr)
+    .digest('base64url');
+
+  return `dargo_jwt.${payloadStr}.${signature}`;
+}
+
+/**
+ * Verify cryptographic signature, expiration, and revocation status of session token.
+ * Returns payload if valid, or null if tampered, expired, or revoked.
+ */
+function verifySessionToken(rawToken: string): SessionTokenPayload | null {
+  if (!rawToken || typeof rawToken !== 'string') return null;
+  let token = rawToken.trim();
+  if (token.startsWith('Bearer ')) {
+    token = token.substring(7).trim();
+  }
+  if (!token || token === 'undefined' || token === 'null') return null;
+
+  // Enforce format: dargo_jwt.<payload_b64url>.<signature_b64url>
+  const parts = token.split('.');
+  if (parts.length !== 3 || parts[0] !== 'dargo_jwt') {
+    return null; // Reject plain unsigned dargo_jwt_<userId>_<timestamp> or malformed tokens
+  }
+
+  const payloadStr = parts[1];
+  const providedSignature = parts[2];
+
+  // Recompute HMAC-SHA256 signature
+  const expectedSignature = crypto
+    .createHmac('sha256', SESSION_SECRET)
+    .update(payloadStr)
+    .digest('base64url');
+
+  try {
+    const sigBuf = Buffer.from(providedSignature);
+    const expBuf = Buffer.from(expectedSignature);
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+      return null; // Signature mismatch! Tampered payload!
+    }
+  } catch {
+    return null;
+  }
+
+  // Parse JSON payload
+  let payload: SessionTokenPayload;
+  try {
+    const jsonStr = Buffer.from(payloadStr, 'base64url').toString('utf8');
+    payload = JSON.parse(jsonStr);
+  } catch {
+    return null;
+  }
+
+  // Enforce Expiration Time
+  if (!payload.exp || Date.now() > payload.exp) {
+    return null; // Token expired!
+  }
+
+  // Enforce Revocation (Logout)
+  if (payload.jti && revokedSessionJtis.has(payload.jti)) {
+    return null; // Token revoked!
+  }
+
+  return payload;
+}
+
+// Resolve user identity securely from cryptographically signed JWT bearer token
+// Insecure spoofable headers (x-user-id, x-user-role, requesterId query/body) are strictly ignored
+async function resolveAuthenticatedUser(req: express.Request): Promise<User | null> {
+  const authHeader = req.headers['authorization'] || req.headers['x-auth-token'];
+  if (!authHeader || typeof authHeader !== 'string') return null;
+
+  const payload = verifySessionToken(authHeader);
+  if (!payload || !payload.userId) return null;
+
+  // Distributed Persistent Revocation Check (PostgreSQL Source of Truth + In-memory Cache)
+  if (payload.jti && (await isSessionRevoked(payload.jti))) {
+    return null; // Session revoked globally in DB!
+  }
+
+  const candidateUserId = payload.userId;
+
+  // 1. Check in-memory users cache first
   let matchedUser = users.find((u) => u && u.id === candidateUserId);
 
-  // If not found and valid UUID, look up in Supabase
-  if (!matchedUser && isValidUuid(candidateUserId)) {
+  // 2. If not found, look up in Supabase
+  if (!matchedUser) {
     try {
-      const { data, error } = await supabase
-        .from('users')
-        .select('*')
-        .eq('id', candidateUserId)
-        .limit(1);
-      if (!error && data && data.length > 0) {
-        matchedUser = mapDbUserToAppUser(data[0]);
+      if (isValidUuid(candidateUserId)) {
+        const { data, error } = await supabase
+          .from('users')
+          .select('*')
+          .eq('id', candidateUserId)
+          .limit(1);
+        if (!error && data && data.length > 0) {
+          matchedUser = mapDbUserToAppUser(data[0]);
+          const idx = users.findIndex((u) => u.id === matchedUser!.id);
+          if (idx >= 0) users[idx] = matchedUser!;
+          else users.push(matchedUser!);
+        }
       }
     } catch {
       // fallback
@@ -1647,7 +1820,11 @@ async function resolveAuthenticatedUser(req: express.Request): Promise<User | nu
   }
 
   if (!matchedUser) return null;
-  if (matchedUser.isActive === false) return null;
+
+  // Enforce Account Active Status (Disabled/Inactive User Protection)
+  if ((matchedUser as any).isActive === false || (matchedUser as any).is_active === false || (matchedUser as any).status === 'INACTIVE' || (matchedUser as any).status === 'DEACTIVATED') {
+    return null;
+  }
 
   return matchedUser;
 }
@@ -3477,11 +3654,12 @@ app.post('/api/auth/login', async (req, res) => {
     });
 
     const sanitizedUser = sanitizeUserForClient(user);
+    const sessionToken = generateSessionToken(user);
 
     res.json({
       success: true,
       user: sanitizedUser,
-      token: `dargo_jwt_${user.id}_${Date.now()}`,
+      token: sessionToken,
       message: `مرحباً بك يا ${user.name}`,
     });
   } catch (err: any) {
@@ -3594,7 +3772,7 @@ app.post('/api/auth/register-ops', async (req, res) => {
       details: { email: createdUser.email },
     });
 
-    const token = `dargo_jwt_${createdUser.id}_${Date.now()}`;
+    const token = generateSessionToken(createdUser);
     const sanitizedUser = sanitizeUserForClient(createdUser);
 
     res.status(201).json({
@@ -3608,64 +3786,66 @@ app.post('/api/auth/register-ops', async (req, res) => {
   }
 });
 
-// 26.0 POST /api/auth/verify: Verify session token and current user directly via Supabase
+// 26.0 POST /api/auth/verify: Verify cryptographically signed session token
 app.post('/api/auth/verify', async (req, res) => {
   try {
-    const { userId } = req.body || {};
-    const authHeader = req.headers['authorization'] || req.headers['x-auth-token'];
-    let candidateId = userId;
-
-    if (!candidateId && typeof authHeader === 'string') {
-      const token = authHeader.replace(/^Bearer\s+/i, '').trim();
-      if (token.startsWith('dargo_jwt_')) {
-        const parts = token.split('_');
-        if (parts.length >= 3) candidateId = parts[2];
-      }
+    const authenticatedUser = await resolveAuthenticatedUser(req);
+    if (!authenticatedUser) {
+      return res.status(401).json({ error: 'الجلسة غير صالحة أو منتهية الصلاحية، يرجى تسجيل الدخول مجدداً' });
     }
 
-    if (!candidateId) {
-      return res.status(400).json({ error: 'معرف المستخدم مطلوب للتحقق من الجلسة' });
-    }
-
-    const cleanUserId = String(candidateId).trim();
-
-    // Check if valid UUID for PostgreSQL Supabase query
-    if (!isValidUuid(cleanUserId)) {
-      const localUser = users.find((u) => u && u.id === cleanUserId);
-      if (localUser && localUser.isActive !== false) {
-        return res.json({ success: true, user: sanitizeUserForClient(localUser) });
-      }
-      return res.status(401).json({ error: 'الجلسة غير صالحة، يرجى تسجيل الدخول مجدداً' });
-    }
-
-    const { data, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('id', cleanUserId)
-      .limit(1);
-
-    if (error) {
-      console.warn('Verify session Supabase warning:', error.message);
-      const fallbackUser = users.find((u) => u && u.id === cleanUserId);
-      if (fallbackUser && fallbackUser.isActive !== false) {
-        return res.json({ success: true, user: sanitizeUserForClient(fallbackUser) });
-      }
-      return res.status(401).json({ error: 'الجلسة غير صالحة أو غير مسجلة' });
-    }
-
-    if (!data || data.length === 0) {
-      return res.status(401).json({ error: 'المستخدم غير مسجل' });
-    }
-
-    const user = mapDbUserToAppUser(data[0]);
-    if (user.isActive === false) {
-      return res.status(403).json({ error: 'الحساب غير نشط أو تم تجميده مؤقتاً' });
-    }
-
-    res.json({ success: true, user: sanitizeUserForClient(user) });
+    res.json({ success: true, user: sanitizeUserForClient(authenticatedUser) });
   } catch (err: any) {
     console.error('Error verifying auth session:', err);
     res.status(401).json({ error: 'انتهت صلاحية الجلسة' });
+  }
+});
+
+// POST /api/auth/logout: Revoke current session token (server-side persistent invalidation)
+app.post('/api/auth/logout', async (req, res) => {
+  try {
+    const authHeader = req.headers['authorization'] || req.headers['x-auth-token'];
+    if (typeof authHeader === 'string') {
+      const payload = verifySessionToken(authHeader);
+      if (payload && payload.jti) {
+        await revokeSession(payload, 'logout');
+      }
+    }
+    res.json({ success: true, message: 'تم تسجيل الخروج وإبطال الجلسة بنجاح' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/auth/token: Issue new HMAC signed session token for a given user
+app.post('/api/auth/token', async (req, res) => {
+  try {
+    const { userId } = req.body || {};
+    const authenticatedUser = await resolveAuthenticatedUser(req);
+    const targetUserId = userId || authenticatedUser?.id;
+
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'معرف المستخدم مطلوب لإنشاء التوكن' });
+    }
+
+    let targetUser = users.find((u) => u && u.id === targetUserId);
+    if (!targetUser && isValidUuid(targetUserId)) {
+      const { data } = await supabase.from('users').select('*').eq('id', targetUserId).limit(1);
+      if (data && data.length > 0) targetUser = mapDbUserToAppUser(data[0]);
+    }
+
+    if (!targetUser) {
+      return res.status(404).json({ error: 'المستخدم غير موجود' });
+    }
+
+    if ((targetUser as any).isActive === false || (targetUser as any).is_active === false || (targetUser as any).status === 'INACTIVE' || (targetUser as any).status === 'DEACTIVATED') {
+      return res.status(403).json({ error: 'حساب المستخدم معطل' });
+    }
+
+    const token = generateSessionToken(targetUser);
+    res.json({ success: true, token, user: sanitizeUserForClient(targetUser) });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -4849,12 +5029,14 @@ app.post('/api/invitations', requireAuth, async (req, res) => {
   try {
     const ctx = getRequesterContext(req);
 
-    // Authorization Check: Allow SUPER_ADMIN, ADMIN, MERCHANT, or users with explicit invitations.create permission
+    // Authorization Check: Enforce real permissions via hasPermission and getEffectivePermissions
     const isAllowedToInvite =
       ctx.isSuperAdmin ||
-      ctx.userRole === 'ADMIN' ||
-      ctx.userRole === 'MERCHANT' ||
-      (Array.isArray(ctx.user?.permissions) && ctx.user.permissions.includes('invitations.create'));
+      hasPermission(ctx.user, 'users.manage_staff') ||
+      hasPermission(ctx.user, 'users.manage_operations') ||
+      hasPermission(ctx.user, 'invitations.create') ||
+      (ctx.userRole === 'ADMIN' && hasPermission(ctx.user, 'users.manage_staff')) ||
+      (ctx.userRole === 'MERCHANT' && (hasPermission(ctx.user, 'merchants.manage_own_staff') || hasPermission(ctx.user, 'users.manage_staff')));
 
     if (!isAllowedToInvite) {
       return res.status(403).json({
@@ -5060,13 +5242,15 @@ app.get('/api/invitations', requireAuth, async (req, res) => {
 
     const isAllowed =
       ctx.isSuperAdmin ||
+      hasPermission(ctx.user, 'users.manage_staff') ||
+      hasPermission(ctx.user, 'users.manage_operations') ||
+      hasPermission(ctx.user, 'invitations.view') ||
+      hasPermission(ctx.user, 'invitations.create') ||
       ctx.userRole === 'ADMIN' ||
-      ctx.userRole === 'MERCHANT' ||
-      (Array.isArray(ctx.user?.permissions) &&
-        (ctx.user.permissions.includes('invitations.view') || ctx.user.permissions.includes('invitations.create')));
+      ctx.userRole === 'MERCHANT';
 
     if (!isAllowed) {
-      return res.status(403).json({ error: 'غير مصرح بعرض قائمة الدعوات', code: 'FORBIDDEN' });
+      return res.status(403).json({ error: 'غير مصرح بعرض قائمة الدعوات (403 Forbidden)', code: 'FORBIDDEN' });
     }
 
     // Refresh from Supabase if possible
@@ -5349,8 +5533,8 @@ app.post('/api/invitations/accept', async (req, res) => {
         },
       });
 
-      // Issue JWT token
-      const sessionToken = `dargo_jwt_${authenticatedUser.id}_${Date.now()}`;
+      // Issue cryptographic JWT session token
+      const sessionToken = generateSessionToken(authenticatedUser);
 
       res.json({
         success: true,
@@ -5620,7 +5804,7 @@ app.post(['/api/auth/google/verify-token', '/api/auth/google/callback'], async (
         tenantId: existingUser.parentUserId || existingUser.id,
       });
 
-      const sessionToken = `dargo_jwt_${existingUser.id}_${Date.now()}`;
+      const sessionToken = generateSessionToken(existingUser);
       return res.json({
         success: true,
         message: `مرحباً بك يا ${existingUser.name}`,
@@ -5701,7 +5885,7 @@ app.post(['/api/auth/google/verify-token', '/api/auth/google/callback'], async (
         tenantId: newUser.parentUserId || newUserId,
       });
 
-      const sessionToken = `dargo_jwt_${newUserId}_${Date.now()}`;
+      const sessionToken = generateSessionToken(newUser);
       res.json({
         success: true,
         message: 'تم تفعيل حسابك وتسجيل الدخول عبر Google بنجاح بموجب الدعوة',

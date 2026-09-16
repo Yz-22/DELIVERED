@@ -22,7 +22,7 @@ if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
         const sessionStr = localStorage.getItem('dargo_user_session');
         if (sessionStr) {
           const session = JSON.parse(sessionStr);
-          const token = session.token || (session.user?.id ? `dargo_jwt_${session.user.id}_${Date.now()}` : null);
+          const token = (session?.token && typeof session.token === 'string') ? session.token.trim() : null;
           if (token) {
             const currentHeaders = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
             if (!currentHeaders.has('Authorization')) {
