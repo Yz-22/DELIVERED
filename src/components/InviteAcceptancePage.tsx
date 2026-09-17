@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { User, Role } from '../types/logistics';
 import { supabase } from '../lib/supabase';
+import { storeDelivereSession } from '../lib/auth';
 
 interface InviteAcceptancePageProps {
   token: string;
@@ -92,13 +93,16 @@ export const InviteAcceptancePage: React.FC<InviteAcceptancePageProps> = ({
           throw new Error(data.error || 'رابط الدعوة غير صالح أو منتهي الصلاحية');
         }
 
+        const inv = data.invitation || data;
         if (isMounted) {
-          setInvitation(data.invitation);
-          if (data.invitation?.commercialName) {
-            setName(data.invitation.commercialName);
+          setInvitation(inv);
+          if (inv?.commercialName) {
+            setName(inv.commercialName);
+          } else if (inv?.responsibleName) {
+            setName(inv.responsibleName);
           }
-          if (data.invitation?.phone) {
-            setPhone(data.invitation.phone);
+          if (inv?.phone) {
+            setPhone(inv.phone);
           }
         }
       } catch (err: any) {
@@ -162,8 +166,7 @@ export const InviteAcceptancePage: React.FC<InviteAcceptancePageProps> = ({
       }
 
       if (data.token && data.user) {
-        localStorage.setItem('dargo_token', data.token);
-        localStorage.setItem('dargo_user_session', JSON.stringify({ user: data.user, token: data.token }));
+        storeDelivereSession(data.user, data.token);
         onLoginSuccess(data.user, data.token);
       }
     } catch (err: any) {
@@ -216,9 +219,7 @@ export const InviteAcceptancePage: React.FC<InviteAcceptancePageProps> = ({
           if (res.ok && data.token && data.user) {
             sessionStorage.removeItem('delivere_pending_invite_token');
             localStorage.removeItem('delivere_pending_invite_token');
-            localStorage.setItem('dargo_token', data.token);
-            localStorage.setItem('dargo_jwt_token', data.token);
-            localStorage.setItem('dargo_user_session', JSON.stringify({ user: data.user, token: data.token }));
+            storeDelivereSession(data.user, data.token);
 
             if (window.history.replaceState) {
               window.history.replaceState(null, '', window.location.pathname);

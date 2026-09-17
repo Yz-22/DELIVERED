@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { User, Order, OrderStatus } from '../types/logistics';
 import { GOVERNORATES, JORDAN_AREAS_MAP, STANDARD_DELIVERY_FEES } from '../utils/logisticsHelpers';
+import { getAuthHeaders } from '../lib/auth';
 import { MerchantPos } from './MerchantPos';
 import { MerchantWarehouse } from './MerchantWarehouse';
 import { MerchantInvoices } from './MerchantInvoices';
@@ -89,7 +90,9 @@ export const MerchantPortal: React.FC<MerchantPortalProps> = ({
     if (!selectedMerchantId) return;
     setIsLoading(true);
     try {
-      const res = await fetch(`/api/orders?merchantId=${selectedMerchantId}&limit=100`);
+      const res = await fetch(`/api/orders?merchantId=${selectedMerchantId}&limit=100`, {
+        headers: getAuthHeaders(currentUser),
+      });
       if (res.ok) {
         const data = await res.json();
         setMerchantOrders(data.orders || []);
@@ -154,7 +157,7 @@ export const MerchantPortal: React.FC<MerchantPortalProps> = ({
 
       const res = await fetch('/api/orders', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(currentUser),
         body: JSON.stringify(payload),
       });
 

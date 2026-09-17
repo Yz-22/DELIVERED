@@ -30,6 +30,9 @@ import {
   Check,
   LogOut,
   User as UserIcon,
+  GitBranch,
+  CreditCard,
+  FileText,
 } from 'lucide-react';
 import { User, Role } from '../types/logistics';
 
@@ -44,7 +47,10 @@ export type AppSection =
   | 'merchant_portal'
   | 'settlements'
   | 'reverse_logistics'
-  | 'settings';
+  | 'settings'
+  | 'merchant_branches'
+  | 'cashier_workspace'
+  | 'reports_statements';
 
 interface TopNavbarProps {
   activeSection: AppSection;
@@ -441,19 +447,19 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                   <span>التسويات والمحاسبة</span>
                 </button>
 
-                {/* بوابة التاجر والمخزن */}
+                {/* التقارير وكشوف الحسابات الموحدة */}
                 <button
                   type="button"
-                  onClick={() => onChangeSection('merchant_portal')}
+                  onClick={() => onChangeSection('reports_statements')}
                   className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
-                    activeSection === 'merchant_portal'
+                    activeSection === 'reports_statements'
                       ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
                       : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
                   }`}
-                  title="إدارة المخزن، الفواتير، ونظام المحاسبة للتاجر"
+                  title="كشوفات حساب التجار، عهد الكباتن، والتقارير التشغيلية"
                 >
-                  <Store className="w-3.5 h-3.5" />
-                  <span>بوابة ومخزن التاجر</span>
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>التقارير وكشوف الحسابات</span>
                 </button>
 
                 {/* المرتجعات والرفوف */}
@@ -555,9 +561,38 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                       ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
                       : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
                   }`}
+                  title="الطلبيات، المخزن، الفواتير، ونظام المحاسبة"
                 >
                   <Store className="w-3.5 h-3.5" />
-                  <span>بوابة التاجر (المخزن، الفواتير، المحاسبة، POS)</span>
+                  <span>بوابة المتجر والمخزن</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => onChangeSection('merchant_branches')}
+                  className={`px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
+                    activeSection === 'merchant_branches'
+                      ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
+                  }`}
+                  title="إدارة فروع المتجر، المناقلات المخزنية، وأمناء الصناديق"
+                >
+                  <GitBranch className="w-3.5 h-3.5" />
+                  <span>الفروع والمناقلات</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => onChangeSection('reports_statements')}
+                  className={`px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
+                    activeSection === 'reports_statements'
+                      ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
+                  }`}
+                  title="كشف حساب تفصيلي بحركات القبض والخصم والتسويات"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>كشف الحساب والتقارير</span>
                 </button>
 
                 <button
@@ -570,7 +605,7 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                   }`}
                 >
                   <Receipt className="w-3.5 h-3.5" />
-                  <span>كشوفات التحصيل المالي (COD)</span>
+                  <span>مستحقات التحصيل (COD)</span>
                 </button>
 
                 {onOpenIntegrations && (
@@ -580,9 +615,71 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
                     className="px-3.5 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800/70 flex items-center gap-1.5 transition-all cursor-pointer"
                   >
                     <Code2 className="w-3.5 h-3.5 text-amber-400" />
-                    <span>الربط البرمجي لمتجري</span>
+                    <span>الربط البرمجي</span>
                   </button>
                 )}
+              </>
+            )}
+
+            {/* CASHIER Role Menus - Dedicated POS Workspace */}
+            {role === 'CASHIER' && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => onChangeSection('cashier_workspace')}
+                  className={`px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
+                    activeSection === 'cashier_workspace'
+                      ? 'bg-emerald-500 text-slate-950 font-bold shadow-xs'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
+                  }`}
+                >
+                  <CreditCard className="w-3.5 h-3.5" />
+                  <span>مساحة الكاشير ونقاط البيع (POS)</span>
+                </button>
+              </>
+            )}
+
+            {/* ACCOUNTANT Role Menus */}
+            {role === 'ACCOUNTANT' && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => onChangeSection('reports_statements')}
+                  className={`px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
+                    activeSection === 'reports_statements'
+                      ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
+                  }`}
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>كشوف الحسابات الموحدة</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => onChangeSection('settlements')}
+                  className={`px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
+                    activeSection === 'settlements'
+                      ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
+                  }`}
+                >
+                  <Receipt className="w-3.5 h-3.5" />
+                  <span>التسويات المالية</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => onChangeSection('manifests')}
+                  className={`px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
+                    activeSection === 'manifests'
+                      ? 'bg-amber-500 text-slate-950 font-bold shadow-xs'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
+                  }`}
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                  <span>منافست التوزيع</span>
+                </button>
               </>
             )}
 

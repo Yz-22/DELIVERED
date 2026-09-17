@@ -22,6 +22,7 @@ import {
   BookOpen
 } from 'lucide-react';
 import { User, Order } from '../types/logistics';
+import { getAuthHeaders } from '../lib/auth';
 import { GeneralAccounting } from './GeneralAccounting';
 
 interface MerchantSettlementData {
@@ -76,7 +77,9 @@ export const FinancialSettlements: React.FC = () => {
   const fetchSettlements = async () => {
     setIsLoading(true);
     try {
-      const res = await fetch('/api/settlements');
+      const res = await fetch('/api/settlements', {
+        headers: getAuthHeaders(),
+      });
       if (res.ok) {
         const data = await res.json();
         setMerchantData(data.merchants || []);
@@ -109,7 +112,7 @@ export const FinancialSettlements: React.FC = () => {
     try {
       const res = await fetch(`/api/settlements/merchants/${activeMerchantToSettle.merchant.id}/settle`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           paymentMethod,
           reference: referenceCode || `CLIQ-${Date.now().toString().slice(-6)}`,
@@ -138,7 +141,7 @@ export const FinancialSettlements: React.FC = () => {
     try {
       const res = await fetch(`/api/settlements/drivers/${activeDriverToClose.driver.id}/close-cash`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           notes: driverClosingNotes,
         }),

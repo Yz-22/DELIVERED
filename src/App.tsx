@@ -26,6 +26,9 @@ import { ManifestsStatements } from './components/ManifestsStatements';
 import { StaffPortal } from './components/StaffPortal';
 import { AccessDeniedView } from './components/AccessDeniedView';
 import { AdminSettings } from './components/AdminSettings';
+import { MerchantBranches } from './components/MerchantBranches';
+import { CashierWorkspace } from './components/CashierWorkspace';
+import { ReportsAndStatements } from './components/ReportsAndStatements';
 import { LoginPage } from './components/LoginPage';
 import { InviteAcceptancePage } from './components/InviteAcceptancePage';
 import { supabase } from './lib/supabase';
@@ -34,7 +37,13 @@ import { SuperAdminMasterHub } from './components/SuperAdminMasterHub';
 import { TenantBrandingProvider } from './context/TenantBrandingContext';
 import { Order, OrderStatus, User, Role, OrdersQueryResponse } from './types/logistics';
 import { CheckCircle2, AlertCircle, X } from 'lucide-react';
-import { getAuthHeaders as getAppAuthHeaders, getAuthToken } from './lib/auth';
+import {
+  getAuthHeaders as getAppAuthHeaders,
+  getAuthToken,
+  storeDelivereSession,
+  clearDelivereSession,
+  getStoredDelivereSession,
+} from './lib/auth';
 
 export default function App() {
   // Check OPS portal from subdomain, path, query param, or hash
@@ -90,7 +99,8 @@ export default function App() {
   // Authentication & Current User Session
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [isAuthChecking, setIsAuthChecking] = useState<boolean>(true);
+  const [authState, setAuthState] = useState<'INITIALIZING' | 'AUTHENTICATED' | 'UNAUTHENTICATED'>('INITIALIZING');
+  const isAuthChecking = authState === 'INITIALIZING';
   const [cliqOrder, setCliqOrder] = useState<Order | null>(null);
 
   // Invite Token URL detector
@@ -98,11 +108,28 @@ export default function App() {
     if (typeof window === 'undefined') return null;
     const searchParams = new URLSearchParams(window.location.search);
     const tokenParam = searchParams.get('token') || searchParams.get('invite_token') || searchParams.get('invitation');
-    if (tokenParam) return tokenParam;
-    if (window.location.pathname.startsWith('/invite')) {
-      return searchParams.get('token') || '';
+    if (tokenParam) {
+      try {
+        sessionStorage.setItem('delivere_pending_invite_token', tokenParam);
+        localStorage.setItem('delivere_pending_invite_token', tokenParam);
+      } catch {}
+      return tokenParam;
     }
-    return null;
+    if (window.location.pathname.startsWith('/invite')) {
+      const pToken = searchParams.get('token') || '';
+      if (pToken) {
+        try {
+          sessionStorage.setItem('delivere_pending_invite_token', pToken);
+          localStorage.setItem('delivere_pending_invite_token', pToken);
+        } catch {}
+        return pToken;
+      }
+    }
+    try {
+      return sessionStorage.getItem('delivere_pending_invite_token') || localStorage.getItem('delivere_pending_invite_token');
+    } catch {
+      return null;
+    }
   });
 
   // Active User Role & RBAC Security Matrix
@@ -118,11 +145,12 @@ export default function App() {
             'operations',
             'manifests',
             'users',
-            'staff_portal',
-            'driver_portal',
-            'merchant_portal',
+            'reports_statements',
+            'merchant_branches',
             'settlements',
             'reverse_logistics',
+            'staff_portal',
+            'driver_portal',
             'settings',
           ] as AppSection[],
           canManageUsers: true,
@@ -140,11 +168,12 @@ export default function App() {
             'operations',
             'manifests',
             'users',
-            'staff_portal',
-            'driver_portal',
-            'merchant_portal',
+            'reports_statements',
+            'merchant_branches',
             'settlements',
             'reverse_logistics',
+            'staff_portal',
+            'driver_portal',
             'settings',
           ] as AppSection[],
           canManageUsers: true,
@@ -176,9 +205,7 @@ export default function App() {
       case 'CASHIER':
         return {
           allowedSections: [
-            'staff_portal',
-            'operations_grid',
-            'operations',
+            'cashier_workspace',
           ] as AppSection[],
           canManageUsers: false,
           canAccessReverseLogistics: false,
@@ -191,10 +218,11 @@ export default function App() {
       case 'ACCOUNTANT':
         return {
           allowedSections: [
+            'reports_statements',
             'settlements',
+            'manifests',
             'operations_grid',
             'operations',
-            'manifests',
           ] as AppSection[],
           canManageUsers: false,
           canAccessReverseLogistics: false,
@@ -206,7 +234,12 @@ export default function App() {
         };
       case 'MERCHANT':
         return {
-          allowedSections: ['merchant_portal', 'settlements'] as AppSection[],
+          allowedSections: [
+            'merchant_portal',
+            'merchant_branches',
+            'reports_statements',
+            'settlements',
+          ] as AppSection[],
           canManageUsers: false,
           canAccessReverseLogistics: false,
           canBulkStatusChange: false,
@@ -243,6 +276,8 @@ export default function App() {
   // Helper label for authorized fallback section
   const getSectionTitle = (sec?: AppSection): string => {
     switch (sec) {
+      case 'super_admin_hub':
+        return 'المدير العام للنظام';
       case 'operations_grid':
         return 'لوحة العمليات المركزية';
       case 'operations':
@@ -256,7 +291,13 @@ export default function App() {
       case 'driver_portal':
         return 'بوابة الكابتن وتوصيل الطرود';
       case 'merchant_portal':
-        return 'بوابة التاجر والخدمة الذاتية';
+        return 'بوابة المتجر والمخزن والطلبيات';
+      case 'merchant_branches':
+        return 'إدارة فروع المتجر والمناقلات المخزنية';
+      case 'cashier_workspace':
+        return 'مساحة الكاشير ونقاط البيع السريعة (POS)';
+      case 'reports_statements':
+        return 'التقارير وكشوفات الحسابات الموحدة';
       case 'settlements':
         return 'التسويات والحسابات المالية';
       case 'reverse_logistics':
@@ -339,6 +380,7 @@ export default function App() {
 
   // Fetch Users & Authenticate Session
   const fetchUsers = useCallback(async () => {
+    if (authState !== 'AUTHENTICATED' || !currentUser?.id) return;
     try {
       const headers = getAuthHeaders();
       // Only fetch if an authorization token/header exists
@@ -353,10 +395,12 @@ export default function App() {
     } catch (e) {
       console.error('Error fetching users:', e);
     }
-  }, [getAuthHeaders]);
+  }, [authState, currentUser?.id, getAuthHeaders]);
 
   const handleLoginSuccess = (user: User, token: string) => {
+    storeDelivereSession(user, token);
     setCurrentUser(user);
+    setAuthState('AUTHENTICATED');
     if (user.role === 'SUPER_ADMIN') {
       setActiveSection('super_admin_hub');
     } else if (user.role === 'DRIVER') {
@@ -382,16 +426,14 @@ export default function App() {
     } catch {
       // Ignore network errors on logout
     }
-    localStorage.removeItem('dargo_user_session');
-    localStorage.removeItem('dargo_tms_session');
-    localStorage.removeItem('dargo_token');
-    localStorage.removeItem('dargo_jwt_token');
-    localStorage.removeItem('delivere_auth_token');
-    sessionStorage.removeItem('dargo_user_session');
-    sessionStorage.removeItem('dargo_tms_session');
-    sessionStorage.removeItem('dargo_token');
-    sessionStorage.removeItem('dargo_jwt_token');
+    clearDelivereSession();
+    if (supabase) {
+      try {
+        await supabase.auth.signOut();
+      } catch {}
+    }
     setCurrentUser(null);
+    setAuthState('UNAUTHENTICATED');
     showToast('تم تسجيل الخروج من النظام بنجاح');
   };
 
@@ -412,14 +454,8 @@ export default function App() {
       // Ignore network errors
     }
 
-    const sessionObj = JSON.stringify({
-      user,
-      token: switchToken,
-      savedAt: new Date().toISOString(),
-    });
-    localStorage.setItem('dargo_user_session', sessionObj);
-    localStorage.setItem('dargo_token', switchToken);
-    localStorage.setItem('dargo_jwt_token', switchToken);
+    storeDelivereSession(user, switchToken);
+    setAuthState('AUTHENTICATED');
 
     if (user.role === 'SUPER_ADMIN') {
       setActiveSection('super_admin_hub');
@@ -446,7 +482,7 @@ export default function App() {
     try {
       const res = await fetch('/api/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAppAuthHeaders(currentUser),
         body: JSON.stringify(newUserData),
       });
       if (res.ok) {
@@ -573,6 +609,14 @@ export default function App() {
 
   // Fetch Orders from Express API
   const fetchOrders = useCallback(async () => {
+    if (authState !== 'AUTHENTICATED' || !currentUser?.id) {
+      return;
+    }
+    const headers = getAuthHeaders();
+    if (!headers['Authorization']) {
+      return;
+    }
+
     setIsLoading(true);
     try {
       const queryParams = new URLSearchParams({
@@ -584,8 +628,6 @@ export default function App() {
         driverId: driverFilter,
         merchantId: merchantFilter,
       });
-
-      const headers = getAuthHeaders();
 
       const res = await fetch(`/api/orders?${queryParams.toString()}`, { headers });
       if (res.ok) {
@@ -600,6 +642,9 @@ export default function App() {
       setIsLoading(false);
     }
   }, [
+    authState,
+    currentUser?.id,
+    getAuthHeaders,
     pagination.page,
     pagination.limit,
     searchQuery,
@@ -607,8 +652,6 @@ export default function App() {
     governorateFilter,
     driverFilter,
     merchantFilter,
-    currentUser?.id,
-    currentUser?.role,
   ]);
 
   useEffect(() => {
@@ -642,15 +685,12 @@ export default function App() {
                 if (res.ok && data.token && data.user) {
                   sessionStorage.removeItem('delivere_pending_invite_token');
                   localStorage.removeItem('delivere_pending_invite_token');
-                  localStorage.setItem('dargo_token', data.token);
-                  localStorage.setItem('dargo_jwt_token', data.token);
-                  localStorage.setItem('dargo_user_session', JSON.stringify({ user: data.user, token: data.token }));
+                  storeDelivereSession(data.user, data.token);
                   if (window.history.replaceState) {
                     window.history.replaceState(null, '', window.location.pathname);
                   }
                   if (isMounted) {
                     handleLoginSuccess(data.user, data.token);
-                    setIsAuthChecking(false);
                   }
                   return;
                 } else {
@@ -665,43 +705,53 @@ export default function App() {
           }
         }
 
-        const savedSession = localStorage.getItem('dargo_user_session') || sessionStorage.getItem('dargo_user_session');
-        if (savedSession) {
-          try {
-            const parsed = JSON.parse(savedSession);
-            if (parsed?.user?.id) {
-              if (isMounted) setCurrentUser((prev) => prev || parsed.user);
+        const savedSession = getStoredDelivereSession();
+        if (savedSession?.user?.id && savedSession?.token) {
+          if (isMounted) {
+            setCurrentUser(savedSession.user);
+            setAuthState('AUTHENTICATED');
+          }
 
-              try {
-                const verifyRes = await fetch('/api/auth/verify', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ userId: parsed.user.id }),
-                });
-                if (verifyRes.ok) {
-                  const verified = await verifyRes.json();
-                  if (verified.user && isMounted) {
-                    setCurrentUser(verified.user);
-                  }
-                } else if (verifyRes.status === 401 || verifyRes.status === 403) {
-                  if (isMounted) {
-                    localStorage.removeItem('dargo_user_session');
-                    sessionStorage.removeItem('dargo_user_session');
-                    setCurrentUser(null);
-                  }
-                }
-              } catch (netErr) {
-                console.warn('Server temporarily unreachable during session check, retaining local session:', netErr);
+          try {
+            const verifyRes = await fetch('/api/auth/verify', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${savedSession.token}`,
+              },
+              body: JSON.stringify({ userId: savedSession.user.id }),
+            });
+            if (verifyRes.ok) {
+              const verified = await verifyRes.json();
+              if (verified.user && isMounted) {
+                setCurrentUser(verified.user);
+                storeDelivereSession(verified.user, savedSession.token);
+                setAuthState('AUTHENTICATED');
+              }
+            } else if (verifyRes.status === 401 || verifyRes.status === 403) {
+              if (isMounted) {
+                clearDelivereSession();
+                setCurrentUser(null);
+                setAuthState('UNAUTHENTICATED');
               }
             }
-          } catch (e) {
-            console.error('Session verify error:', e);
+          } catch (netErr) {
+            console.warn('Server temporarily unreachable during session check, retaining local session:', netErr);
+          }
+        } else {
+          if (isMounted) {
+            setAuthState('UNAUTHENTICATED');
           }
         }
       } catch (e) {
         console.error('Auth init error:', e);
+        if (isMounted) {
+          setAuthState('UNAUTHENTICATED');
+        }
       } finally {
-        if (isMounted) setIsAuthChecking(false);
+        if (isMounted) {
+          setAuthState((prev) => (prev === 'INITIALIZING' ? 'UNAUTHENTICATED' : prev));
+        }
       }
     };
 
@@ -712,14 +762,16 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    fetchOrders();
-  }, [fetchOrders]);
+    if (authState === 'AUTHENTICATED' && currentUser?.id) {
+      fetchOrders();
+    }
+  }, [authState, currentUser?.id, fetchOrders]);
 
   useEffect(() => {
-    if (currentUser?.id) {
+    if (authState === 'AUTHENTICATED' && currentUser?.id) {
       fetchUsers();
     }
-  }, [currentUser?.id, fetchUsers]);
+  }, [authState, currentUser?.id, fetchUsers]);
 
   // Checkbox handlers
   const handleToggleSelect = (id: string) => {
@@ -745,7 +797,7 @@ export default function App() {
     try {
       const res = await fetch('/api/orders', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAppAuthHeaders(currentUser),
         body: JSON.stringify(orderData),
       });
       if (res.ok) {
@@ -762,7 +814,7 @@ export default function App() {
     try {
       const res = await fetch('/api/orders/quick', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAppAuthHeaders(currentUser),
         body: JSON.stringify(orderData),
       });
       if (res.ok) {
@@ -779,7 +831,7 @@ export default function App() {
     try {
       const res = await fetch('/api/orders/batch', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAppAuthHeaders(currentUser),
         body: JSON.stringify({ orders: batchOrders }),
       });
       if (res.ok) {
@@ -797,7 +849,7 @@ export default function App() {
     try {
       const res = await fetch(`/api/orders/${orderId}/status`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAppAuthHeaders(currentUser),
         body: JSON.stringify({ status: newStatus, note }),
       });
       if (res.ok) {
@@ -818,7 +870,7 @@ export default function App() {
     try {
       const res = await fetch(`/api/orders/${orderId}/assign`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAppAuthHeaders(currentUser),
         body: JSON.stringify({ driverId }),
       });
       if (res.ok) {
@@ -844,7 +896,7 @@ export default function App() {
     try {
       const res = await fetch('/api/orders/bulk-status', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAppAuthHeaders(currentUser),
         body: JSON.stringify({ ids: selectedIds, status }),
       });
       if (res.ok) {
@@ -867,7 +919,7 @@ export default function App() {
     try {
       const res = await fetch('/api/orders/bulk-assign', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAppAuthHeaders(currentUser),
         body: JSON.stringify({ ids: selectedIds, driverId }),
       });
       if (res.ok) {
@@ -1347,6 +1399,70 @@ export default function App() {
           <AccessDeniedView
             sectionTitle="إعدادات النظام، التسعير والمناطق"
             requiredRole="مدير العمليات والنظام (ADMIN)"
+            currentRole={currentRole}
+            onNavigateHome={() => setActiveSection(permissions.allowedSections[0])}
+            homeSectionName={getSectionTitle(permissions.allowedSections[0])}
+          />
+        )
+      )}
+
+      {/* 12. Merchant Multi-Branch & Stock Transfer Architecture */}
+      {activeSection === 'merchant_branches' && (
+        permissions.allowedSections.includes('merchant_branches') ? (
+          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5">
+            <MerchantBranches
+              currentUser={currentUser}
+              merchants={merchants}
+              merchantId={currentUser?.role === 'MERCHANT' ? currentUser.id : undefined}
+            />
+          </main>
+        ) : (
+          <AccessDeniedView
+            sectionTitle="إدارة فروع المتجر والمناقلات المخزنية"
+            requiredRole="حساب تاجر أو إدارة العمليات"
+            currentRole={currentRole}
+            onNavigateHome={() => setActiveSection(permissions.allowedSections[0])}
+            homeSectionName={getSectionTitle(permissions.allowedSections[0])}
+          />
+        )
+      )}
+
+      {/* 13. Cashier & POS Dedicated Workspace */}
+      {activeSection === 'cashier_workspace' && (
+        permissions.allowedSections.includes('cashier_workspace') && currentUser ? (
+          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5">
+            <CashierWorkspace
+              currentUser={currentUser}
+              merchants={merchants}
+              onOrderCreated={fetchOrders}
+              onLogout={handleLogout}
+            />
+          </main>
+        ) : (
+          <AccessDeniedView
+            sectionTitle="مساحة الكاشير ونقاط البيع السريعة (POS)"
+            requiredRole="أمين الصندوق (CASHIER)"
+            currentRole={currentRole}
+            onNavigateHome={() => setActiveSection(permissions.allowedSections[0])}
+            homeSectionName={getSectionTitle(permissions.allowedSections[0])}
+          />
+        )
+      )}
+
+      {/* 14. Statements & Financial / Operational Reports */}
+      {activeSection === 'reports_statements' && (
+        permissions.allowedSections.includes('reports_statements') ? (
+          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5">
+            <ReportsAndStatements
+              currentUser={currentUser}
+              merchants={merchants}
+              drivers={drivers}
+            />
+          </main>
+        ) : (
+          <AccessDeniedView
+            sectionTitle="التقارير وكشوفات الحسابات الموحدة"
+            requiredRole="محاسب مالي أو إدارة العمليات أو تاجر"
             currentRole={currentRole}
             onNavigateHome={() => setActiveSection(permissions.allowedSections[0])}
             homeSectionName={getSectionTitle(permissions.allowedSections[0])}

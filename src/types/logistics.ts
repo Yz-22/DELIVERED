@@ -338,6 +338,7 @@ export interface User {
   pricePlanId?: string;
   previousPriceList?: string;
   branch?: string;
+  branchId?: string;
   department?: string;
   accountManager?: string;
   isActive: boolean;
@@ -370,6 +371,10 @@ export interface User {
   notes?: string;
 
   // Hierarchical RBAC Properties
+  tenantId?: string | null;         // Tenant ID for multi-tenant isolation
+  businessName?: string;            // Business or trade name
+  createdAt?: string;               // Account registration timestamp
+  updatedAt?: string;               // Last updated timestamp
   parentUserId?: string | null;     // ID of the Operations Admin who manages this user
   createdById?: string;             // Who created this account
   permissions?: string[];           // Active specific permissions assigned to this user
@@ -448,6 +453,8 @@ export interface Order {
   
   merchantId: string;
   merchant?: User;
+  branchId?: string;
+  branchName?: string;
 
   driverId?: string | null;
   driver?: User | null;

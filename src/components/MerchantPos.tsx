@@ -114,7 +114,7 @@ function playPosBeep(type: 'success' | 'error' = 'success') {
 
 interface MerchantPosProps {
   currentMerchant: UserType;
-  onOpenWaybill: (order: Order) => void;
+  onOpenWaybill?: (order: Order) => void;
   onOrderCreated?: () => void;
 }
 

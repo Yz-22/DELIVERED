@@ -33,6 +33,7 @@ import {
   Voucher,
   AccountingOverview
 } from '../types/accounting';
+import { getAuthHeaders } from '../lib/auth';
 import { formatCurrency } from '../utils/logisticsHelpers';
 
 export const GeneralAccounting: React.FC = () => {
@@ -95,11 +96,12 @@ export const GeneralAccounting: React.FC = () => {
   const fetchAccountingData = async () => {
     setIsLoading(true);
     try {
+      const authHeaders = getAuthHeaders();
       const [ovRes, accRes, jeRes, vcRes] = await Promise.all([
-        fetch('/api/accounting/overview'),
-        fetch('/api/accounting/accounts'),
-        fetch('/api/accounting/journal-entries'),
-        fetch('/api/accounting/vouchers'),
+        fetch('/api/accounting/overview', { headers: authHeaders }),
+        fetch('/api/accounting/accounts', { headers: authHeaders }),
+        fetch('/api/accounting/journal-entries', { headers: authHeaders }),
+        fetch('/api/accounting/vouchers', { headers: authHeaders }),
       ]);
 
       if (ovRes.ok) {
@@ -150,7 +152,7 @@ export const GeneralAccounting: React.FC = () => {
     try {
       const res = await fetch('/api/accounting/journal-entries', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           date: entryDate,
           description: entryDescription.trim(),
@@ -190,7 +192,7 @@ export const GeneralAccounting: React.FC = () => {
     try {
       const res = await fetch('/api/accounting/vouchers', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           type: voucherType,
           date: voucherDate,
@@ -231,7 +233,7 @@ export const GeneralAccounting: React.FC = () => {
     try {
       const res = await fetch('/api/accounting/accounts', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           code: newAccForm.code.trim(),
           nameAr: newAccForm.nameAr.trim(),

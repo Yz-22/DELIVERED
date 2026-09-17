@@ -44,6 +44,7 @@ import {
   SubscriptionStatus,
   SAAS_SUBSCRIPTION_PLANS,
 } from '../types/logistics';
+import { getAuthHeaders } from '../lib/auth';
 
 interface SuperAdminMasterHubProps {
   users: User[];
@@ -140,7 +141,7 @@ export const SuperAdminMasterHub: React.FC<SuperAdminMasterHubProps> = ({
     try {
       const res = await fetch('/api/superadmin/subscriptions/toggle-status', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           userId: user.id,
           status: newStatus,
@@ -174,7 +175,7 @@ export const SuperAdminMasterHub: React.FC<SuperAdminMasterHubProps> = ({
     try {
       const res = await fetch('/api/superadmin/subscriptions/renew', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           userId: selectedUserForRenewal.id,
           planId: renewalPlan,
@@ -204,7 +205,7 @@ export const SuperAdminMasterHub: React.FC<SuperAdminMasterHubProps> = ({
     try {
       const res = await fetch('/api/superadmin/subscriptions/toggle-module', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           userId: user.id,
           moduleKey,
@@ -229,7 +230,7 @@ export const SuperAdminMasterHub: React.FC<SuperAdminMasterHubProps> = ({
     try {
       const res = await fetch(`/api/users/${selectedUserForPassword.id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ password: newPasswordVal.trim() }),
       });
 
@@ -259,7 +260,7 @@ export const SuperAdminMasterHub: React.FC<SuperAdminMasterHubProps> = ({
 
       const res = await fetch('/api/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           name: newAccName.trim(),
           email: cleanEmail,

@@ -12,6 +12,7 @@ import {
   Server,
 } from 'lucide-react';
 import { User as UserType } from '../types/logistics';
+import { storeDelivereSession } from '../lib/auth';
 
 interface OpsSuperAdminLoginProps {
   onLoginSuccess: (user: UserType, token: string) => void;
@@ -69,23 +70,7 @@ export const OpsSuperAdminLogin: React.FC<OpsSuperAdminLoginProps> = ({
 
       if (res.ok && data?.user) {
         const sessionToken = data.token || '';
-        localStorage.setItem(
-          'dargo_user_session',
-          JSON.stringify({
-            user: data.user,
-            token: sessionToken,
-            savedAt: new Date().toISOString(),
-          })
-        );
-        localStorage.setItem(
-          'dargo_tms_session',
-          JSON.stringify({
-            user: data.user,
-            token: sessionToken,
-          })
-        );
-        localStorage.setItem('dargo_token', sessionToken);
-        localStorage.setItem('dargo_jwt_token', sessionToken);
+        storeDelivereSession(data.user, sessionToken, true);
         onLoginSuccess(data.user, sessionToken);
         return;
       }

@@ -829,6 +829,85 @@ let merchantInvoices: MerchantInvoice[] = [];
 let merchantExpenses: MerchantExpense[] = [];
 let orders: Order[] = [];
 
+export interface MerchantBranchRecord {
+  id: string;
+  merchantId: string;
+  tenantId?: string | null;
+  name: string;
+  code?: string;
+  phone?: string;
+  address?: string;
+  governorate?: string;
+  city?: string;
+  latitude?: number;
+  longitude?: number;
+  isMain: boolean;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MerchantStockTransferRecord {
+  id: string;
+  merchantId: string;
+  tenantId?: string | null;
+  productId: string;
+  productName?: string;
+  sourceBranchId: string;
+  sourceBranchName?: string;
+  destBranchId: string;
+  destBranchName?: string;
+  quantity: number;
+  status: 'PENDING' | 'IN_TRANSIT' | 'COMPLETED' | 'CANCELLED';
+  notes?: string;
+  createdBy?: string;
+  createdByName?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export let merchantBranches: MerchantBranchRecord[] = [];
+export let merchantStockTransfers: MerchantStockTransferRecord[] = [];
+
+// Helper: Ensure every merchant has a main branch backfilled
+export function ensureMerchantBranches() {
+  const merchants = users.filter((u) => u.role === 'MERCHANT');
+  for (const m of merchants) {
+    const existing = merchantBranches.find((b) => b.merchantId === m.id);
+    if (!existing) {
+      const mainBranch: MerchantBranchRecord = {
+        id: `br-${m.id}-main`,
+        merchantId: m.id,
+        tenantId: m.parentUserId || m.tenantId || null,
+        name: `${m.storeName || m.name} - الفرع الرئيسي`,
+        code: 'MAIN-01',
+        phone: m.phone || '0790000000',
+        address: m.address || 'المقر الرئيسي للمتجر',
+        governorate: m.city || 'عمان',
+        city: m.city || 'عمان',
+        isMain: true,
+        isActive: true,
+        createdAt: m.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      merchantBranches.push(mainBranch);
+    }
+  }
+
+  // Backfill orders with empty branchId
+  for (const ord of orders) {
+    if (ord.merchantId && !ord.branchId) {
+      const mainB =
+        merchantBranches.find((b) => b.merchantId === ord.merchantId && b.isMain) ||
+        merchantBranches.find((b) => b.merchantId === ord.merchantId);
+      if (mainB) {
+        ord.branchId = mainB.id;
+        ord.branchName = mainB.name;
+      }
+    }
+  }
+}
+
 let nextSequenceNumber = 1001;
 
 // =============================================================
@@ -1019,6 +1098,7 @@ export function ensureTenantSubscriptions() {
 
 // Ensure initial run
 ensureTenantSubscriptions();
+ensureMerchantBranches();
 
 // Helper: Central Effective-Status Resolver (Single Source of Truth for Subscriptions)
 export function getTenantSubscriptionContext(tenantId?: string): TenantSubscriptionContext {
@@ -1596,11 +1676,17 @@ interface RequesterContext {
   userId?: string;
   userRole?: string;
   tenantId?: string;
+  branchId?: string;
+  branchName?: string;
+  workspace?: string;
   user?: User;
   isSuperAdmin: boolean;
   isAdmin: boolean;
   isMerchant: boolean;
   isDriver: boolean;
+  isCashier: boolean;
+  isOperator: boolean;
+  isAccountant: boolean;
 }
 
 // =============================================================
@@ -1837,11 +1923,17 @@ function getRequesterContext(req: express.Request): RequesterContext {
       userId: undefined,
       userRole: undefined,
       tenantId: undefined,
+      branchId: undefined,
+      branchName: undefined,
+      workspace: undefined,
       user: undefined,
       isSuperAdmin: false,
       isAdmin: false,
       isMerchant: false,
       isDriver: false,
+      isCashier: false,
+      isOperator: false,
+      isAccountant: false,
     };
   }
 
@@ -1860,16 +1952,37 @@ function getRequesterContext(req: express.Request): RequesterContext {
   const isAdmin = userRole === 'ADMIN';
   const isMerchant = userRole === 'MERCHANT';
   const isDriver = userRole === 'DRIVER';
+  const isCashier = userRole === 'CASHIER';
+  const isOperator = userRole === 'OPERATOR';
+  const isAccountant = userRole === 'ACCOUNTANT';
+
+  const branchId = user.branchId || (user as any).branch_id || undefined;
+  const branchName = user.branch || undefined;
+
+  let workspace = 'DELIVERY_COMPANY_WORKSPACE';
+  if (isSuperAdmin) workspace = 'PLATFORM_WORKSPACE';
+  else if (isAdmin) workspace = 'DELIVERY_COMPANY_WORKSPACE';
+  else if (isMerchant) workspace = 'MERCHANT_WORKSPACE';
+  else if (isDriver) workspace = 'DRIVER_WORKSPACE';
+  else if (isOperator) workspace = 'OPERATOR_WORKSPACE';
+  else if (isAccountant) workspace = 'ACCOUNTANT_WORKSPACE';
+  else if (isCashier) workspace = 'CASHIER_WORKSPACE';
 
   return {
     userId: user.id,
     userRole,
     tenantId,
+    branchId,
+    branchName,
+    workspace,
     user,
     isSuperAdmin,
     isAdmin,
     isMerchant,
     isDriver,
+    isCashier,
+    isOperator,
+    isAccountant,
   };
 }
 
@@ -1917,6 +2030,18 @@ function canAccessOrder(ctx: RequesterContext, order: Order | undefined | null):
   if (!order) return false;
   if (ctx.isSuperAdmin) return true;
   if (!ctx.user) return false;
+
+  // CASHIER Role: Strictly isolated to their own merchant and assigned branch
+  if (ctx.isCashier) {
+    const cashierMerchantId = ctx.user.parentUserId || ctx.tenantId;
+    if (order.merchantId !== cashierMerchantId) return false;
+    const cashierBranchId = ctx.branchId || ctx.user.branchId;
+    const cashierBranchName = ctx.branchName || ctx.user.branch;
+    if (cashierBranchId && order.branchId && order.branchId !== cashierBranchId) return false;
+    if (cashierBranchName && order.branchName && order.branchName !== cashierBranchName) return false;
+    return true;
+  }
+
   if (ctx.user.id === order.merchantId) return true;
   if (ctx.user.id === order.driverId) return true;
 
@@ -1931,15 +2056,27 @@ function canAccessOrder(ctx: RequesterContext, order: Order | undefined | null):
   return false;
 }
 
-// Commercial Data Privacy: Checking whether a user can view merchant cost prices
+// Commercial Data Privacy: Strictly isolating merchant cost prices from carrier admin and cashiers
 function canViewCostPrices(ctx: RequesterContext, merchantId?: string): boolean {
-  if (ctx.isSuperAdmin) return true;
   if (!ctx.user) return false;
-  if (merchantId && ctx.user.id === merchantId) return true; // Merchant viewing their own data
+  
+  // Carrier Admins, Drivers, and Cashiers must NEVER view internal merchant cost prices
+  if (ctx.userRole === 'ADMIN' || ctx.userRole === 'DRIVER' || ctx.userRole === 'CASHIER') {
+    return false;
+  }
 
-  return hasPermission(ctx.user, 'warehouse.view_cost_price') ||
-         hasPermission(ctx.user, 'merchant.cost_view') ||
-         hasPermission(ctx.user, 'merchant.products.cost_view');
+  // Merchant owner viewing their own internal warehouse
+  if (merchantId && ctx.user.id === merchantId) return true;
+
+  // Merchant internal staff/manager authorized by the merchant
+  if (ctx.user.parentUserId && merchantId && ctx.user.parentUserId === merchantId) {
+    return hasPermission(ctx.user, 'merchant.cost_view') ||
+           hasPermission(ctx.user, 'warehouse.view_cost_price') ||
+           hasPermission(ctx.user, 'merchant.products.cost_view');
+  }
+
+  if (ctx.isSuperAdmin) return true;
+  return false;
 }
 
 // Authentication Middlewares
@@ -5093,6 +5230,12 @@ app.post('/api/invitations', requireAuth, async (req, res) => {
         });
       }
     } else if (ctx.userRole === 'ADMIN') {
+      if (role === 'CASHIER') {
+        return res.status(403).json({
+          error: 'موظف الكاشير ونقاط البيع (CASHIER) يجب أن يُدعى حصرياً من قبل التاجر صاحب المتجر والفرع المعتمد.',
+          code: 'CASHIER_MUST_BE_INVITED_BY_MERCHANT',
+        });
+      }
       if (targetRank >= 80) {
         return res.status(403).json({
           error: 'مدير العمليات يستطيع فقط دعوة التجار، السائقين، والموظفين الميدانيين ضمن حسابه',
@@ -5296,47 +5439,50 @@ app.get('/api/invitations', requireAuth, async (req, res) => {
   }
 });
 
-// 3. GET /api/invitations/verify: Public endpoint to verify token validity before showing accept UI
-app.get('/api/invitations/verify', async (req, res) => {
+// 3. GET /api/invitations/verify: Public Zero-Trust endpoint to verify token validity before showing accept UI
+app.get(['/api/invitations/verify', '/invitations/verify'], async (req, res) => {
   try {
-    const token = String(req.query.token || '').trim();
+    const rawToken = req.query.token || req.headers['x-invitation-token'] || '';
+    const token = String(rawToken).trim();
     if (!token) {
-      return res.status(400).json({ error: 'رمز الدعوة مطلوب للتحقق', code: 'TOKEN_REQUIRED' });
+      return res.status(400).json({ valid: false, error: 'رمز الدعوة مطلوب للتحقق', code: 'TOKEN_REQUIRED' });
     }
 
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
 
-    // Look up in memory
+    // Look up in memory first
     let invitation = userInvitations.find((i) => i.tokenHash === tokenHash);
 
-    // If not in memory, query Supabase
+    // If not in memory, query Supabase database
     if (!invitation) {
       try {
-        const { data: dbData } = await supabase
+        const { data: dbData, error: dbErr } = await supabase
           .from('user_invitations')
           .select('*')
           .eq('token_hash', tokenHash)
           .limit(1);
 
-        if (dbData && dbData.length > 0) {
+        if (!dbErr && dbData && dbData.length > 0) {
           invitation = mapDbInvitationToAppInvitation(dbData[0]);
           userInvitations.push(invitation);
         }
-      } catch {
-        // ignore
+      } catch (err: any) {
+        console.warn('DB invitation verify lookup warning:', err?.message);
       }
     }
 
     if (!invitation) {
       return res.status(404).json({
+        valid: false,
         error: 'رابط الدعوة غير صالح أو غير موجود في النظام.',
         code: 'INVITATION_NOT_FOUND',
       });
     }
 
-    // Check state and expiry
+    // Check status constraints
     if (invitation.status === 'ACCEPTED') {
       return res.status(400).json({
+        valid: false,
         error: 'تم استخدام رابط الدعوة هذا مسبقاً وتفعيل الحساب.',
         code: 'INVITATION_ALREADY_USED',
       });
@@ -5344,6 +5490,7 @@ app.get('/api/invitations/verify', async (req, res) => {
 
     if (invitation.status === 'REVOKED') {
       return res.status(400).json({
+        valid: false,
         error: 'تم إلغاء رابط الدعوة هذا من قبل إدارة العمليات.',
         code: 'INVITATION_REVOKED',
       });
@@ -5352,37 +5499,49 @@ app.get('/api/invitations/verify', async (req, res) => {
     if (new Date() > new Date(invitation.expiresAt) || invitation.status === 'EXPIRED') {
       invitation.status = 'EXPIRED';
       return res.status(400).json({
+        valid: false,
         error: 'انتهت صلاحية رابط الدعوة. يرجى طلب رابط دعوة جديد من الإدارة.',
         code: 'INVITATION_EXPIRED',
       });
     }
 
-    // Return safe public metadata (no hashes, no secrets)
-    res.json({
+    if (invitation.status !== 'PENDING') {
+      return res.status(400).json({
+        valid: false,
+        error: 'حالة رابط الدعوة غير صالحة.',
+        code: 'INVITATION_INVALID_STATUS',
+      });
+    }
+
+    // PART 6: Safe preview ONLY.
+    // Strictly omit: token_hash, tenant_id, created_by_id, max_allowed_permissions, permissions, secrets.
+    const safePreview = {
       valid: true,
-      invitation: {
-        id: invitation.id,
-        email: invitation.email,
-        phone: invitation.phone,
-        role: invitation.role,
-        roleName: invitation.roleName,
-        commercialName: invitation.commercialName,
-        companyName: invitation.companyName,
-        inviterName: invitation.inviterName,
-        inviterRole: invitation.inviterRole,
-        branch: invitation.branch,
-        city: invitation.city,
-        expiresAt: invitation.expiresAt,
-        status: invitation.status,
-      },
+      role: invitation.role,
+      roleName: invitation.roleName || invitation.role,
+      commercialName: invitation.commercialName || invitation.companyName || '',
+      responsibleName: invitation.companyName || invitation.commercialName || '',
+      companyName: invitation.companyName || '',
+      inviterName: invitation.inviterName || '',
+      branch: invitation.branch || '',
+      city: invitation.city || '',
+      email: invitation.email || '',
+      phone: invitation.phone || '',
+      expiresAt: invitation.expiresAt,
+    };
+
+    return res.json({
+      valid: true,
+      ...safePreview,
+      invitation: safePreview,
     });
   } catch (err: any) {
-    res.status(500).json({ error: 'فشل التحقق من رابط الدعوة: ' + err.message });
+    return res.status(500).json({ valid: false, error: 'فشل التحقق من رابط الدعوة: ' + err.message });
   }
 });
 
 // 4. POST /api/invitations/accept: Accept invitation, link or create user, and issue session token
-app.post('/api/invitations/accept', async (req, res) => {
+app.post(['/api/invitations/accept', '/invitations/accept'], async (req, res) => {
   try {
     const { token, name, password, phone, googleId, googleEmail } = req.body;
 
@@ -7479,6 +7638,534 @@ app.post('/api/accounting/accounts', requireAuth, (req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: 'فشل في إنشاء الحساب: ' + err.message });
   }
+});
+
+// =============================================================
+// Merchant Multi-Branch & Stock Transfer Architecture Endpoints
+// =============================================================
+
+// GET /api/merchants/:merchantId/branches
+app.get('/api/merchants/:merchantId/branches', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
+  const { merchantId } = req.params;
+
+  ensureMerchantBranches();
+
+  // CASHIER Role: Only return their assigned branch for their merchant
+  if (ctx.isCashier) {
+    const cashierMerchantId = ctx.user?.parentUserId || ctx.tenantId;
+    if (cashierMerchantId !== merchantId) {
+      return res.status(403).json({ error: 'غير مصرح لك باستعراض فروع متجر آخر' });
+    }
+    const myBranchId = ctx.branchId || (ctx.user as any)?.branchId;
+    const myBranchName = ctx.branchName || ctx.user?.branch;
+    const matched = merchantBranches.filter(
+      (b) => b.merchantId === merchantId && (b.id === myBranchId || b.name === myBranchName)
+    );
+    return res.json({
+      branches: matched.length > 0 ? matched : merchantBranches.filter((b) => b.merchantId === merchantId && b.isMain),
+    });
+  }
+
+  // General check: Super Admin, Delivery Company Admin, or the Merchant themselves
+  if (!canAccessMerchant(ctx, merchantId) && ctx.userId !== merchantId) {
+    return res.status(403).json({ error: 'غير مصرح باستعراض فروع هذا المتجر' });
+  }
+
+  const branches = merchantBranches.filter((b) => b.merchantId === merchantId);
+  res.json({ branches });
+});
+
+// POST /api/merchants/:merchantId/branches
+app.post('/api/merchants/:merchantId/branches', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
+  const { merchantId } = req.params;
+
+  // Only the Merchant owner or Platform Super Admin can create branches
+  if (!ctx.isSuperAdmin && ctx.userId !== merchantId) {
+    return res.status(403).json({
+      error: 'فقط صاحب المتجر أو إدارة المنصة يملكون صلاحية إنشاء وتوسيع الفروع',
+      code: 'FORBIDDEN',
+    });
+  }
+
+  const { name, code, phone, address, governorate, city, isMain, isActive } = req.body;
+  if (!name || !String(name).trim()) {
+    return res.status(400).json({ error: 'اسم الفرع مطلوب' });
+  }
+
+  ensureMerchantBranches();
+
+  const branchCount = merchantBranches.filter((b) => b.merchantId === merchantId).length;
+  const shouldBeMain = isMain || branchCount === 0;
+
+  if (shouldBeMain) {
+    merchantBranches.forEach((b) => {
+      if (b.merchantId === merchantId) b.isMain = false;
+    });
+  }
+
+  const newBranch: MerchantBranchRecord = {
+    id: `br-${merchantId}-${Date.now().toString(36)}`,
+    merchantId,
+    tenantId: ctx.tenantId || null,
+    name: String(name).trim(),
+    code: code ? String(code).trim() : `BR-${branchCount + 1}`,
+    phone: phone ? String(phone).trim() : '',
+    address: address ? String(address).trim() : '',
+    governorate: governorate || 'عمان',
+    city: city || 'عمان',
+    isMain: shouldBeMain,
+    isActive: isActive !== false,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  merchantBranches.push(newBranch);
+  saveDatabase();
+  res.status(201).json({ success: true, branch: newBranch });
+});
+
+// PUT /api/merchants/:merchantId/branches/:branchId
+app.put('/api/merchants/:merchantId/branches/:branchId', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
+  const { merchantId, branchId } = req.params;
+
+  if (!ctx.isSuperAdmin && ctx.userId !== merchantId) {
+    return res.status(403).json({ error: 'غير مصرح بتعديل بيانات هذا الفرع' });
+  }
+
+  const branch = merchantBranches.find((b) => b.id === branchId && b.merchantId === merchantId);
+  if (!branch) {
+    return res.status(404).json({ error: 'الفرع غير موجود' });
+  }
+
+  const { name, code, phone, address, governorate, city, isMain, isActive } = req.body;
+
+  if (isMain) {
+    merchantBranches.forEach((b) => {
+      if (b.merchantId === merchantId) b.isMain = false;
+    });
+    branch.isMain = true;
+  } else if (isMain === false && branch.isMain) {
+    const others = merchantBranches.filter((b) => b.merchantId === merchantId && b.id !== branchId);
+    if (others.length > 0) {
+      branch.isMain = false;
+      others[0].isMain = true;
+    }
+  }
+
+  if (name !== undefined) branch.name = String(name).trim();
+  if (code !== undefined) branch.code = String(code).trim();
+  if (phone !== undefined) branch.phone = String(phone).trim();
+  if (address !== undefined) branch.address = String(address).trim();
+  if (governorate !== undefined) branch.governorate = governorate;
+  if (city !== undefined) branch.city = city;
+  if (isActive !== undefined) branch.isActive = Boolean(isActive);
+  branch.updatedAt = new Date().toISOString();
+
+  saveDatabase();
+  res.json({ success: true, branch });
+});
+
+// DELETE /api/merchants/:merchantId/branches/:branchId
+app.delete('/api/merchants/:merchantId/branches/:branchId', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
+  const { merchantId, branchId } = req.params;
+
+  if (!ctx.isSuperAdmin && ctx.userId !== merchantId) {
+    return res.status(403).json({ error: 'غير مصرح بحذف هذا الفرع' });
+  }
+
+  const branch = merchantBranches.find((b) => b.id === branchId && b.merchantId === merchantId);
+  if (!branch) {
+    return res.status(404).json({ error: 'الفرع غير موجود' });
+  }
+
+  if (branch.isMain) {
+    return res.status(400).json({ error: 'لا يمكن حذف الفرع الرئيسي للمتجر' });
+  }
+
+  const hasOrders = orders.some((o) => o.branchId === branchId);
+  if (hasOrders) {
+    // Soft deactivate instead of hard delete
+    branch.isActive = false;
+    branch.updatedAt = new Date().toISOString();
+    saveDatabase();
+    return res.json({ success: true, message: 'تم تعطيل الفرع لاحتوائه على شحنات سابقة', deactivated: true });
+  }
+
+  merchantBranches = merchantBranches.filter((b) => b.id !== branchId);
+  saveDatabase();
+  res.json({ success: true, message: 'تم حذف الفرع بنجاح' });
+});
+
+// POST /api/merchants/:merchantId/stock-transfers
+app.post('/api/merchants/:merchantId/stock-transfers', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
+  const { merchantId } = req.params;
+
+  if (!ctx.isSuperAdmin && ctx.userId !== merchantId) {
+    return res.status(403).json({ error: 'غير مصرح بإجراء مناقلات مخزنية بين الفروع' });
+  }
+
+  const { productId, sourceBranchId, destBranchId, quantity, notes } = req.body;
+  if (!productId || !sourceBranchId || !destBranchId || !quantity || quantity <= 0) {
+    return res.status(400).json({
+      error: 'بيانات المناقلة غير مكتملة (الصنف، الفرع المصدر، الفرع الوجهة، والكمية مطلوبة)',
+    });
+  }
+
+  const prod = merchantProducts.find((p) => p.id === productId && p.merchantId === merchantId);
+  const srcB = merchantBranches.find((b) => b.id === sourceBranchId);
+  const dstB = merchantBranches.find((b) => b.id === destBranchId);
+
+  const transfer: MerchantStockTransferRecord = {
+    id: `xfer-${Date.now()}`,
+    merchantId,
+    tenantId: ctx.tenantId || null,
+    productId,
+    productName: prod?.name || 'صنف مخزني',
+    sourceBranchId,
+    sourceBranchName: srcB?.name || 'الفرع المصدر',
+    destBranchId,
+    destBranchName: dstB?.name || 'الفرع الوجهة',
+    quantity: Number(quantity),
+    status: 'COMPLETED',
+    notes: notes || '',
+    createdBy: ctx.userId,
+    createdByName: ctx.user?.name || 'المسؤول',
+    createdAt: new Date().toISOString(),
+  };
+
+  merchantStockTransfers.push(transfer);
+  saveDatabase();
+  res.status(201).json({ success: true, transfer });
+});
+
+// GET /api/merchants/:merchantId/stock-transfers
+app.get('/api/merchants/:merchantId/stock-transfers', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
+  const { merchantId } = req.params;
+
+  if (!canAccessMerchant(ctx, merchantId) && ctx.userId !== merchantId) {
+    return res.status(403).json({ error: 'غير مصرح' });
+  }
+
+  const list = merchantStockTransfers.filter((t) => t.merchantId === merchantId);
+  res.json({ transfers: [...list].reverse() });
+});
+
+// =============================================================
+// Unified Financial Statements & Operations Reports Endpoints
+// =============================================================
+
+// GET /api/reports/merchant-statement
+app.get('/api/reports/merchant-statement', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
+  const { merchantId, branchId, dateFrom, dateTo } = req.query as {
+    merchantId?: string;
+    branchId?: string;
+    dateFrom?: string;
+    dateTo?: string;
+  };
+
+  if (!merchantId) {
+    return res.status(400).json({ error: 'معرف التاجر مطلوب' });
+  }
+
+  // Strict Authorization check
+  if (!ctx.isSuperAdmin && ctx.userRole !== 'ADMIN' && ctx.userRole !== 'ACCOUNTANT' && ctx.userId !== merchantId) {
+    return res.status(403).json({ error: 'غير مصرح بالاطلاع على كشف حساب هذا التاجر' });
+  }
+
+  const targetFrom = dateFrom ? new Date(dateFrom).getTime() : 0;
+  const targetTo = dateTo ? new Date(`${dateTo}T23:59:59.999Z`).getTime() : Date.now();
+
+  ensureMerchantBranches();
+
+  const merchantObj = users.find((u) => u.id === merchantId);
+  const merchantName = merchantObj ? merchantObj.storeName || merchantObj.name : 'التاجر';
+
+  // Find all orders for this merchant
+  let merchantOrders = orders.filter((o) => o.merchantId === merchantId);
+  if (branchId && branchId !== 'ALL') {
+    merchantOrders = merchantOrders.filter((o) => o.branchId === branchId);
+  }
+
+  // Find payment vouchers made to this merchant (settlements)
+  const merchantVouchers = vouchers.filter(
+    (v) =>
+      v.type === 'PAYMENT' &&
+      (v.beneficiaryOrPayer === merchantName ||
+        (merchantObj && v.beneficiaryOrPayer === merchantObj.name) ||
+        v.notes.includes(merchantName))
+  );
+
+  interface StatementTx {
+    id: string;
+    date: string;
+    timestamp: number;
+    reference: string;
+    branchName: string;
+    type: 'DELIVERY_COD' | 'DELIVERY_FEE' | 'SETTLEMENT_PAYOUT' | 'RETURN_FEE';
+    description: string;
+    debit: number;
+    credit: number;
+    runningBalance: number;
+  }
+
+  const allTxs: StatementTx[] = [];
+
+  for (const ord of merchantOrders) {
+    const ordDate = ord.deliveredAt || ord.createdAt;
+    const ts = new Date(ordDate).getTime();
+    const branchObj = merchantBranches.find((b) => b.id === ord.branchId);
+    const branchName = branchObj ? branchObj.name : (ord.branchName || 'الفرع الرئيسي');
+
+    if (ord.status === 'DELIVERED') {
+      // 1. COD collected from customer -> CREDIT to merchant
+      allTxs.push({
+        id: `tx-cod-${ord.id}`,
+        date: new Date(ordDate).toISOString().replace('T', ' ').substring(0, 16),
+        timestamp: ts,
+        reference: ord.sequence || ord.referenceNumber || ord.id,
+        branchName,
+        type: 'DELIVERY_COD',
+        description: `تحصيل مبلغ طلبيّة [${ord.sequence}] من المستلم (${ord.recipientName})`,
+        debit: 0,
+        credit: Number(ord.merchantCollection || 0),
+        runningBalance: 0,
+      });
+
+      // 2. Delivery fee deducted -> DEBIT from merchant
+      if (ord.deliveryFee > 0) {
+        allTxs.push({
+          id: `tx-fee-${ord.id}`,
+          date: new Date(ordDate).toISOString().replace('T', ' ').substring(0, 16),
+          timestamp: ts + 1,
+          reference: ord.sequence || ord.referenceNumber || ord.id,
+          branchName,
+          type: 'DELIVERY_FEE',
+          description: `خصم عمولة وأجور شحن طرد [${ord.sequence}] إلى ${ord.governorate}`,
+          debit: Number(ord.deliveryFee || 0),
+          credit: 0,
+          runningBalance: 0,
+        });
+      }
+    } else if (ord.status === 'RETURNED' && ord.deliveryFee > 0) {
+      allTxs.push({
+        id: `tx-ret-${ord.id}`,
+        date: new Date(ord.updatedAt || ordDate).toISOString().replace('T', ' ').substring(0, 16),
+        timestamp: ts,
+        reference: ord.sequence || ord.referenceNumber || ord.id,
+        branchName,
+        type: 'RETURN_FEE',
+        description: `رسوم طرد مرتجع مستودعياً [${ord.sequence}]`,
+        debit: Number(ord.deliveryFee * 0.5 || 1.5),
+        credit: 0,
+        runningBalance: 0,
+      });
+    }
+  }
+
+  // Add settlement vouchers
+  for (const v of merchantVouchers) {
+    const ts = new Date(v.date).getTime();
+    allTxs.push({
+      id: `tx-v-${v.id}`,
+      date: v.date,
+      timestamp: ts,
+      reference: v.voucherNumber || v.referenceNumber || v.id,
+      branchName: 'المركز الرئيسي',
+      type: 'SETTLEMENT_PAYOUT',
+      description: `سداد تسوية مالية [${v.voucherNumber}] عبر ${v.paymentMethod}`,
+      debit: Number(v.amount || 0),
+      credit: 0,
+      runningBalance: 0,
+    });
+  }
+
+  allTxs.sort((a, b) => a.timestamp - b.timestamp);
+
+  let running = 0;
+  let openingBalance = 0;
+  const filteredTxs: StatementTx[] = [];
+
+  for (const tx of allTxs) {
+    running += (tx.credit - tx.debit);
+    tx.runningBalance = running;
+
+    if (tx.timestamp < targetFrom) {
+      openingBalance = running;
+    } else if (tx.timestamp <= targetTo) {
+      filteredTxs.push(tx);
+    }
+  }
+
+  const totalCodCollected = filteredTxs
+    .filter((t) => t.type === 'DELIVERY_COD')
+    .reduce((sum, t) => sum + t.credit, 0);
+
+  const totalDeliveryFees = filteredTxs
+    .filter((t) => t.type === 'DELIVERY_FEE' || t.type === 'RETURN_FEE')
+    .reduce((sum, t) => sum + t.debit, 0);
+
+  const totalSettlementsPaid = filteredTxs
+    .filter((t) => t.type === 'SETTLEMENT_PAYOUT')
+    .reduce((sum, t) => sum + t.debit, 0);
+
+  const totalOrdersDelivered = filteredTxs.filter((t) => t.type === 'DELIVERY_COD').length;
+
+  res.json({
+    merchantId,
+    branchId: branchId || 'ALL',
+    dateFrom,
+    dateTo,
+    openingBalance,
+    closingBalance: running,
+    totalCodCollected,
+    totalDeliveryFees,
+    totalSettlementsPaid,
+    totalOrdersDelivered,
+    transactions: filteredTxs,
+  });
+});
+
+// GET /api/reports/driver-cash-statement
+app.get('/api/reports/driver-cash-statement', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
+  const { driverId, dateFrom, dateTo } = req.query as {
+    driverId?: string;
+    dateFrom?: string;
+    dateTo?: string;
+  };
+
+  if (!driverId) {
+    return res.status(400).json({ error: 'معرف الكابتن مطلوب' });
+  }
+
+  if (!ctx.isSuperAdmin && ctx.userRole !== 'ADMIN' && ctx.userRole !== 'ACCOUNTANT' && ctx.userId !== driverId) {
+    return res.status(403).json({ error: 'غير مصرح بالاطلاع على كشف عهدة كاش هذا الكابتن' });
+  }
+
+  const targetFrom = dateFrom ? new Date(dateFrom).getTime() : 0;
+  const targetTo = dateTo ? new Date(`${dateTo}T23:59:59.999Z`).getTime() : Date.now();
+
+  const driverOrders = orders.filter((o) => o.driverId === driverId && o.status === 'DELIVERED');
+
+  interface DriverTx {
+    id: string;
+    date: string;
+    timestamp: number;
+    reference: string;
+    recipient: string;
+    type: 'COLLECTION' | 'REMITTANCE';
+    description: string;
+    amount: number;
+    runningResponsibility: number;
+  }
+
+  const allTxs: DriverTx[] = [];
+
+  for (const ord of driverOrders) {
+    const dDate = ord.deliveredAt || ord.createdAt;
+    const ts = new Date(dDate).getTime();
+    allTxs.push({
+      id: `d-col-${ord.id}`,
+      date: new Date(dDate).toISOString().replace('T', ' ').substring(0, 16),
+      timestamp: ts,
+      reference: ord.sequence || ord.id,
+      recipient: ord.recipientName,
+      type: 'COLLECTION',
+      description: `تحصيل كاش COD عند تسليم طرد [${ord.sequence}]`,
+      amount: Number(ord.totalCollection || ord.merchantCollection || 0),
+      runningResponsibility: 0,
+    });
+
+    if (ord.isSettledWithDriver) {
+      allTxs.push({
+        id: `d-remit-${ord.id}`,
+        date: new Date(ts + 3600000).toISOString().replace('T', ' ').substring(0, 16),
+        timestamp: ts + 3600000,
+        reference: `REC-${ord.sequence}`,
+        recipient: 'خزينة المحاسبة المركزية',
+        type: 'REMITTANCE',
+        description: `توريد كاش طرد [${ord.sequence}] إلى أمين الصندوق`,
+        amount: Number(ord.totalCollection || ord.merchantCollection || 0),
+        runningResponsibility: 0,
+      });
+    }
+  }
+
+  allTxs.sort((a, b) => a.timestamp - b.timestamp);
+
+  let running = 0;
+  let openingResponsibility = 0;
+  const filteredTxs: DriverTx[] = [];
+
+  for (const tx of allTxs) {
+    if (tx.type === 'COLLECTION') running += tx.amount;
+    else running -= tx.amount;
+    tx.runningResponsibility = running;
+
+    if (tx.timestamp < targetFrom) {
+      openingResponsibility = running;
+    } else if (tx.timestamp <= targetTo) {
+      filteredTxs.push(tx);
+    }
+  }
+
+  const totalCollected = filteredTxs
+    .filter((t) => t.type === 'COLLECTION')
+    .reduce((sum, t) => sum + t.amount, 0);
+
+  const totalRemitted = filteredTxs
+    .filter((t) => t.type === 'REMITTANCE')
+    .reduce((sum, t) => sum + t.amount, 0);
+
+  res.json({
+    driverId,
+    dateFrom,
+    dateTo,
+    openingResponsibility,
+    totalCollected,
+    totalRemitted,
+    outstandingCashResponsibility: running,
+    transactions: filteredTxs,
+  });
+});
+
+// GET /api/reports/operational-summary
+app.get('/api/reports/operational-summary', requireAuth, (req, res) => {
+  const ctx = getRequesterContext(req);
+  if (!ctx.isSuperAdmin && ctx.userRole !== 'ADMIN' && ctx.userRole !== 'ACCOUNTANT' && ctx.userRole !== 'OPERATOR') {
+    return res.status(403).json({ error: 'غير مصرح' });
+  }
+
+  const deliveredOrders = orders.filter((o) => o.status === 'DELIVERED').length;
+  const outForDeliveryOrders = orders.filter((o) => o.status === 'OUT_FOR_DELIVERY').length;
+  const inHubOrders = orders.filter((o) => o.status === 'RECEIVED_AT_HUB' || o.status === 'PICKING').length;
+  const returnedOrders = orders.filter((o) => o.status === 'RETURNED' || o.status === 'CANCELLED').length;
+  const total = orders.length;
+  const successRate = total > 0 ? `${((deliveredOrders / total) * 100).toFixed(1)}%` : '0%';
+
+  const govMap: Record<string, number> = {};
+  for (const ord of orders) {
+    const g = ord.governorate || 'عمان';
+    govMap[g] = (govMap[g] || 0) + 1;
+  }
+  const byGovernorate = Object.entries(govMap).map(([name, count]) => ({ name, count }));
+
+  res.json({
+    totalOrders: total,
+    deliveredOrders,
+    outForDeliveryOrders,
+    inHubOrders,
+    returnedOrders,
+    successRate,
+    byGovernorate,
+  });
 });
 
 // =============================================================

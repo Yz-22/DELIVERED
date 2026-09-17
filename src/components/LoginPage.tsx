@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { User } from '../types/logistics';
 import { supabase } from '../lib/supabase';
+import { storeDelivereSession, clearDelivereSession } from '../lib/auth';
 
 interface LoginPageProps {
   onLoginSuccess: (user: User, token: string) => void;
@@ -132,16 +133,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
           if (res.ok && data.token && data.user) {
             sessionStorage.removeItem('delivere_pending_invite_token');
             localStorage.removeItem('delivere_pending_invite_token');
-
-            if (rememberMe) {
-              localStorage.setItem('dargo_token', data.token);
-              localStorage.setItem('dargo_jwt_token', data.token);
-              localStorage.setItem('dargo_user_session', JSON.stringify({ user: data.user, token: data.token }));
-            } else {
-              sessionStorage.setItem('dargo_token', data.token);
-              sessionStorage.setItem('dargo_jwt_token', data.token);
-              sessionStorage.setItem('dargo_user_session', JSON.stringify({ user: data.user, token: data.token }));
-            }
+            storeDelivereSession(data.user, data.token, rememberMe);
 
             if (window.history.replaceState) {
               window.history.replaceState(null, '', window.location.pathname);
@@ -153,8 +145,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
           } else {
             // Sign out from Supabase to prevent stuck token loop
             await supabase.auth.signOut();
-            sessionStorage.removeItem('delivere_pending_invite_token');
-            localStorage.removeItem('delivere_pending_invite_token');
+            clearDelivereSession();
 
             if (window.history.replaceState) {
               window.history.replaceState(null, '', window.location.pathname);
@@ -264,20 +255,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
         // Login succeeded via API
         if (data.user) {
           const sessionToken = data.token || '';
-          const sessionObj = JSON.stringify({
-            user: data.user,
-            token: sessionToken,
-            savedAt: new Date().toISOString(),
-          });
-          if (rememberMe) {
-            localStorage.setItem('dargo_user_session', sessionObj);
-            localStorage.setItem('dargo_token', sessionToken);
-            localStorage.setItem('dargo_jwt_token', sessionToken);
-          } else {
-            sessionStorage.setItem('dargo_user_session', sessionObj);
-            sessionStorage.setItem('dargo_token', sessionToken);
-            sessionStorage.setItem('dargo_jwt_token', sessionToken);
-          }
+          storeDelivereSession(data.user, sessionToken, rememberMe);
           onLoginSuccess(data.user, sessionToken);
           return true;
         }
@@ -295,20 +273,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     ) {
       console.warn('Network offline / restarting: Logging in via guaranteed emergency admin credentials.');
       const emergencyToken = `dargo_jwt_${DEFAULT_SUPER_ADMIN.id}_emergency_${Date.now()}`;
-      const emergencySessionObj = JSON.stringify({
-        user: DEFAULT_SUPER_ADMIN,
-        token: emergencyToken,
-        savedAt: new Date().toISOString(),
-      });
-      if (rememberMe) {
-        localStorage.setItem('dargo_user_session', emergencySessionObj);
-        localStorage.setItem('dargo_token', emergencyToken);
-        localStorage.setItem('dargo_jwt_token', emergencyToken);
-      } else {
-        sessionStorage.setItem('dargo_user_session', emergencySessionObj);
-        sessionStorage.setItem('dargo_token', emergencyToken);
-        sessionStorage.setItem('dargo_jwt_token', emergencyToken);
-      }
+      storeDelivereSession(DEFAULT_SUPER_ADMIN, emergencyToken, rememberMe);
       onLoginSuccess(DEFAULT_SUPER_ADMIN, emergencyToken);
       return true;
     }

@@ -1,22 +1,94 @@
 import { User } from '../types/logistics';
 
+export interface StoredSession {
+  user: User;
+  token: string;
+}
+
+const STORAGE_KEYS = [
+  'dargo_user_session',
+  'dargo_jwt_token',
+  'dargo_token',
+  'delivere_auth_token',
+  'dargo_tms_session',
+] as const;
+
 /**
- * Extract current valid session token across storage and active user state.
- * Guaranteed to return a valid Bearer token string or empty string if unauthenticated.
- * Prevents invalid tokens like 'undefined' or 'null' or spoofed roles.
+ * Stores Delivere application session and dargo_jwt.
+ * Single source of truth for session persistence.
  */
-export function getAuthToken(currentUser?: User | null): string {
+export function storeDelivereSession(user: User, token: string, rememberMe: boolean = true): void {
+  if (!token || typeof token !== 'string') return;
+  const cleanToken = token.trim();
+  const sessionData: StoredSession = { user, token: cleanToken };
+  const serialized = JSON.stringify(sessionData);
+
+  const primaryStorage = rememberMe ? localStorage : sessionStorage;
+  const secondaryStorage = rememberMe ? sessionStorage : localStorage;
+
   try {
-    const savedSession = localStorage.getItem('dargo_user_session') || sessionStorage.getItem('dargo_user_session');
-    if (savedSession) {
-      const parsed = JSON.parse(savedSession);
-      if (parsed?.token && typeof parsed.token === 'string' && parsed.token.trim().length > 0) {
-        const token = parsed.token.trim();
-        if (token !== 'undefined' && token !== 'null') return token;
-      }
+    primaryStorage.setItem('dargo_user_session', serialized);
+    primaryStorage.setItem('dargo_jwt_token', cleanToken);
+    primaryStorage.setItem('dargo_token', cleanToken);
+    primaryStorage.setItem('delivere_auth_token', cleanToken);
+
+    // Clean up secondary storage to avoid conflicting tokens
+    for (const key of STORAGE_KEYS) {
+      secondaryStorage.removeItem(key);
+    }
+  } catch (err) {
+    console.error('Failed to store Delivere session:', err);
+  }
+}
+
+/**
+ * Retrieves the stored Delivere session from primary or fallback storage.
+ */
+export function getStoredDelivereSession(): StoredSession | null {
+  try {
+    const raw = localStorage.getItem('dargo_user_session') || sessionStorage.getItem('dargo_user_session');
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.user && typeof parsed.token === 'string' && parsed.token.trim().length > 0) {
+      return {
+        user: parsed.user,
+        token: parsed.token.trim(),
+      };
     }
   } catch {
-    // Ignore JSON parsing errors
+    // Malformed session JSON
+  }
+  return null;
+}
+
+/**
+ * Completely clears all Delivere session keys and tokens across storage layers.
+ */
+export function clearDelivereSession(): void {
+  try {
+    for (const key of STORAGE_KEYS) {
+      localStorage.removeItem(key);
+      sessionStorage.removeItem(key);
+    }
+    localStorage.removeItem('delivere_pending_invite_token');
+    sessionStorage.removeItem('delivere_pending_invite_token');
+  } catch (err) {
+    console.error('Error clearing Delivere session:', err);
+  }
+}
+
+/**
+ * Extract current valid Delivere dargo_jwt session token.
+ * Guaranteed to return a valid Bearer token string or empty string if unauthenticated.
+ * Prevents invalid tokens like 'undefined' or 'null' or Supabase access tokens.
+ */
+export function getAuthToken(currentUser?: User | null): string {
+  const session = getStoredDelivereSession();
+  if (session?.token) {
+    const t = session.token;
+    if (t !== 'undefined' && t !== 'null' && t.length > 0) {
+      return t;
+    }
   }
 
   const jwtToken = localStorage.getItem('dargo_jwt_token') || sessionStorage.getItem('dargo_jwt_token');
@@ -38,8 +110,8 @@ export function getAuthToken(currentUser?: User | null): string {
 }
 
 /**
- * Returns standard authorization headers for authenticated API requests.
- * Only attaches Authorization header if a verified token is available.
+ * Returns standard authorization headers for authenticated Delivere API requests.
+ * Only attaches Authorization header if a verified dargo_jwt token is available.
  */
 export function getAuthHeaders(currentUser?: User | null): Record<string, string> {
   const token = getAuthToken(currentUser);
@@ -51,3 +123,11 @@ export function getAuthHeaders(currentUser?: User | null): Record<string, string
   }
   return headers;
 }
+
+/**
+ * Quick synchronous check if a Delivere session exists.
+ */
+export function isDelivereAuthenticated(): boolean {
+  return Boolean(getAuthToken());
+}
+

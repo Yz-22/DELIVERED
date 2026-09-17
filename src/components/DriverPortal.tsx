@@ -25,6 +25,7 @@ import {
   Smartphone
 } from 'lucide-react';
 import { Order, OrderStatus, User } from '../types/logistics';
+import { getAuthHeaders } from '../lib/auth';
 import { PodVerificationModal } from './PodVerificationModal';
 import { CliqPaymentModal } from './CliqPaymentModal';
 
@@ -71,7 +72,9 @@ export const DriverPortal: React.FC<DriverPortalProps> = ({
     if (!selectedDriverId) return;
     setIsLoading(true);
     try {
-      const res = await fetch(`/api/orders?driverId=${selectedDriverId}&limit=100`);
+      const res = await fetch(`/api/orders?driverId=${selectedDriverId}&limit=100`, {
+        headers: getAuthHeaders(currentUser),
+      });
       if (res.ok) {
         const data = await res.json();
         setDriverOrders(data.orders || []);
@@ -151,7 +154,7 @@ export const DriverPortal: React.FC<DriverPortalProps> = ({
 
       const res = await fetch(`/api/orders/${activeModalOrder.id}/status`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(currentUser),
         body: JSON.stringify({
           status: toStatus,
           note,
