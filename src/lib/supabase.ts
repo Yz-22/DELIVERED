@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 
 // Environment variables for Supabase with robust URL sanitization
 const metaEnv = (import.meta as any).env || {};
-const rawSupabaseUrl = (metaEnv.VITE_SUPABASE_URL as string) || '';
+const rawSupabaseUrl = (metaEnv.VITE_SUPABASE_URL as string) || 'https://rekflpovydwnqehnqwev.supabase.co';
 
 function sanitizeSupabaseUrl(url: string): string {
   if (!url) return '';

@@ -14,6 +14,7 @@ import {
   KeyRound,
 } from 'lucide-react';
 import { User } from '../types/logistics';
+import { supabase } from '../lib/supabase';
 
 interface LoginPageProps {
   onLoginSuccess: (user: User, token: string) => void;
@@ -83,11 +84,131 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     }
   }, []);
 
-  const handleGoogleLogin = () => {
+  // Listen for Supabase Google OAuth callback on client redirect
+  useEffect(() => {
+    if (!supabase) return;
+    let isCancelled = false;
+
+    const checkSupabaseAuthSession = async () => {
+      try {
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError) {
+          console.warn('Supabase getSession error:', sessionError);
+          return;
+        }
+
+        const hasOAuthIndicator =
+          window.location.hash.includes('access_token') ||
+          window.location.search.includes('code=') ||
+          window.location.hash.includes('error=');
+
+        if (window.location.hash.includes('error=')) {
+          const hashParams = new URLSearchParams(window.location.hash.substring(1));
+          const desc = hashParams.get('error_description') || hashParams.get('error');
+          if (!isCancelled && desc) {
+            setErrorMessage(`خطأ في مصادقة Google: ${decodeURIComponent(desc)}`);
+          }
+          return;
+        }
+
+        if (session?.access_token && hasOAuthIndicator) {
+          if (!isCancelled) setIsGoogleLoading(true);
+
+          const pendingInvite =
+            sessionStorage.getItem('delivere_pending_invite_token') ||
+            localStorage.getItem('delivere_pending_invite_token');
+
+          const res = await fetch('/api/auth/supabase-google', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              supabaseAccessToken: session.access_token,
+              invitationToken: pendingInvite || undefined,
+            }),
+          });
+
+          const data = await res.json();
+
+          if (res.ok && data.token && data.user) {
+            sessionStorage.removeItem('delivere_pending_invite_token');
+            localStorage.removeItem('delivere_pending_invite_token');
+
+            if (rememberMe) {
+              localStorage.setItem('dargo_token', data.token);
+              localStorage.setItem('dargo_jwt_token', data.token);
+              localStorage.setItem('dargo_user_session', JSON.stringify({ user: data.user, token: data.token }));
+            } else {
+              sessionStorage.setItem('dargo_token', data.token);
+              sessionStorage.setItem('dargo_jwt_token', data.token);
+              sessionStorage.setItem('dargo_user_session', JSON.stringify({ user: data.user, token: data.token }));
+            }
+
+            if (window.history.replaceState) {
+              window.history.replaceState(null, '', window.location.pathname);
+            }
+
+            if (!isCancelled) {
+              onLoginSuccess(data.user, data.token);
+            }
+          } else {
+            // Sign out from Supabase to prevent stuck token loop
+            await supabase.auth.signOut();
+            sessionStorage.removeItem('delivere_pending_invite_token');
+            localStorage.removeItem('delivere_pending_invite_token');
+
+            if (window.history.replaceState) {
+              window.history.replaceState(null, '', window.location.pathname);
+            }
+
+            if (!isCancelled) {
+              if (data.code === 'REGISTRATION_GATED') {
+                setErrorMessage('حساب Google هذا غير مسجل في النظام. المنظومة تتطلب رابط دعوة مسبق من إدارة العمليات.');
+                setShowTokenPrompt(true);
+              } else {
+                setErrorMessage(data.error || 'فشل تسجيل الدخول عبر Google');
+              }
+            }
+          }
+        }
+      } catch (err: any) {
+        if (!isCancelled) {
+          setErrorMessage(err.message || 'خطأ أثناء معالجة تسجيل الدخول عبر Google');
+        }
+      } finally {
+        if (!isCancelled) setIsGoogleLoading(false);
+      }
+    };
+
+    checkSupabaseAuthSession();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [onLoginSuccess, rememberMe]);
+
+  const handleGoogleLogin = async () => {
+    if (!supabase) {
+      setErrorMessage('خدمة Supabase غير متوفرة حالياً في بيئة العميل');
+      return;
+    }
     setIsGoogleLoading(true);
     setErrorMessage(null);
-    // Initiates real Google OAuth 2.0 flow with Google Account Chooser
-    window.location.href = '/api/auth/google';
+    try {
+      const redirectTo = window.location.origin;
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo,
+          queryParams: {
+            prompt: 'select_account',
+          },
+        },
+      });
+      if (error) throw error;
+    } catch (err: any) {
+      setIsGoogleLoading(false);
+      setErrorMessage(err.message || 'فشل بدء تسجيل الدخول عبر Google');
+    }
   };
 
   const handleRedeemInviteToken = (e: React.FormEvent) => {

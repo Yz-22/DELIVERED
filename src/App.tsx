@@ -28,6 +28,7 @@ import { AccessDeniedView } from './components/AccessDeniedView';
 import { AdminSettings } from './components/AdminSettings';
 import { LoginPage } from './components/LoginPage';
 import { InviteAcceptancePage } from './components/InviteAcceptancePage';
+import { supabase } from './lib/supabase';
 import { OpsSuperAdminLogin } from './components/OpsSuperAdminLogin';
 import { SuperAdminMasterHub } from './components/SuperAdminMasterHub';
 import { TenantBrandingProvider } from './context/TenantBrandingContext';
@@ -614,6 +615,56 @@ export default function App() {
     let isMounted = true;
     const initAuthAndUsers = async () => {
       try {
+        // Check for returning Supabase OAuth session (e.g. redirected to root /)
+        if (supabase && !inviteToken) {
+          const hasOAuthParams =
+            window.location.hash.includes('access_token') ||
+            window.location.search.includes('code=');
+
+          if (hasOAuthParams) {
+            try {
+              const { data: { session } } = await supabase.auth.getSession();
+              if (session?.access_token) {
+                const pendingInvite =
+                  sessionStorage.getItem('delivere_pending_invite_token') ||
+                  localStorage.getItem('delivere_pending_invite_token');
+
+                const res = await fetch('/api/auth/supabase-google', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    supabaseAccessToken: session.access_token,
+                    invitationToken: pendingInvite || undefined,
+                  }),
+                });
+
+                const data = await res.json();
+                if (res.ok && data.token && data.user) {
+                  sessionStorage.removeItem('delivere_pending_invite_token');
+                  localStorage.removeItem('delivere_pending_invite_token');
+                  localStorage.setItem('dargo_token', data.token);
+                  localStorage.setItem('dargo_jwt_token', data.token);
+                  localStorage.setItem('dargo_user_session', JSON.stringify({ user: data.user, token: data.token }));
+                  if (window.history.replaceState) {
+                    window.history.replaceState(null, '', window.location.pathname);
+                  }
+                  if (isMounted) {
+                    handleLoginSuccess(data.user, data.token);
+                    setIsAuthChecking(false);
+                  }
+                  return;
+                } else {
+                  await supabase.auth.signOut();
+                  sessionStorage.removeItem('delivere_pending_invite_token');
+                  localStorage.removeItem('delivere_pending_invite_token');
+                }
+              }
+            } catch (authErr) {
+              console.warn('OAuth session exchange warning in App.tsx:', authErr);
+            }
+          }
+        }
+
         const savedSession = localStorage.getItem('dargo_user_session') || sessionStorage.getItem('dargo_user_session');
         if (savedSession) {
           try {
