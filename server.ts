@@ -5706,52 +5706,602 @@ app.post('/api/invitations/:id/resend', requireAuth, async (req, res) => {
   }
 });
 
-// 7. GET /api/auth/google/url: Returns client-side Google OAuth initialization helper
+// 7. Production Google OAuth 2.0 Engine & State Verification
+interface OAuthStateRecord {
+  used: boolean;
+  exp: number;
+  invitationToken?: string | null;
+  createdAt: number;
+}
+const oauthStatesMap = new Map<string, OAuthStateRecord>();
+
+// Periodic cleanup of expired states
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, val] of oauthStatesMap.entries()) {
+    if (val.exp < now) {
+      oauthStatesMap.delete(key);
+    }
+  }
+}, 5 * 60 * 1000);
+
+function getGoogleRedirectUri(req: express.Request): string {
+  if (process.env.GOOGLE_REDIRECT_URI && process.env.GOOGLE_REDIRECT_URI.trim()) {
+    return process.env.GOOGLE_REDIRECT_URI.trim();
+  }
+  const forwardedProto = req.headers['x-forwarded-proto'];
+  const proto = typeof forwardedProto === 'string'
+    ? forwardedProto.split(',')[0].trim()
+    : (req.secure ? 'https' : (req.protocol || 'https'));
+  const forwardedHost = req.headers['x-forwarded-host'];
+  const host = typeof forwardedHost === 'string'
+    ? forwardedHost.split(',')[0].trim()
+    : (req.get('host') || 'localhost:3000');
+  return `${proto}://${host}/api/auth/google/callback`;
+}
+
+function generateOAuthState(invitationToken?: string | null): string {
+  const stateId = crypto.randomUUID();
+  const nonce = crypto.randomBytes(16).toString('hex');
+  const now = Date.now();
+  const exp = now + 10 * 60 * 1000; // 10 minutes TTL
+  const payload = {
+    id: stateId,
+    nonce,
+    invitationToken: invitationToken ? String(invitationToken).trim() : null,
+    iat: now,
+    exp,
+  };
+  const payloadStr = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = crypto
+    .createHmac('sha256', SESSION_SECRET)
+    .update(payloadStr)
+    .digest('base64url');
+  oauthStatesMap.set(stateId, {
+    used: false,
+    exp,
+    invitationToken: payload.invitationToken,
+    createdAt: now,
+  });
+  return `${payloadStr}.${signature}`;
+}
+
+function verifyAndConsumeOAuthState(rawState: string): {
+  valid: boolean;
+  invitationToken?: string | null;
+  error?: string;
+} {
+  if (!rawState || typeof rawState !== 'string') {
+    return { valid: false, error: 'معرف الحالة الأمنية مفقود (State Missing)' };
+  }
+  const parts = rawState.split('.');
+  if (parts.length !== 2) {
+    return { valid: false, error: 'معرف الحالة الأمنية غير صالح (Malformed State)' };
+  }
+  const [payloadStr, providedSig] = parts;
+  const expectedSig = crypto
+    .createHmac('sha256', SESSION_SECRET)
+    .update(payloadStr)
+    .digest('base64url');
+  if (providedSig !== expectedSig) {
+    return { valid: false, error: 'تم رفض معرّف الحالة الأمنية: توقيع غير متطابق (State Tampering Detected)' };
+  }
+  let payload: any;
+  try {
+    payload = JSON.parse(Buffer.from(payloadStr, 'base64url').toString('utf8'));
+  } catch {
+    return { valid: false, error: 'فشل فك ترميز الحالة الأمنية (Invalid State Payload)' };
+  }
+  if (!payload.exp || payload.exp < Date.now()) {
+    return { valid: false, error: 'انتهت صلاحية جلسة تفويض Google (OAuth State Expired)' };
+  }
+  const record = oauthStatesMap.get(payload.id);
+  if (record && record.used) {
+    return { valid: false, error: 'تم استخدام جلسة التفويض هذه مسبقاً (Replay Attack Rejected)' };
+  }
+  if (record) {
+    record.used = true;
+  } else {
+    oauthStatesMap.set(payload.id, { used: true, exp: payload.exp, createdAt: Date.now() });
+  }
+  return { valid: true, invitationToken: payload.invitationToken };
+}
+
+function renderOAuthSuccessHtml(user: User, token: string): string {
+  const sanitizedUser = sanitizeUserForClient(user);
+  return `<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <title>Delivere Logistics - تم تسجيل الدخول بنجاح</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { background: #020617; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+    .card { background: #0f172a; border: 1px solid #1e293b; border-radius: 20px; padding: 36px; max-width: 440px; width: 90%; text-align: center; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6); }
+    .spinner { width: 40px; height: 40px; border: 3px solid #f59e0b; border-top-color: transparent; border-radius: 50%; animation: spin 0.9s linear infinite; margin: 0 auto 20px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    h2 { font-size: 17px; margin: 0 0 10px; font-weight: 800; color: #ffffff; }
+    p { font-size: 13px; color: #94a3b8; margin: 0; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="spinner"></div>
+    <h2>مرحباً بك: ${sanitizedUser.name}</h2>
+    <p>تم التحقق من حساب Google وإصدار الجلسة بنجاح.<br>جاري نقلك مباشرة إلى مساحة العمل...</p>
+  </div>
+  <script>
+    try {
+      const user = ${JSON.stringify(sanitizedUser)};
+      const token = ${JSON.stringify(token)};
+      localStorage.setItem('dargo_token', token);
+      localStorage.setItem('dargo_jwt_token', token);
+      localStorage.setItem('dargo_user_session', JSON.stringify({ user, token }));
+      sessionStorage.setItem('dargo_token', token);
+      sessionStorage.setItem('dargo_jwt_token', token);
+      sessionStorage.setItem('dargo_user_session', JSON.stringify({ user, token }));
+
+      if (window.opener && window.opener !== window) {
+        try {
+          window.opener.postMessage({ type: 'DELIVERE_GOOGLE_AUTH_SUCCESS', user, token }, '*');
+          window.close();
+        } catch (e) {}
+      }
+    } catch (e) {
+      console.error('Storage error:', e);
+    }
+    window.location.replace('/');
+  </script>
+</body>
+</html>`;
+}
+
+function renderOAuthErrorHtml(title: string, message: string, returnUrl: string = '/'): string {
+  return `<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <title>Delivere Logistics - خطأ في المصادقة</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { background: #020617; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+    .card { background: #0f172a; border: 1px solid #ef4444; border-radius: 20px; padding: 36px; max-width: 460px; width: 90%; text-align: center; box-shadow: 0 25px 50px -12px rgba(239,68,68,0.2); }
+    h2 { font-size: 17px; color: #f87171; margin: 0 0 12px; font-weight: 800; }
+    p { font-size: 13px; color: #cbd5e1; line-height: 1.6; margin: 0 0 24px; }
+    a { display: inline-block; background: #334155; color: #ffffff; text-decoration: none; padding: 10px 24px; border-radius: 12px; font-size: 13px; font-weight: bold; transition: background 0.2s; }
+    a:hover { background: #475569; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>${title}</h2>
+    <p>${message}</p>
+    <a href="${returnUrl}">العودة إلى الصفحة الرئيسية</a>
+  </div>
+</body>
+</html>`;
+}
+
+function renderRegistrationGatedHtml(): string {
+  return `<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <title>Delivere Logistics - التسجيل مقيّد بالدعوة</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { background: #020617; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+    .card { background: #0f172a; border: 1px solid #f59e0b; border-radius: 20px; padding: 36px; max-width: 480px; width: 90%; text-align: center; box-shadow: 0 25px 50px -12px rgba(245,158,11,0.2); }
+    .badge { display: inline-block; background: rgba(245,158,11,0.15); color: #fbbf24; border: 1px solid rgba(245,158,11,0.3); padding: 4px 12px; border-radius: 9999px; font-size: 11px; font-weight: 800; margin-bottom: 16px; }
+    h2 { font-size: 18px; color: #ffffff; margin: 0 0 12px; font-weight: 800; }
+    p { font-size: 13px; color: #94a3b8; line-height: 1.7; margin: 0 0 24px; }
+    a { display: inline-block; background: #f59e0b; color: #0f172a; text-decoration: none; padding: 10px 24px; border-radius: 12px; font-size: 13px; font-weight: 800; }
+    a:hover { background: #d97706; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">403 Forbidden - Gated Access</div>
+    <h2>تسجيل الدخول عبر Google مقيّد بنظام الدعوات</h2>
+    <p>حساب Google هذا غير مسجل مسبقاً في النظام. المنظومة تتطلب رابط دعوة رسمي معتمد من إدارة العمليات لتفعيل حساب جديد وتعيين الصلاحيات والموقع الهرمي.</p>
+    <a href="/login">العودة لصفحة تسجيل الدخول</a>
+  </div>
+</body>
+</html>`;
+}
+
+// 7.1 GET /api/auth/google/url: Returns client-side Google OAuth initialization helper
 app.get('/api/auth/google/url', (req, res) => {
   const clientId = process.env.VITE_GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || '';
   res.json({
     clientId,
     enabled: Boolean(clientId),
-    mode: 'popup',
+    redirectUri: getGoogleRedirectUri(req),
+    mode: 'oauth2_code_flow',
   });
 });
 
-// 8. POST /api/auth/google/verify-token: Gated Google Authentication & Account Verification
-app.post(['/api/auth/google/verify-token', '/api/auth/google/callback'], async (req, res) => {
+// 7.2 GET /api/auth/google: Initiates real Google OAuth 2.0 flow with Account Chooser
+app.get('/api/auth/google', async (req, res) => {
   try {
-    const { credential, googleId, email, name, invitationToken } = req.body;
+    const clientId = process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || '';
+    if (!clientId) {
+      return res.status(503).send(
+        renderOAuthErrorHtml(
+          'إعدادات Google OAuth غير مكتملة',
+          'لم يتم تكوين معرف تطبيق Google (GOOGLE_CLIENT_ID) في متغيرات بيئة الخادم. يرجى ضبط المتغيرات في لوحة التحكم.'
+        )
+      );
+    }
 
-    let targetEmail = (email || '').toLowerCase().trim();
-    let verifiedGoogleId = googleId ? String(googleId) : undefined;
-    let userName = name ? String(name).trim() : undefined;
+    const rawInvitationToken = req.query.invitationToken
+      ? String(req.query.invitationToken).trim()
+      : undefined;
 
-    // Decode basic JWT claims if standard credential (JWT) is supplied
-    if (credential && typeof credential === 'string') {
-      try {
-        const parts = credential.split('.');
-        if (parts.length >= 2) {
-          const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
-          if (payload.email) targetEmail = String(payload.email).toLowerCase().trim();
-          if (payload.sub) verifiedGoogleId = String(payload.sub);
-          if (payload.name && !userName) userName = String(payload.name).trim();
+    // If an invitation token was provided, validate it before redirecting
+    if (rawInvitationToken) {
+      const tokenHash = crypto.createHash('sha256').update(rawInvitationToken).digest('hex');
+      let invitation = userInvitations.find((i) => i.tokenHash === tokenHash);
+      if (!invitation) {
+        try {
+          const { data } = await supabase
+            .from('user_invitations')
+            .select('*')
+            .eq('token_hash', tokenHash)
+            .limit(1);
+          if (data && data.length > 0) {
+            invitation = mapDbInvitationToAppInvitation(data[0]);
+          }
+        } catch {
+          // ignore
         }
-      } catch {
-        // use direct parameters if decode fails
+      }
+
+      if (!invitation) {
+        return res.status(400).send(
+          renderOAuthErrorHtml('رابط الدعوة غير صالح', 'رابط الدعوة المرفق غير موجود أو غير معتمد.', '/invite')
+        );
+      }
+      if (invitation.status === 'ACCEPTED') {
+        return res.status(400).send(
+          renderOAuthErrorHtml('رابط الدعوة مستخدم', 'تم قبول واستخدام رابط الدعوة هذا مسبقاً.', '/login')
+        );
+      }
+      if (invitation.status === 'REVOKED') {
+        return res.status(400).send(
+          renderOAuthErrorHtml('رابط الدعوة ملغى', 'تم إلغاء رابط الدعوة هذا من قِبل إدارة العمليات.', '/login')
+        );
+      }
+      if (new Date() > new Date(invitation.expiresAt) || invitation.status === 'EXPIRED') {
+        return res.status(400).send(
+          renderOAuthErrorHtml('انتهت صلاحية الدعوة', 'انتهت صلاحية رابط الدعوة هذا. يرجى طلب رابط جديد.', '/login')
+        );
       }
     }
 
-    if (!targetEmail) {
-      return res.status(400).json({ error: 'البريد الإلكتروني لحساب Google مطلوب', code: 'EMAIL_REQUIRED' });
+    const callbackUrl = getGoogleRedirectUri(req);
+    const signedState = generateOAuthState(rawInvitationToken);
+
+    // Build Google OAuth 2.0 URL with prompt=select_account for Google Account Chooser
+    const params = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: callbackUrl,
+      response_type: 'code',
+      scope: 'openid email profile',
+      prompt: 'select_account',
+      access_type: 'online',
+      state: signedState,
+    });
+
+    const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+    return res.redirect(googleAuthUrl);
+  } catch (err: any) {
+    return res.status(500).send(renderOAuthErrorHtml('خطأ في بدء مصادقة Google', err.message));
+  }
+});
+
+// 7.3 GET /api/auth/google/callback: Real Google OAuth 2.0 Callback & Account Linking
+app.get('/api/auth/google/callback', async (req, res) => {
+  try {
+    if (req.query.error) {
+      const desc = String(req.query.error_description || req.query.error);
+      return res.status(400).send(
+        renderOAuthErrorHtml('تم إلغاء تسجيل الدخول عبر Google', `أبلغ خادم Google: ${desc}`, '/login')
+      );
     }
 
-    // Check if user already exists in DB (Lookup by email)
-    let existingUser = users.find((u) => u.email?.toLowerCase().trim() === targetEmail);
+    const code = req.query.code ? String(req.query.code) : '';
+    const rawState = req.query.state ? String(req.query.state) : '';
+
+    if (!code || !rawState) {
+      return res.status(400).send(
+        renderOAuthErrorHtml('معطيات غير مكتملة', 'لم يتم تزويد رمز التفويض أو الحالة الأمنية من خوادم Google.', '/login')
+      );
+    }
+
+    // 1. Verify anti-CSRF, anti-tampering, and anti-replay state
+    const stateResult = verifyAndConsumeOAuthState(rawState);
+    if (!stateResult.valid) {
+      return res.status(400).send(
+        renderOAuthErrorHtml('تم رفض الحالة الأمنية (Invalid State)', stateResult.error || 'فشل التحقق من أمان الجلسة.', '/login')
+      );
+    }
+    const invitationToken = stateResult.invitationToken;
+
+    // 2. Exchange authorization code with Google for tokens
+    const clientId = process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || '';
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET || '';
+    const callbackUrl = getGoogleRedirectUri(req);
+
+    if (!clientId || !clientSecret) {
+      return res.status(500).send(
+        renderOAuthErrorHtml(
+          'بيانات الاعتماد غير مهيأة',
+          'معرف وسر عميل Google (GOOGLE_CLIENT_ID و GOOGLE_CLIENT_SECRET) غير مهيأة في السيرفر.',
+          '/login'
+        )
+      );
+    }
+
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: callbackUrl,
+        grant_type: 'authorization_code',
+      }).toString(),
+    });
+
+    const tokenData: any = await tokenResponse.json();
+    if (!tokenResponse.ok || !tokenData.access_token) {
+      return res.status(401).send(
+        renderOAuthErrorHtml(
+          'فشل تبادل رمز التفويض',
+          `أبلغت Google: ${tokenData.error_description || tokenData.error || 'Token exchange failed'}`,
+          '/login'
+        )
+      );
+    }
+
+    // 3. Fetch verified user info from Google's official userinfo endpoint
+    const userinfoResponse = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+
+    const googleUser: any = await userinfoResponse.json();
+    if (!userinfoResponse.ok || !googleUser.sub) {
+      return res.status(401).send(
+        renderOAuthErrorHtml('فشل استرداد الهوية', 'تعذر جلب بيانات المستخدم المعتمدة من Google.', '/login')
+      );
+    }
+
+    const googleSub = String(googleUser.sub);
+    const googleEmail = String(googleUser.email || '').toLowerCase().trim();
+    const isEmailVerified = Boolean(googleUser.email_verified);
+    const googleName = googleUser.name ? String(googleUser.name).trim() : '';
+
+    // Reject unverified Google emails strictly
+    if (!isEmailVerified || !googleEmail) {
+      return res.status(403).send(
+        renderOAuthErrorHtml(
+          'بريد Google غير مؤكد',
+          'حساب Google المستخدم لا يحتوي على بريد إلكتروني مؤكد رسمياً (email_verified=false).',
+          '/login'
+        )
+      );
+    }
+
+    // 4. Check if user already exists in DB
+    let existingUser = users.find(
+      (u) =>
+        (u.googleId && u.googleId === googleSub) ||
+        (u.email && u.email.toLowerCase().trim() === googleEmail)
+    );
+
     if (!existingUser) {
       try {
         const { data: dbUsers } = await supabase
           .from('users')
           .select('*')
-          .ilike('email', targetEmail)
+          .or(`google_id.eq.${googleSub},email.ilike.${googleEmail}`)
+          .limit(1);
+
+        if (dbUsers && dbUsers.length > 0) {
+          existingUser = mapDbUserToAppUser(dbUsers[0]);
+          users.push(existingUser);
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // ----------------------------------------------------------------------
+    // Branch A: Existing User -> Link Google ID without touching role/perms
+    // ----------------------------------------------------------------------
+    if (existingUser) {
+      if (existingUser.googleId !== googleSub || existingUser.googleEmail !== googleEmail) {
+        existingUser.googleId = googleSub;
+        existingUser.googleEmail = googleEmail;
+        existingUser.authProvider = existingUser.password ? 'HYBRID' : 'GOOGLE';
+
+        try {
+          await supabase
+            .from('users')
+            .update({
+              google_id: googleSub,
+              google_email: googleEmail,
+              auth_provider: existingUser.authProvider,
+            })
+            .eq('id', existingUser.id);
+        } catch {
+          // fallback to memory
+        }
+      }
+
+      if (!existingUser.isActive) {
+        return res.status(403).send(
+          renderOAuthErrorHtml(
+            'الحساب معلق أو غير نشط',
+            'تم إيقاف أو تعليق هذا الحساب. يرجى مراجعة إدارة العمليات لتفعيله.',
+            '/login'
+          )
+        );
+      }
+
+      logAuditEvent({
+        action: 'GOOGLE_LOGIN_SUCCESS',
+        actionNameAr: 'تسجيل دخول ناجح عبر Google OAuth',
+        performedBy: existingUser.id,
+        performerName: existingUser.name,
+        performerRole: existingUser.role,
+        targetId: existingUser.id,
+        targetType: 'USER',
+        tenantId: existingUser.parentUserId || existingUser.id,
+      });
+
+      const sessionToken = generateSessionToken(existingUser);
+      return res.send(renderOAuthSuccessHtml(existingUser, sessionToken));
+    }
+
+    // ----------------------------------------------------------------------
+    // Branch B: New User -> Gated Registration by Invitation Token
+    // ----------------------------------------------------------------------
+    if (!invitationToken || !String(invitationToken).trim()) {
+      return res.status(403).send(renderRegistrationGatedHtml());
+    }
+
+    const tokenHash = crypto.createHash('sha256').update(String(invitationToken).trim()).digest('hex');
+    const claim = await claimInvitationAtomically(tokenHash);
+    if (!claim.success) {
+      return res.status(403).send(
+        renderOAuthErrorHtml(
+          'تعذر قبول رابط الدعوة',
+          claim.errorMessage || 'رابط الدعوة المرفق غير صالح أو تم استخدامه مسبقاً.',
+          '/invite'
+        )
+      );
+    }
+
+    const invitation = claim.invitation!;
+    const newUserId = crypto.randomUUID();
+
+    try {
+      const newUser: User = {
+        id: newUserId,
+        name: googleName || invitation.commercialName || googleEmail.split('@')[0],
+        email: googleEmail,
+        phone: invitation.phone || '0790000000',
+        role: invitation.role,
+        roleName: invitation.roleName,
+        commercialName: invitation.commercialName || googleName || googleEmail.split('@')[0],
+        storeName: invitation.commercialName || googleName,
+        commercialType: 'تجارة ومبيعات إلكترونية',
+        branch: invitation.branch || 'المقر الرئيسي للمملكة',
+        city: invitation.city || 'عمان',
+        priceList: invitation.priceList || 'جميع المملكة 2 (القياسية)',
+        pricePlanId: invitation.pricePlanId,
+        isActive: true,
+        parentUserId: invitation.parentUserId,
+        createdById: invitation.invitedBy,
+        permissions: invitation.permissions || [],
+        maxAllowedPermissions: invitation.maxAllowedPermissions || invitation.permissions || [],
+        authProvider: 'GOOGLE',
+        googleId: googleSub,
+        googleEmail: googleEmail,
+        invitationId: invitation.id,
+        invitedBy: invitation.invitedBy,
+      };
+
+      try {
+        const dbPayload = mapAppUserToDbUser(newUser);
+        const { error: dbErr } = await supabase.from('users').insert(dbPayload);
+        if (dbErr) {
+          console.warn('Supabase user creation via Google fallback to memory:', dbErr.message);
+        }
+      } catch (dbErr: any) {
+        console.warn('Supabase user creation via Google fallback to memory:', dbErr?.message);
+      }
+      users.push(newUser);
+
+      await claim.commit!(newUserId);
+
+      logAuditEvent({
+        action: 'INVITATION_ACCEPTED_GOOGLE',
+        actionNameAr: 'قبول وتفعيل دعوة الانضمام عبر حساب Google المعتمد',
+        performedBy: newUserId,
+        performerName: newUser.name,
+        performerRole: newUser.role,
+        targetId: invitation.id,
+        targetType: 'INVITATION',
+        targetName: googleEmail,
+        tenantId: newUser.parentUserId || newUserId,
+      });
+
+      const sessionToken = generateSessionToken(newUser);
+      return res.send(renderOAuthSuccessHtml(newUser, sessionToken));
+    } catch (err: any) {
+      await claim.release!();
+      throw err;
+    }
+  } catch (err: any) {
+    return res.status(500).send(renderOAuthErrorHtml('فشل معالجة مصادقة Google', err.message, '/login'));
+  }
+});
+
+// 7.4 POST /api/auth/google/verify-token: Secure ID Token verification endpoint
+// Strictly verifies Google ID tokens via Google TokenInfo API; rejects unverified identities
+app.post('/api/auth/google/verify-token', async (req, res) => {
+  try {
+    const { credential, invitationToken } = req.body;
+
+    if (!credential || typeof credential !== 'string') {
+      return res.status(401).json({
+        error: 'شهادة Google الرقمية الموقعة مطلوبة (Google Credential ID Token is required). لا يُقبل أي معرف محلي غير موثق.',
+        code: 'CREDENTIAL_REQUIRED',
+      });
+    }
+
+    // Call Google TokenInfo API to verify the credential cryptographically
+    const tokenInfoRes = await fetch(
+      `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential.trim())}`
+    );
+
+    if (!tokenInfoRes.ok) {
+      return res.status(401).json({
+        error: 'شهادة Google غير صالحة أو منتهية الصلاحية لدى خوادم Google الرسمية.',
+        code: 'INVALID_GOOGLE_CREDENTIAL',
+      });
+    }
+
+    const payload: any = await tokenInfoRes.json();
+    const verifiedGoogleId = payload.sub ? String(payload.sub) : undefined;
+    const targetEmail = payload.email ? String(payload.email).toLowerCase().trim() : '';
+    const isEmailVerified = payload.email_verified === 'true' || payload.email_verified === true;
+    const userName = payload.name ? String(payload.name).trim() : undefined;
+
+    if (!verifiedGoogleId || !targetEmail || !isEmailVerified) {
+      return res.status(403).json({
+        error: 'حساب Google هذا لا يحتوي على بريد موثق ومؤكد رسمياً (email_verified=false).',
+        code: 'EMAIL_NOT_VERIFIED',
+      });
+    }
+
+    // Check if user already exists in DB
+    let existingUser = users.find(
+      (u) =>
+        (u.googleId && u.googleId === verifiedGoogleId) ||
+        (u.email && u.email.toLowerCase().trim() === targetEmail)
+    );
+
+    if (!existingUser) {
+      try {
+        const { data: dbUsers } = await supabase
+          .from('users')
+          .select('*')
+          .or(`google_id.eq.${verifiedGoogleId},email.ilike.${targetEmail}`)
           .limit(1);
 
         if (dbUsers && dbUsers.length > 0) {
@@ -5764,10 +6314,7 @@ app.post(['/api/auth/google/verify-token', '/api/auth/google/callback'], async (
     }
 
     if (existingUser) {
-      // ----------------------------------------------------------------------
-      // Existing User: Login directly and link Google ID if not linked yet
-      // ----------------------------------------------------------------------
-      if (verifiedGoogleId && existingUser.googleId !== verifiedGoogleId) {
+      if (existingUser.googleId !== verifiedGoogleId) {
         existingUser.googleId = verifiedGoogleId;
         existingUser.googleEmail = targetEmail;
         existingUser.authProvider = existingUser.password ? 'HYBRID' : 'GOOGLE';
@@ -5795,7 +6342,7 @@ app.post(['/api/auth/google/verify-token', '/api/auth/google/callback'], async (
 
       logAuditEvent({
         action: 'GOOGLE_LOGIN_SUCCESS',
-        actionNameAr: 'تسجيل دخول ناجح عبر Google',
+        actionNameAr: 'تسجيل دخول ناجح عبر Google ID Token',
         performedBy: existingUser.id,
         performerName: existingUser.name,
         performerRole: existingUser.role,
@@ -5813,9 +6360,7 @@ app.post(['/api/auth/google/verify-token', '/api/auth/google/callback'], async (
       });
     }
 
-    // ----------------------------------------------------------------------
     // User DOES NOT exist in DB: Gate Registration by Invitation Token
-    // ----------------------------------------------------------------------
     if (!invitationToken || !String(invitationToken).trim()) {
       return res.status(403).json({
         error: 'تسجيل الدخول عبر Google متاح فقط للمستخدمين المدعوين مسبقاً أو المسجلين في النظام. يرجى التواصل مع إدارة العمليات لتلقي رابط دعوة.',
@@ -5823,7 +6368,6 @@ app.post(['/api/auth/google/verify-token', '/api/auth/google/callback'], async (
       });
     }
 
-    // Verify invitation token and claim atomically
     const tokenHash = crypto.createHash('sha256').update(String(invitationToken).trim()).digest('hex');
     const claim = await claimInvitationAtomically(tokenHash);
     if (!claim.success) {
@@ -5834,10 +6378,9 @@ app.post(['/api/auth/google/verify-token', '/api/auth/google/callback'], async (
     }
 
     const invitation = claim.invitation!;
+    const newUserId = crypto.randomUUID();
 
     try {
-      // Create user scoped strictly by invitation
-      const newUserId = crypto.randomUUID();
       const newUser: User = {
         id: newUserId,
         name: userName || invitation.commercialName || targetEmail.split('@')[0],
@@ -5865,7 +6408,11 @@ app.post(['/api/auth/google/verify-token', '/api/auth/google/callback'], async (
       };
 
       try {
-        await supabase.from('users').insert([mapAppUserToDbUser(newUser)]);
+        const dbPayload = mapAppUserToDbUser(newUser);
+        const { error: dbErr } = await supabase.from('users').insert(dbPayload);
+        if (dbErr) {
+          console.warn('Supabase user creation via Google fallback to memory:', dbErr.message);
+        }
       } catch (dbErr: any) {
         console.warn('Supabase user creation via Google fallback to memory:', dbErr?.message);
       }
@@ -5886,7 +6433,7 @@ app.post(['/api/auth/google/verify-token', '/api/auth/google/callback'], async (
       });
 
       const sessionToken = generateSessionToken(newUser);
-      res.json({
+      return res.json({
         success: true,
         message: 'تم تفعيل حسابك وتسجيل الدخول عبر Google بنجاح بموجب الدعوة',
         user: sanitizeUserForClient(newUser),
@@ -5897,7 +6444,7 @@ app.post(['/api/auth/google/verify-token', '/api/auth/google/callback'], async (
       throw err;
     }
   } catch (err: any) {
-    res.status(500).json({ error: 'فشل التحقق من تسجيل الدخول عبر Google: ' + err.message });
+    return res.status(500).json({ error: 'فشل التحقق من تسجيل الدخول عبر Google: ' + err.message });
   }
 });
 

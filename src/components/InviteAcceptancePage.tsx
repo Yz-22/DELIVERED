@@ -26,7 +26,7 @@ interface InviteAcceptancePageProps {
 
 interface InvitationMeta {
   id: string;
-  email: string;
+  email?: string;
   phone?: string;
   role: Role;
   roleName?: string;
@@ -57,6 +57,17 @@ export const InviteAcceptancePage: React.FC<InviteAcceptancePageProps> = ({
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+
+  // Listen for popup auth messages if applicable
+  useEffect(() => {
+    const handleAuthMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'DELIVERE_GOOGLE_AUTH_SUCCESS' && event.data.user && event.data.token) {
+        onLoginSuccess(event.data.user, event.data.token);
+      }
+    };
+    window.addEventListener('message', handleAuthMessage);
+    return () => window.removeEventListener('message', handleAuthMessage);
+  }, [onLoginSuccess]);
 
   // Verify invitation token on mount
   useEffect(() => {
@@ -161,39 +172,11 @@ export const InviteAcceptancePage: React.FC<InviteAcceptancePageProps> = ({
     }
   };
 
-  // Google Login / Accept Flow for invited users
-  const handleGoogleAccept = async () => {
+  // Google Login / Accept Flow for invited users: triggers real OAuth 2.0 with invitationToken in signed state
+  const handleGoogleAccept = () => {
     setSubmitError(null);
     setIsSubmitting(true);
-
-    try {
-      // In this environment, we verify the Google OAuth identity with the invitation token
-      const res = await fetch('/api/auth/google/verify-token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: invitation?.email,
-          name: name || invitation?.commercialName || invitation?.email?.split('@')[0],
-          googleId: `google_oauth_${Date.now()}`,
-          invitationToken: token,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'فشل الانضمام عبر حساب Google');
-      }
-
-      if (data.token && data.user) {
-        localStorage.setItem('dargo_token', data.token);
-        localStorage.setItem('dargo_user_session', JSON.stringify({ user: data.user, token: data.token }));
-        onLoginSuccess(data.user, data.token);
-      }
-    } catch (err: any) {
-      setSubmitError(err.message);
-    } finally {
-      setIsSubmitting(false);
-    }
+    window.location.href = `/api/auth/google?invitationToken=${encodeURIComponent(token)}`;
   };
 
   if (isLoading) {
@@ -263,9 +246,11 @@ export const InviteAcceptancePage: React.FC<InviteAcceptancePageProps> = ({
               تمت دعوتك بواسطة <strong className="text-white">{invitation.inviterName || 'إدارة العمليات'}</strong>{' '}
               للانضمام إلى فرع <strong className="text-white">{invitation.branch || 'المقر الرئيسي'}</strong>.
             </div>
-            <div className="text-[11px] font-mono text-amber-400 pt-1 border-t border-indigo-500/20">
-              البريد المعتمد: {invitation.email}
-            </div>
+            {invitation.email && (
+              <div className="text-[11px] font-mono text-amber-400 pt-1 border-t border-indigo-500/20">
+                البريد المعتمد: {invitation.email}
+              </div>
+            )}
           </div>
 
           {/* Submit Error */}
@@ -302,7 +287,7 @@ export const InviteAcceptancePage: React.FC<InviteAcceptancePageProps> = ({
                   d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
                 />
               </svg>
-              <span>إكمال الانضمام بحساب Google ({invitation.email})</span>
+              <span>المتابعة والتفعيل باستخدام Google {invitation.email ? `(${invitation.email})` : ''}</span>
             </button>
           </div>
 

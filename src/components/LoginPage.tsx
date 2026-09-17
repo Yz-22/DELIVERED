@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Truck,
   Shield,
@@ -68,53 +68,26 @@ export const LoginPage: React.FC<LoginPageProps> = ({
   const [showTokenPrompt, setShowTokenPrompt] = useState(false);
   const [inviteTokenInput, setInviteTokenInput] = useState('');
 
-  const handleGoogleLogin = async () => {
-    setIsGoogleLoading(true);
-    setErrorMessage(null);
-    try {
-      // In web app, we authenticate with the user's email
-      const promptEmail = email.trim() || window.prompt('يرجى إدخال البريد الإلكتروني لحساب Google:');
-      if (!promptEmail) {
-        setIsGoogleLoading(false);
-        return;
-      }
-
-      const res = await fetch('/api/auth/google/verify-token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: promptEmail.toLowerCase().trim(),
-          googleId: `google_oauth_${Date.now()}`,
-          name: promptEmail.split('@')[0],
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        if (data.code === 'REGISTRATION_GATED') {
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const urlError = params.get('error');
+      if (urlError) {
+        if (urlError === 'REGISTRATION_GATED') {
           setErrorMessage('حساب Google هذا غير مسجل في النظام. المنظومة تتطلب رابط دعوة مسبق من إدارة العمليات.');
           setShowTokenPrompt(true);
         } else {
-          throw new Error(data.error || 'فشل تسجيل الدخول عبر Google');
+          setErrorMessage(decodeURIComponent(urlError));
         }
-        return;
       }
-
-      if (data.token && data.user) {
-        if (rememberMe) {
-          localStorage.setItem('dargo_token', data.token);
-          localStorage.setItem('dargo_user_session', JSON.stringify({ user: data.user, token: data.token }));
-        } else {
-          sessionStorage.setItem('dargo_token', data.token);
-          sessionStorage.setItem('dargo_user_session', JSON.stringify({ user: data.user, token: data.token }));
-        }
-        onLoginSuccess(data.user, data.token);
-      }
-    } catch (err: any) {
-      setErrorMessage(err.message);
-    } finally {
-      setIsGoogleLoading(false);
     }
+  }, []);
+
+  const handleGoogleLogin = () => {
+    setIsGoogleLoading(true);
+    setErrorMessage(null);
+    // Initiates real Google OAuth 2.0 flow with Google Account Chooser
+    window.location.href = '/api/auth/google';
   };
 
   const handleRedeemInviteToken = (e: React.FormEvent) => {
