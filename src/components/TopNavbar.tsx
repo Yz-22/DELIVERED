@@ -53,7 +53,7 @@ export type AppSection =
   | 'reports_statements';
 
 interface TopNavbarProps {
-  activeSection: AppSection;
+  activeSection: AppSection | null;
   onChangeSection: (section: AppSection) => void;
   onOpenScanner: () => void;
   onOpenTracking: () => void;
@@ -84,9 +84,9 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
 
   const { branding } = useTenantBranding();
 
-  const role = currentUser?.role || 'ADMIN';
+  const role = currentUser?.role;
 
-  const getRoleLabel = (r: Role) => {
+  const getRoleLabel = (r?: Role | string) => {
     switch (r) {
       case 'SUPER_ADMIN':
         return 'المدير العام للنظام (Super Admin)';
@@ -98,6 +98,10 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
         return 'كابتن توصيل (Driver)';
       case 'OPERATOR':
         return 'موظف الفرز والعمليات';
+      case 'STAFF':
+        return 'موظف المستودع والفرز';
+      case 'DISPATCHER':
+        return 'مرحل وموزع الشحنات';
       case 'CASHIER':
         return 'موظف الكاشير';
       case 'ACCOUNTANT':

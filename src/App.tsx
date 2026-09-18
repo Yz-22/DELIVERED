@@ -32,11 +32,11 @@ import { ReportsAndStatements } from './components/ReportsAndStatements';
 import { LoginPage } from './components/LoginPage';
 import { InviteAcceptancePage } from './components/InviteAcceptancePage';
 import { supabase, resolveSupabaseOAuthSession } from './lib/supabase';
-import { OpsSuperAdminLogin } from './components/OpsSuperAdminLogin';
 import { SuperAdminMasterHub } from './components/SuperAdminMasterHub';
 import { TenantBrandingProvider } from './context/TenantBrandingContext';
 import { Order, OrderStatus, User, Role, OrdersQueryResponse } from './types/logistics';
 import { CheckCircle2, AlertCircle, X } from 'lucide-react';
+import { resolveWorkspaceForUser } from './lib/workspaceResolver';
 import {
   getAuthHeaders as getAppAuthHeaders,
   getAuthToken,
@@ -91,7 +91,10 @@ export default function App() {
   };
 
   // Primary Navigation Section: Operations, Driver Mobile, Financial Settlements, Merchant Portal, Reverse Logistics
-  const [activeSection, setActiveSection] = useState<AppSection>('operations');
+  const [activeSection, setActiveSection] = useState<AppSection | null>(() => {
+    const saved = getStoredDelivereSession();
+    return resolveWorkspaceForUser(saved?.user);
+  });
 
   // Navigation & View Mode within Operations
   const [viewMode, setViewMode] = useState<'grid' | 'kanban' | 'kpi'>('grid');
@@ -130,10 +133,11 @@ export default function App() {
   });
 
   // Active User Role & RBAC Security Matrix
-  const currentRole: Role = currentUser?.role || 'ADMIN';
+  const currentRole = currentUser?.role;
 
   const permissions = useMemo(() => {
-    switch (currentRole) {
+    const normalizedRole = currentRole ? String(currentRole).toUpperCase().trim() : '';
+    switch (normalizedRole) {
       case 'SUPER_ADMIN':
         return {
           allowedSections: [
@@ -183,6 +187,7 @@ export default function App() {
         };
       case 'OPERATOR':
       case 'STAFF':
+      case 'DISPATCHER':
         return {
           allowedSections: [
             'staff_portal',
@@ -257,8 +262,9 @@ export default function App() {
           canAccessFinancials: false,
         };
       default:
+        // FAIL CLOSED: Unknown / undefined / unauthorized role has NO allowed sections
         return {
-          allowedSections: ['operations_grid'] as AppSection[],
+          allowedSections: [] as AppSection[],
           canManageUsers: false,
           canAccessReverseLogistics: false,
           canBulkStatusChange: false,
@@ -308,9 +314,11 @@ export default function App() {
 
   // Guard activeSection: automatically redirect if switched to a role lacking access
   useEffect(() => {
-    if (!permissions.allowedSections.includes(activeSection)) {
-      const defaultSec = permissions.allowedSections[0] || 'operations_grid';
+    if (activeSection && !permissions.allowedSections.includes(activeSection)) {
+      const defaultSec = permissions.allowedSections[0] || null;
       setActiveSection(defaultSec);
+    } else if (!activeSection && permissions.allowedSections.length > 0) {
+      setActiveSection(permissions.allowedSections[0]);
     }
   }, [permissions, activeSection]);
 
@@ -398,19 +406,8 @@ export default function App() {
     storeDelivereSession(user, token);
     setCurrentUser(user);
     setAuthState('AUTHENTICATED');
-    if (user.role === 'SUPER_ADMIN') {
-      setActiveSection('super_admin_hub');
-    } else if (user.role === 'DRIVER') {
-      setActiveSection('driver_portal');
-    } else if (user.role === 'MERCHANT') {
-      setActiveSection('merchant_portal');
-    } else if (user.role === 'OPERATOR' || user.role === 'CASHIER' || user.role === 'STAFF') {
-      setActiveSection('staff_portal');
-    } else if (user.role === 'ACCOUNTANT') {
-      setActiveSection('settlements');
-    } else {
-      setActiveSection('operations_grid');
-    }
+    const targetSection = resolveWorkspaceForUser(user);
+    setActiveSection(targetSection);
     showToast(`مرحباً بك: ${user.name} (${user.roleName || user.role})`);
   };
 
@@ -454,24 +451,12 @@ export default function App() {
     storeDelivereSession(user, switchToken);
     setAuthState('AUTHENTICATED');
 
-    if (user.role === 'SUPER_ADMIN') {
-      setActiveSection('super_admin_hub');
-      showToast(`تم التبديل إلى مركز تحكم السوبر أدمن: ${user.name}`);
-    } else if (user.role === 'DRIVER') {
-      setActiveSection('driver_portal');
-      showToast(`تم التبديل إلى بوابة الكابتن: ${user.name}`);
-    } else if (user.role === 'MERCHANT') {
-      setActiveSection('merchant_portal');
-      showToast(`تم التبديل إلى بوابة التاجر: ${user.name}`);
-    } else if (user.role === 'OPERATOR' || user.role === 'CASHIER' || user.role === 'STAFF') {
-      setActiveSection('staff_portal');
-      showToast(`تم التبديل إلى بوابة موظف العمليات والفرز: ${user.name}`);
-    } else if (user.role === 'ACCOUNTANT') {
-      setActiveSection('settlements');
-      showToast(`تم التبديل إلى بوابة الحسابات والتسويات: ${user.name}`);
+    const targetSection = resolveWorkspaceForUser(user);
+    setActiveSection(targetSection);
+    if (targetSection) {
+      showToast(`تم التبديل بنجاح إلى حساب: ${user.name} (${user.roleName || user.role})`);
     } else {
-      setActiveSection('operations_grid');
-      showToast(`تم تسجيل الدخول بصلاحيات الإدارة: ${user.name}`);
+      showToast(`تنبيه: حساب المستخدم (${user.name}) لا يمتلك مساحة عمل مصرحاً بها`, 'error');
     }
   };
 
@@ -738,6 +723,8 @@ export default function App() {
           if (isMounted) {
             setCurrentUser(savedSession.user);
             setAuthState('AUTHENTICATED');
+            const targetSection = resolveWorkspaceForUser(savedSession.user);
+            setActiveSection(targetSection);
           }
 
           try {
@@ -755,6 +742,8 @@ export default function App() {
                 setCurrentUser(verified.user);
                 storeDelivereSession(verified.user, savedSession.token);
                 setAuthState('AUTHENTICATED');
+                const targetSection = resolveWorkspaceForUser(verified.user);
+                setActiveSection(targetSection);
               }
             } else if (verifyRes.status === 401 || verifyRes.status === 403) {
               if (isMounted) {
@@ -1053,18 +1042,10 @@ export default function App() {
 
     return (
       <>
-        {isOpsMode ? (
-          <OpsSuperAdminLogin
-            onLoginSuccess={handleLoginSuccess}
-            onSwitchToStandardLogin={handleSwitchToStandard}
-          />
-        ) : (
-          <LoginPage
-            onLoginSuccess={handleLoginSuccess}
-            onSwitchToOpsLogin={handleSwitchToOps}
-            onOpenInvite={(token) => setInviteToken(token)}
-          />
-        )}
+        <LoginPage
+          onLoginSuccess={handleLoginSuccess}
+          onOpenInvite={(token) => setInviteToken(token)}
+        />
         {toastMessage && (
           <div
             className={`fixed bottom-5 left-5 z-50 px-4 py-3 rounded-xl shadow-xl flex items-center gap-2.5 text-xs font-bold ${
@@ -1087,7 +1068,7 @@ export default function App() {
 
   return (
     <TenantBrandingProvider>
-      <div className="min-h-screen bg-slate-100/70 text-slate-900 flex flex-col font-sans">
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-amber-500 selection:text-slate-950">
       {/* 1. Global Navigation Bar */}
       <TopNavbar
         activeSection={activeSection}
@@ -1118,12 +1099,10 @@ export default function App() {
               }}
               onSelectUserForLogin={(targetUser) => {
                 setCurrentUser(targetUser);
-                localStorage.setItem('dargo_tms_session', JSON.stringify({ user: targetUser, token: `dargo_jwt_${targetUser.id}` }));
+                storeDelivereSession(targetUser, `delivere_jwt_${targetUser.id}`);
                 showToast(`تم تسجيل الدخول بنجاح بحساب (${targetUser.name}) - ${targetUser.roleName || targetUser.role}`, 'success');
-                if (targetUser.role === 'MERCHANT') setActiveSection('merchant_portal');
-                else if (targetUser.role === 'DRIVER') setActiveSection('driver_portal');
-                else if (targetUser.role === 'OPERATOR') setActiveSection('staff_portal');
-                else setActiveSection('operations_grid');
+                const resolvedSec = resolveWorkspaceForUser(targetUser);
+                setActiveSection(resolvedSec);
               }}
               showToast={showToast}
             />
@@ -1133,8 +1112,8 @@ export default function App() {
             sectionTitle="مركز السوبر أدمن وإدارة الاشتراكات"
             requiredRole="المدير العام للنظام (SUPER_ADMIN)"
             currentRole={currentRole}
-            onNavigateHome={() => setActiveSection(permissions.allowedSections[0])}
-            homeSectionName={getSectionTitle(permissions.allowedSections[0])}
+            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
+            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
           />
         )
       )}
@@ -1161,8 +1140,8 @@ export default function App() {
             sectionTitle="لوحة مؤشرات العمليات (Operations Matrix)"
             requiredRole="إدارة العمليات والفرز (ADMIN / OPERATOR)"
             currentRole={currentRole}
-            onNavigateHome={() => setActiveSection(permissions.allowedSections[0])}
-            homeSectionName={getSectionTitle(permissions.allowedSections[0])}
+            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
+            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
           />
         )
       )}
@@ -1249,8 +1228,8 @@ export default function App() {
             sectionTitle="جدول العمليات والطلبيات الشامل"
             requiredRole="إدارة العمليات والفرز (ADMIN / OPERATOR)"
             currentRole={currentRole}
-            onNavigateHome={() => setActiveSection(permissions.allowedSections[0])}
-            homeSectionName={getSectionTitle(permissions.allowedSections[0])}
+            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
+            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
           />
         )
       )}
@@ -1274,8 +1253,8 @@ export default function App() {
             sectionTitle="كشوفات ومنافست التوزيع"
             requiredRole="إدارة العمليات وموظف الفرز (ADMIN / OPERATOR)"
             currentRole={currentRole}
-            onNavigateHome={() => setActiveSection(permissions.allowedSections[0])}
-            homeSectionName={getSectionTitle(permissions.allowedSections[0])}
+            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
+            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
           />
         )
       )}
@@ -1296,8 +1275,8 @@ export default function App() {
             sectionTitle="إدارة المستخدمين وقوائم الأسعار والصلاحيات"
             requiredRole="مدير العمليات والنظام (ADMIN)"
             currentRole={currentRole}
-            onNavigateHome={() => setActiveSection(permissions.allowedSections[0])}
-            homeSectionName={getSectionTitle(permissions.allowedSections[0])}
+            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
+            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
           />
         )
       )}
@@ -1324,8 +1303,8 @@ export default function App() {
             sectionTitle="بوابة موظف العمليات والفرز والمستودع"
             requiredRole="موظف العمليات أو مدير النظام"
             currentRole={currentRole}
-            onNavigateHome={() => setActiveSection(permissions.allowedSections[0])}
-            homeSectionName={getSectionTitle(permissions.allowedSections[0])}
+            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
+            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
           />
         )
       )}
@@ -1346,8 +1325,8 @@ export default function App() {
             sectionTitle="بوابة الكابتن وتوصيل الشحنات الميدانية"
             requiredRole="كابتن توصيل معتمد (DRIVER)"
             currentRole={currentRole}
-            onNavigateHome={() => setActiveSection(permissions.allowedSections[0])}
-            homeSectionName={getSectionTitle(permissions.allowedSections[0])}
+            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
+            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
           />
         )
       )}
@@ -1363,8 +1342,8 @@ export default function App() {
             sectionTitle="الحسابات والتسويات المالية"
             requiredRole="حساب تاجر أو مدير النظام المالي"
             currentRole={currentRole}
-            onNavigateHome={() => setActiveSection(permissions.allowedSections[0])}
-            homeSectionName={getSectionTitle(permissions.allowedSections[0])}
+            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
+            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
           />
         )
       )}
@@ -1386,8 +1365,8 @@ export default function App() {
             sectionTitle="بوابة التاجر والخدمة الذاتية"
             requiredRole="حساب تاجر معتمد أو الإدارة"
             currentRole={currentRole}
-            onNavigateHome={() => setActiveSection(permissions.allowedSections[0])}
-            homeSectionName={getSectionTitle(permissions.allowedSections[0])}
+            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
+            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
           />
         )
       )}
@@ -1408,8 +1387,8 @@ export default function App() {
             sectionTitle="اللوجستيات العكسية ومستودع الطرود المرتجعة"
             requiredRole="أمين المستودع أو إدارة العمليات (ADMIN / OPERATOR)"
             currentRole={currentRole}
-            onNavigateHome={() => setActiveSection(permissions.allowedSections[0])}
-            homeSectionName={getSectionTitle(permissions.allowedSections[0])}
+            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
+            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
           />
         )
       )}
@@ -1428,8 +1407,8 @@ export default function App() {
             sectionTitle="إعدادات النظام، التسعير والمناطق"
             requiredRole="مدير العمليات والنظام (ADMIN)"
             currentRole={currentRole}
-            onNavigateHome={() => setActiveSection(permissions.allowedSections[0])}
-            homeSectionName={getSectionTitle(permissions.allowedSections[0])}
+            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
+            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
           />
         )
       )}
@@ -1449,8 +1428,8 @@ export default function App() {
             sectionTitle="إدارة فروع المتجر والمناقلات المخزنية"
             requiredRole="حساب تاجر أو إدارة العمليات"
             currentRole={currentRole}
-            onNavigateHome={() => setActiveSection(permissions.allowedSections[0])}
-            homeSectionName={getSectionTitle(permissions.allowedSections[0])}
+            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
+            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
           />
         )
       )}
@@ -1471,8 +1450,8 @@ export default function App() {
             sectionTitle="مساحة الكاشير ونقاط البيع السريعة (POS)"
             requiredRole="أمين الصندوق (CASHIER)"
             currentRole={currentRole}
-            onNavigateHome={() => setActiveSection(permissions.allowedSections[0])}
-            homeSectionName={getSectionTitle(permissions.allowedSections[0])}
+            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
+            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
           />
         )
       )}
@@ -1492,10 +1471,21 @@ export default function App() {
             sectionTitle="التقارير وكشوفات الحسابات الموحدة"
             requiredRole="محاسب مالي أو إدارة العمليات أو تاجر"
             currentRole={currentRole}
-            onNavigateHome={() => setActiveSection(permissions.allowedSections[0])}
-            homeSectionName={getSectionTitle(permissions.allowedSections[0])}
+            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
+            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
           />
         )
+      )}
+
+      {/* 15. Fail-Closed Fallback Access Denied for Unknown / Unauthorized Workspace */}
+      {(!activeSection || permissions.allowedSections.length === 0 || !permissions.allowedSections.includes(activeSection)) && (
+        <AccessDeniedView
+          sectionTitle="منظومة التحكم والوصول الآمن (Delivere Security Matrix)"
+          requiredRole="حساب معتمد ومفعل داخل منظومة ديليفري"
+          currentRole={(currentRole || 'غير محدد') as Role}
+          onNavigateHome={handleLogout}
+          homeSectionName="تسجيل الخروج والعودة لتسجيل الدخول"
+        />
       )}
 
       {/* Floating Toast Notification */}

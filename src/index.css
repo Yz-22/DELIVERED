@@ -1,9 +1,71 @@
 @import "tailwindcss";
 
 @layer base {
-  body {
-    font-family: 'Tajawal', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  :root {
+    /* Surface & Elevation Hierarchy */
+    --color-canvas: #090d16;
+    --color-surface: #0f172a;
+    --color-surface-raised: #1e293b;
+    --color-surface-hover: #273549;
+    --color-surface-elevated: #334155;
+    --color-surface-overlay: #0b1120;
+
+    /* Border Hierarchy */
+    --color-border-subtle: rgba(148, 163, 184, 0.12);
+    --color-border-default: rgba(148, 163, 184, 0.22);
+    --color-border-strong: rgba(148, 163, 184, 0.35);
+
+    /* Text Hierarchy */
+    --color-text-primary: #f8fafc;
+    --color-text-secondary: #cbd5e1;
+    --color-text-muted: #94a3b8;
+    --color-text-disabled: #64748b;
+
+    /* Brand & Accent Tokens */
+    --color-brand-primary: #f59e0b;
+    --color-brand-hover: #fbbf24;
+    --color-brand-subtle: rgba(245, 158, 11, 0.12);
+
+    /* Semantic Status Tokens */
+    --color-status-success: #10b981;
+    --color-status-warning: #f59e0b;
+    --color-status-danger: #ef4444;
+    --color-status-info: #0ea5e9;
+    --color-status-purple: #8b5cf6;
   }
+
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-text-primary);
+    font-family: 'Tajawal', 'IBM Plex Sans Arabic', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Monospace numbers for monetary and barcode precision */
+  .font-tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Custom Scrollbar for High-Density Operational Views */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #090d16;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
 }
 
 @media print {
