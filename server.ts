@@ -166,6 +166,13 @@ export function mapDbUserToAppUser(dbUser: any): User {
     vehicleType: dbUser.vehicle_type || dbUser.vehicleType,
     vehiclePlate: dbUser.vehicle_plate || dbUser.vehiclePlate,
     isActive: dbUser.is_active !== undefined ? Boolean(dbUser.is_active) : (dbUser.isActive !== undefined ? Boolean(dbUser.isActive) : true),
+    tenantId: dbUser.tenant_id || dbUser.tenantId || (dbUser.role === 'SUPER_ADMIN' ? '00000000-0000-0000-0000-000000000001' : (dbUser.parent_user_id || dbUser.id)),
+    portalAccess: dbUser.portal_access || dbUser.portalAccess || (
+      dbUser.role === 'SUPER_ADMIN' ? 'OPS' :
+      dbUser.role === 'MERCHANT' ? 'MERCHANT' :
+      dbUser.role === 'DRIVER' ? 'DRIVER' :
+      dbUser.role === 'CASHIER' ? 'CASHIER' : 'OPS'
+    ),
     parentUserId: dbUser.parent_user_id || dbUser.parentUserId || null,
     createdById: dbUser.created_by_id || dbUser.createdById,
     permissions: Array.isArray(dbUser.permissions) ? dbUser.permissions : [],
@@ -216,6 +223,9 @@ export function mapAppUserToDbUser(appUser: any) {
   }
   if (appUser.isActive !== undefined || appUser.is_active !== undefined) {
     payload.is_active = appUser.isActive !== undefined ? Boolean(appUser.isActive) : Boolean(appUser.is_active);
+  }
+  if (appUser.tenantId !== undefined || appUser.tenant_id !== undefined) {
+    payload.tenant_id = appUser.tenantId || appUser.tenant_id;
   }
   if (appUser.parentUserId !== undefined || appUser.parent_user_id !== undefined) {
     payload.parent_user_id = appUser.parentUserId !== undefined ? appUser.parentUserId : appUser.parent_user_id;
@@ -5992,7 +6002,7 @@ app.post('/api/invitations/:id/resend', requireAuth, async (req, res) => {
 // Existing Users: Safely links google_id/google_email without altering user ID, role, permissions, or hierarchy.
 // New Users: Strictly gated behind valid, unexpired, atomic invitation tokens.
 // Issues signed Delivere sessions (dargo_jwt) with HMAC-SHA256.
-app.post(['/api/auth/supabase-google', '/api/auth/google/verify-token'], async (req, res) => {
+app.post(['/api/auth/supabase-google', '/api/auth/google/verify-token', '/api/auth/login-with-google'], async (req, res) => {
   try {
     const supabaseAccessToken = req.body.supabaseAccessToken || req.body.credential;
     const invitationToken = req.body.invitationToken;
@@ -6039,7 +6049,7 @@ app.post(['/api/auth/supabase-google', '/api/auth/google/verify-token'], async (
       supabaseUser.user_metadata?.name ||
       verifiedEmail.split('@')[0];
 
-    // 1. Check if user already exists in Delivere database
+    // 1. Check if user already exists in Delivere memory or Supabase database
     let existingUser = users.find(
       (u) =>
         (u.googleId && u.googleId === supabaseAuthId) ||
@@ -6047,20 +6057,43 @@ app.post(['/api/auth/supabase-google', '/api/auth/google/verify-token'], async (
         (u.googleEmail && u.googleEmail.toLowerCase().trim() === verifiedEmail)
     );
 
-    if (!existingUser) {
+    // If not found in memory, query Supabase database by email (guaranteed standard column)
+    if (!existingUser && verifiedEmail) {
       try {
-        const { data: dbUsers } = await supabase
+        const { data: dbUsers, error: dbErr } = await supabase
           .from('users')
           .select('*')
-          .or(`google_id.eq.${supabaseAuthId},email.ilike.${verifiedEmail},google_email.ilike.${verifiedEmail}`)
+          .ilike('email', verifiedEmail)
           .limit(1);
 
-        if (dbUsers && dbUsers.length > 0) {
+        if (!dbErr && dbUsers && dbUsers.length > 0) {
           existingUser = mapDbUserToAppUser(dbUsers[0]);
-          users.push(existingUser);
+          if (!users.some((u) => u.id === existingUser!.id)) {
+            users.push(existingUser);
+          }
         }
       } catch (err: any) {
-        console.warn('DB lookup fallback for existing user:', err?.message);
+        console.warn('DB lookup by email fallback notice:', err?.message);
+      }
+    }
+
+    // If still not found, try querying by google_id
+    if (!existingUser && supabaseAuthId) {
+      try {
+        const { data: dbUsers, error: dbErr } = await supabase
+          .from('users')
+          .select('*')
+          .eq('google_id', supabaseAuthId)
+          .limit(1);
+
+        if (!dbErr && dbUsers && dbUsers.length > 0) {
+          existingUser = mapDbUserToAppUser(dbUsers[0]);
+          if (!users.some((u) => u.id === existingUser!.id)) {
+            users.push(existingUser);
+          }
+        }
+      } catch {
+        // google_id column query safe catch
       }
     }
 
@@ -6076,7 +6109,6 @@ app.post(['/api/auth/supabase-google', '/api/auth/google/verify-token'], async (
             .from('users')
             .update({
               google_id: supabaseAuthId,
-              google_email: verifiedEmail,
               auth_provider: existingUser.authProvider,
               updated_at: new Date().toISOString(),
             })

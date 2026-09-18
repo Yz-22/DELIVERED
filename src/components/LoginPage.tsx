@@ -115,16 +115,11 @@ export const LoginPage: React.FC<LoginPageProps> = ({
         const accessToken = await resolveSupabaseOAuthSession(8000);
 
         if (accessToken) {
-          const pendingInvite =
-            sessionStorage.getItem('delivere_pending_invite_token') ||
-            localStorage.getItem('delivere_pending_invite_token');
-
-          const res = await fetch('/api/auth/supabase-google', {
+          const res = await fetch('/api/auth/login-with-google', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               supabaseAccessToken: accessToken,
-              invitationToken: pendingInvite || undefined,
             }),
           });
 
@@ -145,6 +140,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({
           } else {
             // Sign out from Supabase to prevent stuck token loop
             await supabase.auth.signOut();
+            sessionStorage.removeItem('delivere_pending_invite_token');
+            localStorage.removeItem('delivere_pending_invite_token');
 
             if (window.history.replaceState) {
               window.history.replaceState(null, '', window.location.pathname);

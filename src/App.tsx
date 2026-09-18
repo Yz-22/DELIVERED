@@ -103,7 +103,7 @@ export default function App() {
   const isAuthChecking = authState === 'INITIALIZING';
   const [cliqOrder, setCliqOrder] = useState<Order | null>(null);
 
-  // Invite Token URL detector
+  // Invite Token URL detector: only active when explicitly opening an invitation link or on /invite route
   const [inviteToken, setInviteToken] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
     const searchParams = new URLSearchParams(window.location.search);
@@ -111,7 +111,6 @@ export default function App() {
     if (tokenParam) {
       try {
         sessionStorage.setItem('delivere_pending_invite_token', tokenParam);
-        localStorage.setItem('delivere_pending_invite_token', tokenParam);
       } catch {}
       return tokenParam;
     }
@@ -120,16 +119,14 @@ export default function App() {
       if (pToken) {
         try {
           sessionStorage.setItem('delivere_pending_invite_token', pToken);
-          localStorage.setItem('delivere_pending_invite_token', pToken);
         } catch {}
         return pToken;
       }
+      try {
+        return sessionStorage.getItem('delivere_pending_invite_token');
+      } catch {}
     }
-    try {
-      return sessionStorage.getItem('delivere_pending_invite_token') || localStorage.getItem('delivere_pending_invite_token');
-    } catch {
-      return null;
-    }
+    return null;
   });
 
   // Active User Role & RBAC Security Matrix
@@ -672,13 +669,19 @@ export default function App() {
             const accessToken = await resolveSupabaseOAuthSession(8000);
             if (accessToken) {
               const urlParams = new URLSearchParams(window.location.search);
-              const pendingInvite =
-                urlParams.get('token') ||
-                urlParams.get('invite_token') ||
-                urlParams.get('invitation') ||
-                sessionStorage.getItem('delivere_pending_invite_token') ||
-                localStorage.getItem('delivere_pending_invite_token') ||
-                inviteToken;
+              const isExplicitInvite =
+                window.location.pathname.startsWith('/invite') ||
+                urlParams.has('token') ||
+                urlParams.has('invite_token') ||
+                urlParams.has('invitation');
+
+              const pendingInvite = isExplicitInvite
+                ? (urlParams.get('token') ||
+                   urlParams.get('invite_token') ||
+                   urlParams.get('invitation') ||
+                   sessionStorage.getItem('delivere_pending_invite_token') ||
+                   inviteToken)
+                : undefined;
 
               const res = await fetch('/api/auth/supabase-google', {
                 method: 'POST',
@@ -703,9 +706,13 @@ export default function App() {
                 }
                 return;
               } else {
-                console.warn('Backend OAuth exchange failed:', data?.error);
+                console.warn('Backend OAuth exchange notice:', data?.error);
                 await supabase.auth.signOut();
-                if (pendingInvite) {
+                if (data?.code === 'INVALID_INVITATION_TOKEN' || data?.code === 'REGISTRATION_GATED') {
+                  sessionStorage.removeItem('delivere_pending_invite_token');
+                  localStorage.removeItem('delivere_pending_invite_token');
+                  setInviteToken(null);
+                } else if (pendingInvite) {
                   setInviteToken(pendingInvite);
                 }
               }

@@ -90,6 +90,8 @@ export const InviteAcceptancePage: React.FC<InviteAcceptancePageProps> = ({
         const data = await res.json();
 
         if (!res.ok) {
+          sessionStorage.removeItem('delivere_pending_invite_token');
+          localStorage.removeItem('delivere_pending_invite_token');
           throw new Error(data.error || 'رابط الدعوة غير صالح أو منتهي الصلاحية');
         }
 
@@ -312,7 +314,11 @@ export const InviteAcceptancePage: React.FC<InviteAcceptancePageProps> = ({
           <div className="pt-2">
             <button
               type="button"
-              onClick={onNavigateToLogin}
+              onClick={() => {
+                sessionStorage.removeItem('delivere_pending_invite_token');
+                localStorage.removeItem('delivere_pending_invite_token');
+                onNavigateToLogin();
+              }}
               className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-5 py-2.5 rounded-xl text-xs flex items-center gap-2 mx-auto cursor-pointer"
             >
               <span>العودة إلى صفحة تسجيل الدخول</span>
