@@ -379,6 +379,8 @@ export interface User {
   createdById?: string;             // Who created this account
   permissions?: string[];           // Active specific permissions assigned to this user
   maxAllowedPermissions?: string[]; // Boundary ceiling set by Super Admin for an Operations Admin
+  portalAccess?: 'OPS' | 'MERCHANT' | 'DRIVER' | 'CASHIER' | 'STAFF' | string;
+  portal_access?: string;
 
   // Phase 1.5B Identity & Invitation Fields
   authProvider?: 'EMAIL_PASSWORD' | 'GOOGLE' | 'HYBRID';

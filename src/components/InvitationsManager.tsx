@@ -364,12 +364,15 @@ export const InvitationsManager: React.FC<InvitationsManagerProps> = ({ currentU
                         )}
                       </td>
                       <td className="p-3">
-                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-bold bg-slate-100 text-slate-800">
+                        <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-bold ${
+                          inv.role === 'SUPER_ADMIN' ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'bg-slate-100 text-slate-800'
+                        }`}>
+                          {inv.role === 'SUPER_ADMIN' && <Shield className="w-3 h-3 text-amber-600" />}
                           {inv.role === 'ADMIN' && <Shield className="w-3 h-3 text-indigo-600" />}
                           {inv.role === 'MERCHANT' && <Building2 className="w-3 h-3 text-amber-600" />}
                           {inv.role === 'DRIVER' && <Car className="w-3 h-3 text-emerald-600" />}
                           {inv.role === 'OPERATOR' && <Briefcase className="w-3 h-3 text-blue-600" />}
-                          <span>{inv.roleName || inv.role}</span>
+                          <span>{inv.roleName || (inv.role === 'SUPER_ADMIN' ? 'المدير العام للنظام' : inv.role)}</span>
                         </span>
                       </td>
                       <td className="p-3 text-slate-600">
@@ -550,7 +553,9 @@ export const InvitationsManager: React.FC<InvitationsManagerProps> = ({ currentU
                           ...formData,
                           role: newRole,
                           roleName:
-                            newRole === 'ADMIN'
+                            newRole === 'SUPER_ADMIN'
+                              ? 'المدير العام للنظام (Super Admin)'
+                              : newRole === 'ADMIN'
                               ? 'مدير العمليات'
                               : newRole === 'MERCHANT'
                               ? 'صلاحية التاجر والمبيعات'
@@ -565,7 +570,12 @@ export const InvitationsManager: React.FC<InvitationsManagerProps> = ({ currentU
                       }}
                       className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold focus:outline-hidden focus:ring-2 focus:ring-indigo-500"
                     >
-                      {isSuperAdmin && <option value="ADMIN">مدير عمليات (Admin / Tenant)</option>}
+                      {isSuperAdmin && (
+                        <>
+                          <option value="SUPER_ADMIN">المدير العام للنظام (Super Admin)</option>
+                          <option value="ADMIN">مدير عمليات (Admin / Tenant)</option>
+                        </>
+                      )}
                       {(isSuperAdmin || currentUser?.role === 'ADMIN') && (
                         <>
                           <option value="MERCHANT">حساب تاجر ومبيعات (Merchant)</option>

@@ -5260,13 +5260,15 @@ app.post('/api/invitations', requireAuth, async (req, res) => {
     const requesterRank = getRoleRank(ctx.userRole);
     const targetRank = getRoleRank(role);
 
-    if (ctx.userRole === 'SUPER_ADMIN') {
-      if (role === 'SUPER_ADMIN') {
+    if (role === 'SUPER_ADMIN') {
+      if (ctx.userRole !== 'SUPER_ADMIN') {
         return res.status(403).json({
-          error: 'لا يمكن إنشاء دعوة لسوبر أدمن آخر عبر نظام الدعوات الفرعية',
-          code: 'ROLE_ESCALATION_FORBIDDEN',
+          error: 'إنشاء دعوة لمدير عام للنظام (SUPER_ADMIN) مقصور حصرياً على مدراء النظام العامين المصادق عليهم (403 Forbidden).',
+          code: 'FORBIDDEN_SUPER_ADMIN_INVITE',
         });
       }
+    } else if (ctx.userRole === 'SUPER_ADMIN') {
+      // Super Admin is authorized to create invitations for any role
     } else if (ctx.userRole === 'ADMIN') {
       if (role === 'CASHIER') {
         return res.status(403).json({
@@ -5302,7 +5304,13 @@ app.post('/api/invitations', requireAuth, async (req, res) => {
     let finalPermissions: string[] = Array.isArray(permissions) ? permissions : [];
     let finalMaxAllowed: string[] = Array.isArray(maxAllowedPermissions) ? maxAllowedPermissions : finalPermissions;
 
-    if (ctx.isSuperAdmin) {
+    if (role === 'SUPER_ADMIN') {
+      // Canonical Platform Root Tenant for all SUPER_ADMIN accounts
+      assignedTenantId = '00000000-0000-0000-0000-000000000001';
+      assignedParentUserId = null;
+      finalPermissions = ['*'];
+      finalMaxAllowed = ['*'];
+    } else if (ctx.isSuperAdmin) {
       assignedTenantId = req.body.tenantId || req.body.parentUserId || null;
       assignedParentUserId = req.body.parentUserId || (role === 'ADMIN' ? null : assignedTenantId);
     } else if (ctx.userRole === 'ADMIN') {
@@ -5424,16 +5432,17 @@ app.post('/api/invitations', requireAuth, async (req, res) => {
     userInvitations.unshift(newInvitation);
 
     // Audit Logging
+    const isSuperInvite = role === 'SUPER_ADMIN';
     logAuditEvent({
-      action: 'INVITATION_CREATED',
-      actionNameAr: 'إنشاء وتوليد رابط دعوة مستخدم جديد',
+      action: isSuperInvite ? 'SUPER_ADMIN_INVITATION_CREATED' : 'INVITATION_CREATED',
+      actionNameAr: isSuperInvite ? 'إنشاء وتوليد رابط دعوة سوبر أدمن جديد' : 'إنشاء وتوليد رابط دعوة مستخدم جديد',
       performedBy: ctx.userId,
       performerName: ctx.user?.name,
       performerRole: ctx.userRole,
       targetId: invitationId,
       targetType: 'INVITATION',
-      targetName: cleanEmail,
-      tenantId: assignedTenantId || ctx.tenantId,
+      targetName: cleanEmail || (isSuperInvite ? 'دعوة سوبر أدمن مشفرة' : 'دعوة مستخدم جديدة'),
+      tenantId: assignedTenantId || ctx.tenantId || '00000000-0000-0000-0000-000000000001',
       details: { invitedEmail: cleanEmail, role, tenantId: assignedTenantId, expiresAt },
     });
 
@@ -5709,6 +5718,20 @@ app.post(['/api/invitations/accept', '/invitations/accept'], async (req, res) =>
         }
 
         const newUserId = crypto.randomUUID();
+        const isSuperAdminRole = invitation.role === 'SUPER_ADMIN';
+        const assignedTenantId = isSuperAdminRole
+          ? '00000000-0000-0000-0000-000000000001'
+          : (invitation.tenantId || invitation.parentUserId || newUserId);
+        const assignedPortalAccess = isSuperAdminRole
+          ? 'OPS'
+          : (invitation.role === 'MERCHANT' ? 'MERCHANT' : (invitation.role === 'DRIVER' ? 'DRIVER' : (invitation.role === 'CASHIER' ? 'CASHIER' : 'OPS')));
+        const assignedPermissions = isSuperAdminRole
+          ? ['*']
+          : (invitation.permissions && invitation.permissions.length > 0 ? invitation.permissions : ['orders.view']);
+        const assignedMaxAllowed = isSuperAdminRole
+          ? ['*']
+          : (invitation.maxAllowedPermissions && invitation.maxAllowedPermissions.length > 0 ? invitation.maxAllowedPermissions : assignedPermissions);
+
         const newUser: User = {
           id: newUserId,
           name: userName,
@@ -5716,7 +5739,9 @@ app.post(['/api/invitations/accept', '/invitations/accept'], async (req, res) =>
           phone: String(phone || invitation.phone || '0790000000').trim(),
           password: rawPass ? hashPassword(rawPass) : undefined,
           role: invitation.role,
-          roleName: invitation.roleName,
+          roleName: invitation.roleName || (isSuperAdminRole ? 'المدير العام للنظام (Super Admin)' : undefined),
+          tenantId: assignedTenantId,
+          portalAccess: assignedPortalAccess,
           commercialName: invitation.commercialName || userName,
           storeName: invitation.commercialName || userName,
           commercialType: 'تجارة ومبيعات إلكترونية',
@@ -5726,10 +5751,10 @@ app.post(['/api/invitations/accept', '/invitations/accept'], async (req, res) =>
           priceList: invitation.priceList || 'جميع المملكة 2 (القياسية)',
           pricePlanId: invitation.pricePlanId,
           isActive: true,
-          parentUserId: invitation.parentUserId,
+          parentUserId: isSuperAdminRole ? null : (invitation.parentUserId || null),
           createdById: invitation.invitedBy,
-          permissions: invitation.permissions || [],
-          maxAllowedPermissions: invitation.maxAllowedPermissions || invitation.permissions || [],
+          permissions: assignedPermissions,
+          maxAllowedPermissions: assignedMaxAllowed,
           authProvider: googleId ? 'GOOGLE' : 'EMAIL_PASSWORD',
           googleId: googleId ? String(googleId) : undefined,
           googleEmail: googleEmail ? String(googleEmail).toLowerCase().trim() : undefined,
@@ -5765,21 +5790,23 @@ app.post(['/api/invitations/accept', '/invitations/accept'], async (req, res) =>
       await claim.commit!(authenticatedUser.id);
 
       // Audit Log
+      const isSuper = authenticatedUser.role === 'SUPER_ADMIN';
       logAuditEvent({
-        action: 'INVITATION_ACCEPTED',
-        actionNameAr: 'قبول وتفعيل دعوة الانضمام للمنظومة',
+        action: isSuper ? 'SUPER_ADMIN_INVITATION_ACCEPTED' : 'INVITATION_ACCEPTED',
+        actionNameAr: isSuper ? 'قبول وتفعيل حساب سوبر أدمن جديد بموجب الدعوة' : 'قبول وتفعيل دعوة الانضمام للمنظومة',
         performedBy: authenticatedUser.id,
         performerName: authenticatedUser.name,
         performerRole: authenticatedUser.role,
         targetId: invitation.id,
         targetType: 'INVITATION',
         targetName: targetEmail,
-        tenantId: authenticatedUser.parentUserId || authenticatedUser.id,
+        tenantId: authenticatedUser.tenantId || '00000000-0000-0000-0000-000000000001',
         details: {
           userId: authenticatedUser.id,
           email: targetEmail,
           isNewUser: !existingUser,
           authProvider: authenticatedUser.authProvider,
+          role: authenticatedUser.role,
         },
       });
 
@@ -6109,13 +6136,29 @@ app.post(['/api/auth/supabase-google', '/api/auth/google/verify-token'], async (
 
     try {
       // Authorization context strictly derived from invitation; identity strictly derived from Supabase
+      const isSuperAdminRole = invitation.role === 'SUPER_ADMIN';
+      const assignedTenantId = isSuperAdminRole
+        ? '00000000-0000-0000-0000-000000000001'
+        : (invitation.tenantId || invitation.parentUserId || newUserId);
+      const assignedPortalAccess = isSuperAdminRole
+        ? 'OPS'
+        : (invitation.role === 'MERCHANT' ? 'MERCHANT' : (invitation.role === 'DRIVER' ? 'DRIVER' : (invitation.role === 'CASHIER' ? 'CASHIER' : 'OPS')));
+      const assignedPermissions = isSuperAdminRole
+        ? ['*']
+        : (invitation.permissions && invitation.permissions.length > 0 ? invitation.permissions : ['orders.view']);
+      const assignedMaxAllowed = isSuperAdminRole
+        ? ['*']
+        : (invitation.maxAllowedPermissions && invitation.maxAllowedPermissions.length > 0 ? invitation.maxAllowedPermissions : assignedPermissions);
+
       const newUser: User = {
         id: newUserId,
         name: verifiedName || invitation.commercialName || verifiedEmail.split('@')[0],
         email: verifiedEmail,
         phone: invitation.phone || '0790000000',
         role: invitation.role,
-        roleName: invitation.roleName,
+        roleName: invitation.roleName || (isSuperAdminRole ? 'المدير العام للنظام (Super Admin)' : undefined),
+        tenantId: assignedTenantId,
+        portalAccess: assignedPortalAccess,
         commercialName: invitation.commercialName || verifiedName || verifiedEmail.split('@')[0],
         storeName: invitation.commercialName || verifiedName,
         commercialType: 'تجارة ومبيعات إلكترونية',
@@ -6124,10 +6167,10 @@ app.post(['/api/auth/supabase-google', '/api/auth/google/verify-token'], async (
         priceList: invitation.priceList || 'جميع المملكة 2 (القياسية)',
         pricePlanId: invitation.pricePlanId,
         isActive: true,
-        parentUserId: invitation.parentUserId,
+        parentUserId: isSuperAdminRole ? null : (invitation.parentUserId || null),
         createdById: invitation.invitedBy,
-        permissions: invitation.permissions || [],
-        maxAllowedPermissions: invitation.maxAllowedPermissions || invitation.permissions || [],
+        permissions: assignedPermissions,
+        maxAllowedPermissions: assignedMaxAllowed,
         authProvider: 'GOOGLE',
         googleId: supabaseAuthId,
         googleEmail: verifiedEmail,
@@ -6149,15 +6192,21 @@ app.post(['/api/auth/supabase-google', '/api/auth/google/verify-token'], async (
       await claim.commit!(newUserId);
 
       logAuditEvent({
-        action: 'INVITATION_ACCEPTED_GOOGLE',
-        actionNameAr: 'قبول وتفعيل دعوة الانضمام عبر حساب Supabase Google المعتمد',
+        action: isSuperAdminRole ? 'SUPER_ADMIN_INVITATION_ACCEPTED' : 'INVITATION_ACCEPTED_GOOGLE',
+        actionNameAr: isSuperAdminRole ? 'قبول وتفعيل حساب سوبر أدمن جديد عبر Google Auth' : 'قبول وتفعيل دعوة الانضمام عبر حساب Supabase Google المعتمد',
         performedBy: newUserId,
         performerName: newUser.name,
         performerRole: newUser.role,
         targetId: invitation.id,
         targetType: 'INVITATION',
         targetName: verifiedEmail,
-        tenantId: newUser.parentUserId || newUserId,
+        tenantId: newUser.tenantId || '00000000-0000-0000-0000-000000000001',
+        details: {
+          userId: newUserId,
+          email: verifiedEmail,
+          role: newUser.role,
+          authProvider: 'GOOGLE',
+        },
       });
 
       const sessionToken = generateSessionToken(newUser);

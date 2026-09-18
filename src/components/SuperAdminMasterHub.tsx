@@ -36,6 +36,9 @@ import {
   BadgePercent,
   Terminal,
   FileText,
+  Mail,
+  Copy,
+  UserPlus,
 } from 'lucide-react';
 import {
   User,
@@ -92,6 +95,16 @@ export const SuperAdminMasterHub: React.FC<SuperAdminMasterHubProps> = ({
 
   // Password reset state
   const [newPasswordVal, setNewPasswordVal] = useState('');
+
+  // Super Admin Invitation State
+  const [isInviteSuperAdminModalOpen, setIsInviteSuperAdminModalOpen] = useState(false);
+  const [inviteSuperAdminName, setInviteSuperAdminName] = useState('');
+  const [inviteSuperAdminEmail, setInviteSuperAdminEmail] = useState('');
+  const [inviteSuperAdminPhone, setInviteSuperAdminPhone] = useState('');
+  const [inviteSuperAdminExpiresInDays, setInviteSuperAdminExpiresInDays] = useState<number>(7);
+  const [generatedSuperAdminInviteUrl, setGeneratedSuperAdminInviteUrl] = useState<string>('');
+  const [isInvitingSuperAdmin, setIsInvitingSuperAdmin] = useState(false);
+  const [isCopiedInvite, setIsCopiedInvite] = useState(false);
 
   // Filtering
   const filteredUsers = users.filter((u) => {
@@ -317,6 +330,57 @@ export const SuperAdminMasterHub: React.FC<SuperAdminMasterHubProps> = ({
     }
   };
 
+  // Super Admin Invitation Handler
+  const handleCreateSuperAdminInvite = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inviteSuperAdminEmail || !inviteSuperAdminEmail.trim()) {
+      showToast('يرجى إدخال البريد الإلكتروني للمدير العام المطلوب دعوته', 'error');
+      return;
+    }
+
+    try {
+      setIsInvitingSuperAdmin(true);
+      const res = await fetch('/api/invitations', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          email: inviteSuperAdminEmail.trim().toLowerCase(),
+          name: inviteSuperAdminName.trim() || undefined,
+          phone: inviteSuperAdminPhone.trim() || undefined,
+          role: 'SUPER_ADMIN',
+          roleName: 'المدير العام للنظام (Super Admin)',
+          expiresInDays: inviteSuperAdminExpiresInDays || 7,
+          permissions: ['*'],
+          maxAllowedPermissions: ['*'],
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        setGeneratedSuperAdminInviteUrl(data.inviteUrl);
+        showToast('تم توليد رابط دعوة السوبر أدمن المشفر بنجاح', 'success');
+      } else {
+        showToast(data.error || 'فشل توليد رابط الدعوة للسوبر أدمن', 'error');
+      }
+    } catch (err: any) {
+      console.error('Super Admin invite error:', err);
+      showToast('خطأ في الاتصال بالخادم أثناء توليد رابط الدعوة: ' + err.message, 'error');
+    } finally {
+      setIsInvitingSuperAdmin(false);
+    }
+  };
+
+  const copyToClipboard = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setIsCopiedInvite(true);
+      showToast('تم نسخ الرابط إلى الحافظة بنجاح', 'success');
+      setTimeout(() => setIsCopiedInvite(false), 2500);
+    } catch (err) {
+      showToast('تعذر النسخ التلقائي، يرجى تحديد الرابط ونسخه يدوياً', 'error');
+    }
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in duration-300" dir="rtl">
       {/* 1. Header Banner & Master Title */}
@@ -346,7 +410,21 @@ export const SuperAdminMasterHub: React.FC<SuperAdminMasterHubProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center flex-wrap gap-2.5">
+            <button
+              onClick={() => {
+                setGeneratedSuperAdminInviteUrl('');
+                setInviteSuperAdminEmail('');
+                setInviteSuperAdminName('');
+                setInviteSuperAdminPhone('');
+                setIsInviteSuperAdminModalOpen(true);
+              }}
+              className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl text-xs flex items-center gap-2 shadow-lg shadow-indigo-600/25 transition-all active:scale-95 cursor-pointer border border-indigo-400/30"
+            >
+              <UserPlus className="w-4 h-4" />
+              <span>دعوة سوبر أدمن جديد</span>
+            </button>
+
             <button
               onClick={() => setIsCreateModalOpen(true)}
               className="px-4 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-xl text-xs flex items-center gap-2 shadow-lg shadow-amber-500/25 transition-all active:scale-95 cursor-pointer"
@@ -1072,6 +1150,204 @@ export const SuperAdminMasterHub: React.FC<SuperAdminMasterHubProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* ------------------------------------------------------------- */}
+      {/* MODAL 5: Secure Super Admin Invitation */}
+      {/* ------------------------------------------------------------- */}
+      {isInviteSuperAdminModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-xs p-4 animate-in fade-in">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-bold shadow-md shadow-indigo-600/20">
+                  <Shield className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900">دعوة مدير عام جديد للمنظومة (Super Admin)</h3>
+                  <p className="text-xs text-slate-500">توليد رابط دعوة آمن ومشفّر بصلاحيات المالك الكاملة</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsInviteSuperAdminModalOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {!generatedSuperAdminInviteUrl ? (
+              <form onSubmit={handleCreateSuperAdminInvite} className="space-y-4 mt-4">
+                <div className="p-3 bg-amber-50 rounded-2xl border border-amber-200/80 text-amber-900 text-xs flex items-start gap-2.5">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <p className="font-bold">تنبيه أمني وإداري صارم:</p>
+                    <p className="text-[11px] leading-relaxed">
+                      هذه الدعوة تمنح حاملها صلاحيات السوبر أدمن الكاملة (Full Root Access) على المنظومة والبيانات، والربط التلقائي بتينانت المنصة الجذري. سيقوم المدعو بتعيين كلمة مروره الخاصة بنفسه عند فتح الرابط.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-700 block">البريد الإلكتروني للسوبر أدمن المدعو: *</label>
+                  <input
+                    type="email"
+                    required
+                    dir="ltr"
+                    placeholder="admin2@domain.com"
+                    value={inviteSuperAdminEmail}
+                    onChange={(e) => setInviteSuperAdminEmail(e.target.value)}
+                    className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-hidden text-left"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-700 block">الاسم الكريم (اختياري):</label>
+                    <input
+                      type="text"
+                      placeholder="اسم المدير..."
+                      value={inviteSuperAdminName}
+                      onChange={(e) => setInviteSuperAdminName(e.target.value)}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-700 block">رقم الهاتف (اختياري):</label>
+                    <input
+                      type="tel"
+                      dir="ltr"
+                      placeholder="0790000000"
+                      value={inviteSuperAdminPhone}
+                      onChange={(e) => setInviteSuperAdminPhone(e.target.value)}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-hidden text-left"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-700 block">مدة صلاحية رابط الدعوة:</label>
+                  <select
+                    value={inviteSuperAdminExpiresInDays}
+                    onChange={(e) => setInviteSuperAdminExpiresInDays(Number(e.target.value))}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-hidden cursor-pointer"
+                  >
+                    <option value={1}>يوم واحد (24 ساعة - أمان عالي)</option>
+                    <option value={3}>3 أيام</option>
+                    <option value={7}>7 أيام (موصى به)</option>
+                    <option value={14}>14 يوماً</option>
+                    <option value={30}>30 يوماً</option>
+                  </select>
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setIsInviteSuperAdminModalOpen(false)}
+                    className="px-4 py-2 border border-slate-200 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-50 cursor-pointer"
+                  >
+                    إلغاء
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isInvitingSuperAdmin}
+                    className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl text-xs shadow-lg shadow-indigo-600/25 cursor-pointer disabled:opacity-50 flex items-center gap-2"
+                  >
+                    {isInvitingSuperAdmin ? (
+                      <>
+                        <RotateCw className="w-4 h-4 animate-spin" />
+                        <span>جاري التوليد والتشفير...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Shield className="w-4 h-4" />
+                        <span>توليد رابط الدعوة الآن</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div className="space-y-4 mt-4 animate-in fade-in">
+                <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-start gap-2.5 text-emerald-900">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                  <div>
+                    <h4 className="text-xs font-black">تم توليد رابط دعوة السوبر أدمن بنجاح</h4>
+                    <p className="text-[11px] text-emerald-800 mt-0.5">
+                      تم تشفير الرمز وتخزين الـ Hash في قاعدة البيانات، وربط الرتبة الجذرية SUPER_ADMIN والصلاحيات الشاملة.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-slate-700 block">رابط الدعوة المباشر والمشفر:</label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      readOnly
+                      dir="ltr"
+                      value={generatedSuperAdminInviteUrl}
+                      className="w-full px-3 py-2 bg-slate-100 border border-slate-300 rounded-xl text-xs font-mono font-bold text-slate-800 select-all"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(generatedSuperAdminInviteUrl)}
+                      className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shrink-0 transition-all cursor-pointer ${
+                        isCopiedInvite
+                          ? 'bg-emerald-600 text-white shadow-emerald-500/20'
+                          : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-600/20'
+                      }`}
+                    >
+                      {isCopiedInvite ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                      <span>{isCopiedInvite ? 'تم النسخ' : 'نسخ الرابط'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-600 space-y-1">
+                  <div className="flex justify-between">
+                    <span className="font-bold">البريد الإلكتروني:</span>
+                    <span className="font-mono text-slate-900">{inviteSuperAdminEmail}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="font-bold">الرتبة الممنوحة:</span>
+                    <span className="font-bold text-indigo-700">SUPER_ADMIN (المدير العام للنظام)</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="font-bold">الصلاحيات:</span>
+                    <span className="font-mono text-emerald-700 font-bold">[*] Full Root Scope</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between pt-3 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setGeneratedSuperAdminInviteUrl('');
+                      setInviteSuperAdminEmail('');
+                      setInviteSuperAdminName('');
+                      setInviteSuperAdminPhone('');
+                    }}
+                    className="text-xs text-indigo-600 hover:text-indigo-800 font-bold cursor-pointer"
+                  >
+                    + إنشاء دعوة أخرى
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsInviteSuperAdminModalOpen(false);
+                      onRefresh();
+                    }}
+                    className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-xs cursor-pointer"
+                  >
+                    تم وإغلاق
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
