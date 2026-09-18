@@ -37,16 +37,10 @@ async function runReadOnlyAudit() {
   console.log('===============================================================\n');
 
   // 1. Setup Auth Principals (Super Admin, Basil - Tenant 1, Waseem - Tenant 2)
-  let superAdminLogin = await api('/api/auth/login', {
+  const superAdminLogin = await api('/api/auth/login', {
     method: 'POST',
-    body: { email: 'admin@dargo-ops.io', password: 'password123' },
+    body: { email: 'admin@dargo-tms.io', password: 'admin123' },
   });
-  if (superAdminLogin.status !== 200) {
-    superAdminLogin = await api('/api/auth/register-ops', {
-      method: 'POST',
-      body: { name: 'Super Admin Master', email: 'admin@dargo-ops.io', phone: '0790000001', password: 'password123' },
-    });
-  }
   const superAdminToken = superAdminLogin.data?.token;
 
   // Create Basil (Admin of Tenant 1)

@@ -1,9 +1,17 @@
 -- ==============================================================================
 -- Delivere Logistics & Enterprise TMS/POS
--- Migration: 20260917_workspace_branch_architecture.sql
--- Name: Role Workspaces + Merchant Multi-Branch + Statements & Reports Architecture
--- Safe, Non-Destructive, Additive, Idempotent Migration
+-- Migration: 20260917_workspace_branch_architecture.sql [SUPERSEDED & ARCHIVED]
+-- STATUS: DO NOT RUN. Superseded by Enterprise Hardening Modular Migrations A through H:
+--   - 20260918_branch_foundation.sql (Phase A)
+--   - 20260918_branch_access_security.sql (Phase B)
+--   - 20260918_inventory_foundation.sql (Phase C)
+--   - 20260918_stock_movements.sql (Phase D)
+--   - 20260918_financial_ledger_hardening.sql (Phase E)
+--   - 20260918_financial_idempotency.sql (Phase F)
+--   - 20260918_accounting_periods.sql (Phase G)
+--   - 20260918_rls_security_hardening.sql (Phase H)
 -- ==============================================================================
+
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";

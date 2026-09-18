@@ -19,6 +19,12 @@ import type {
   SubscriptionEngineStatus,
   UserInvitation,
   InvitationStatus,
+  MerchantBranch,
+  UserBranchAccess,
+  BranchInventoryItem,
+  MerchantStockTransfer,
+  SettlementRecord,
+  AccountingPeriod,
 } from './src/types/logistics.ts';
 import type {
   Account,
@@ -29,6 +35,10 @@ import type {
   StockMovement,
   MerchantInvoice,
   MerchantExpense,
+  DriverCashCustodyStatement,
+  MerchantPayableStatement,
+  ReconciliationReport,
+  ReconciliationIssue,
 } from './src/types/accounting.ts';
 
 const app = express();
@@ -866,23 +876,37 @@ export interface MerchantStockTransferRecord {
   updatedAt?: string;
 }
 
-export let merchantBranches: MerchantBranchRecord[] = [];
-export let merchantStockTransfers: MerchantStockTransferRecord[] = [];
+export let merchantBranches: MerchantBranch[] = [];
+export let userBranchAccess: UserBranchAccess[] = [];
+export let branchInventory: BranchInventoryItem[] = [];
+export let merchantStockTransfers: MerchantStockTransfer[] = [];
+export let settlementRecords: SettlementRecord[] = [];
+export let accountingPeriods: AccountingPeriod[] = [
+  {
+    id: 'period-2026-09',
+    tenantId: 'system',
+    periodName: 'فترة أيلول/سبتمبر 2026',
+    startDate: '2026-09-01T00:00:00.000Z',
+    endDate: '2026-09-30T23:59:59.999Z',
+    status: 'OPEN',
+    createdAt: new Date().toISOString(),
+  }
+];
 
-// Helper: Ensure every merchant has a main branch backfilled
+// Helper: Ensure every merchant has a clean main branch without fake defaults
 export function ensureMerchantBranches() {
   const merchants = users.filter((u) => u.role === 'MERCHANT');
   for (const m of merchants) {
     const existing = merchantBranches.find((b) => b.merchantId === m.id);
     if (!existing) {
-      const mainBranch: MerchantBranchRecord = {
+      const mainBranch: MerchantBranch = {
         id: `br-${m.id}-main`,
         merchantId: m.id,
-        tenantId: m.parentUserId || m.tenantId || null,
+        tenantId: m.parentUserId || m.tenantId || 'system',
         name: `${m.storeName || m.name} - الفرع الرئيسي`,
         code: 'MAIN-01',
-        phone: m.phone || '0790000000',
-        address: m.address || 'المقر الرئيسي للمتجر',
+        phone: m.phone || '',
+        address: m.address || '',
         governorate: m.city || 'عمان',
         city: m.city || 'عمان',
         isMain: true,
@@ -894,15 +918,47 @@ export function ensureMerchantBranches() {
     }
   }
 
-  // Backfill orders with empty branchId
-  for (const ord of orders) {
-    if (ord.merchantId && !ord.branchId) {
-      const mainB =
-        merchantBranches.find((b) => b.merchantId === ord.merchantId && b.isMain) ||
-        merchantBranches.find((b) => b.merchantId === ord.merchantId);
-      if (mainB) {
-        ord.branchId = mainB.id;
-        ord.branchName = mainB.name;
+  // Ensure cashiers have normalized user_branch_access records
+  const cashiers = users.filter((u) => u.role === 'CASHIER');
+  for (const c of cashiers) {
+    const existingAccess = userBranchAccess.find((uba) => uba.userId === c.id);
+    if (!existingAccess) {
+      const parentMerchantId = c.parentUserId || c.tenantId;
+      const targetBranch = merchantBranches.find(
+        (b) => b.merchantId === parentMerchantId && (b.id === c.branchId || b.name === c.branch || b.isMain)
+      );
+      if (targetBranch && parentMerchantId) {
+        userBranchAccess.push({
+          id: `uba-${c.id}-${targetBranch.id}`,
+          tenantId: c.tenantId || parentMerchantId,
+          merchantId: parentMerchantId,
+          userId: c.id,
+          branchId: targetBranch.id,
+          roleInBranch: 'CASHIER',
+          isDefault: true,
+          createdAt: c.createdAt || new Date().toISOString(),
+        });
+      }
+    }
+  }
+
+  // Ensure merchant products have normalized branch inventory tracking
+  for (const prod of merchantProducts) {
+    const mBranches = merchantBranches.filter((b) => b.merchantId === prod.merchantId);
+    for (const br of mBranches) {
+      const exists = branchInventory.find((bi) => bi.branchId === br.id && bi.productId === prod.id);
+      if (!exists) {
+        branchInventory.push({
+          id: `bi-${br.id}-${prod.id}`,
+          tenantId: br.tenantId,
+          merchantId: prod.merchantId,
+          branchId: br.id,
+          productId: prod.id,
+          quantity: br.isMain ? (prod.stockQuantity || 0) : 0,
+          minStockAlert: prod.minStockAlert || 5,
+          shelfLocation: 'A-01',
+          updatedAt: new Date().toISOString(),
+        });
       }
     }
   }
@@ -1330,20 +1386,13 @@ function getDriverCompensationFee(driverId: string, governorate: string): number
   return plan?.defaultFee ?? 1.5;
 }
 
-// Helper: Attach relational objects to an order
+// Helper: Attach relational objects to an order (Preserves immutable snapshotted fees)
 function populateOrder(order: Order): Order {
   const merchant = users.find((u) => u.id === order.merchantId);
   const driver = order.driverId ? users.find((u) => u.id === order.driverId) || null : null;
-  const driverFee =
-    order.driverFee !== undefined
-      ? order.driverFee
-      : order.driverId
-      ? getDriverCompensationFee(order.driverId, order.governorate)
-      : 1.5;
 
   return {
     ...order,
-    driverFee,
     merchant,
     driver,
   };
@@ -1956,8 +2005,22 @@ function getRequesterContext(req: express.Request): RequesterContext {
   const isOperator = userRole === 'OPERATOR';
   const isAccountant = userRole === 'ACCOUNTANT';
 
-  const branchId = user.branchId || (user as any).branch_id || undefined;
-  const branchName = user.branch || undefined;
+  let branchId = user.branchId || (user as any).branch_id || undefined;
+  let branchName = user.branch || undefined;
+
+  // Normalized Cashier Branch Isolation: branchId MUST be derived from user_branch_access
+  if (isCashier) {
+    const assignedAccess = userBranchAccess.find((uba) => uba.userId === user.id);
+    if (assignedAccess) {
+      branchId = assignedAccess.branchId;
+    }
+    if (branchId) {
+      const branchObj = merchantBranches.find((b) => b.id === branchId);
+      if (branchObj) {
+        branchName = branchObj.name;
+      }
+    }
+  }
 
   let workspace = 'DELIVERY_COMPANY_WORKSPACE';
   if (isSuperAdmin) workspace = 'PLATFORM_WORKSPACE';
@@ -1984,6 +2047,28 @@ function getRequesterContext(req: express.Request): RequesterContext {
     isOperator,
     isAccountant,
   };
+}
+
+// Enterprise Merchant Internal Scope Guard:
+// Ensures ADMIN cannot access Merchant POS or warehouse stock merely via permissions,
+// and CASHIER cannot access foreign branches.
+function canAccessMerchantInternal(ctx: RequesterContext, merchantId: string, branchId?: string): boolean {
+  if (ctx.isSuperAdmin) return true;
+  if (!ctx.user) return false;
+
+  // Merchant owner has full access to their own store and all their branches
+  if (ctx.isMerchant && ctx.userId === merchantId) return true;
+
+  // Cashier only has access to their specific parent merchant AND their assigned branch
+  if (ctx.isCashier) {
+    const parentMerchantId = ctx.user.parentUserId || ctx.tenantId;
+    if (parentMerchantId !== merchantId) return false;
+    if (branchId && ctx.branchId && ctx.branchId !== branchId) return false;
+    return true;
+  }
+
+  // Delivery Company Admins/Operators are strictly forbidden from internal merchant POS / stock
+  return false;
 }
 
 // Hierarchical & Tenant Access Evaluation Functions
@@ -2401,9 +2486,18 @@ app.get('/api/orders', requireAuth, (req, res) => {
     const safeOrders = Array.isArray(orders) ? orders : [];
     let tenantOrders = [...safeOrders];
 
-    // Multi-tenant data isolation:
+    // Multi-tenant & Branch data isolation:
     if (!ctx.isSuperAdmin && ctx.user) {
-      if (ctx.isAdmin && ctx.tenantId) {
+      if (ctx.isCashier) {
+        // Cashier is strictly isolated to their parent merchant AND their assigned branch
+        if (req.query.branchId && req.query.branchId !== ctx.branchId) {
+          return res.status(403).json({ error: 'غير مصرح باستعراض شحنات فرع آخر' });
+        }
+        const cashierMerchantId = ctx.user?.parentUserId || ctx.tenantId;
+        tenantOrders = tenantOrders.filter(
+          (o) => o && o.merchantId === cashierMerchantId && (!ctx.branchId || o.branchId === ctx.branchId)
+        );
+      } else if (ctx.isAdmin && ctx.tenantId) {
         // Admin sees orders belonging to their merchants or themselves or drivers under them
         const adminMerchantIds = users.filter((u) => u && (u.parentUserId === ctx.tenantId || u.id === ctx.tenantId)).map((u) => u.id);
         tenantOrders = tenantOrders.filter((o) => {
@@ -2580,6 +2674,27 @@ app.post('/api/orders', requireAuth, (req, res) => {
     const tot = totalCollection !== undefined ? parseFloat(totalCollection) : mColl + finalDeliveryFee;
     const calcDriverFee = driverId ? getDriverCompensationFee(driverId, governorate) : undefined;
 
+    let orderBranchId: string | undefined = req.body.branchId;
+    let orderBranchName: string | undefined = undefined;
+
+    if (ctx.isCashier) {
+      orderBranchId = ctx.branchId;
+      orderBranchName = ctx.branchName;
+    } else if (orderBranchId) {
+      const bObj = merchantBranches.find((b) => b.id === orderBranchId && b.merchantId === merchantId);
+      if (bObj) {
+        orderBranchName = bObj.name;
+      } else {
+        orderBranchId = undefined;
+      }
+    } else {
+      const mainB = merchantBranches.find((b) => b.merchantId === merchantId && b.isMain);
+      if (mainB) {
+        orderBranchId = mainB.id;
+        orderBranchName = mainB.name;
+      }
+    }
+
     const newOrder: Order = {
       id: `ord-${Date.now()}`,
       sequence: `ORD-2026-${nextSequenceNumber++}`,
@@ -2587,6 +2702,8 @@ app.post('/api/orders', requireAuth, (req, res) => {
       status: driverId ? 'OUT_FOR_DELIVERY' : 'PENDING',
       paymentType: 'COD',
       merchantId,
+      branchId: orderBranchId,
+      branchName: orderBranchName,
       driverId: driverId || null,
       recipientName,
       recipientPhone,
@@ -2781,6 +2898,18 @@ app.patch('/api/orders/:id/status', requireAuth, (req, res) => {
   if (status === 'DELIVERED') {
     order.deliveredAt = new Date().toISOString();
   }
+
+  // Snapshot return fee at the exact time the shipment transitions to RETURNED
+  if (status === 'RETURNED' && (order.returnFee === undefined || order.returnFee === null)) {
+    const plan =
+      pricePlans.find((p) => p.type === 'MERCHANT' && p.merchantId === order.merchantId) ||
+      pricePlans.find((p) => p.type === 'MERCHANT' && p.isDefault) ||
+      pricePlans.find((p) => p.type === 'MERCHANT');
+    const applicableReturnFee =
+      plan?.returnFee !== undefined ? plan.returnFee : Number((order.deliveryFee * 0.5 || 1.5).toFixed(3));
+    order.returnFee = applicableReturnFee;
+  }
+
   if (cancellationReason) {
     order.cancellationReason = cancellationReason;
   }
@@ -2797,6 +2926,7 @@ app.patch('/api/orders/:id/status', requireAuth, (req, res) => {
     createdAt: new Date().toISOString(),
   });
 
+  saveDatabase();
   res.json(populateOrder(order));
 });
 
@@ -2818,11 +2948,16 @@ app.patch('/api/orders/:id/assign', requireAuth, (req, res) => {
   }
 
   order.driverId = driverId || null;
-  if (driverId && order.status === 'PENDING') {
-    order.status = 'OUT_FOR_DELIVERY';
+  if (driverId) {
+    // Snapshot driver fee at assignment time from the currently active pricing plan
+    order.driverFee = getDriverCompensationFee(driverId, order.governorate);
+    if (order.status === 'PENDING') {
+      order.status = 'OUT_FOR_DELIVERY';
+    }
   }
   order.updatedAt = new Date().toISOString();
 
+  saveDatabase();
   res.json(populateOrder(order));
 });
 
@@ -2839,9 +2974,20 @@ app.post('/api/orders/bulk-status', requireAuth, (req, res) => {
     if (ids.includes(o.id) && canAccessOrder(ctx, o)) {
       updatedCount++;
       const old = o.status;
+      let snapshottedReturnFee = o.returnFee;
+      if (status === 'RETURNED' && (snapshottedReturnFee === undefined || snapshottedReturnFee === null)) {
+        const plan =
+          pricePlans.find((p) => p.type === 'MERCHANT' && p.merchantId === o.merchantId) ||
+          pricePlans.find((p) => p.type === 'MERCHANT' && p.isDefault) ||
+          pricePlans.find((p) => p.type === 'MERCHANT');
+        snapshottedReturnFee =
+          plan?.returnFee !== undefined ? plan.returnFee : Number((o.deliveryFee * 0.5 || 1.5).toFixed(3));
+      }
+
       return {
         ...o,
         status,
+        returnFee: snapshottedReturnFee,
         deliveredAt: status === 'DELIVERED' ? new Date().toISOString() : o.deliveredAt,
         updatedAt: new Date().toISOString(),
         statusLogs: [
@@ -2860,6 +3006,7 @@ app.post('/api/orders/bulk-status', requireAuth, (req, res) => {
     return o;
   });
 
+  saveDatabase();
   res.json({ message: `تم تحديث ${updatedCount} طلبية بنجاح` });
 });
 
@@ -2879,9 +3026,11 @@ app.post('/api/orders/bulk-assign', requireAuth, (req, res) => {
   orders = orders.map((o) => {
     if (ids.includes(o.id) && canAccessOrder(ctx, o)) {
       assignedCount++;
+      const calcDriverFee = driverId ? getDriverCompensationFee(driverId, o.governorate) : o.driverFee;
       return {
         ...o,
         driverId: driverId || null,
+        driverFee: calcDriverFee,
         status: driverId && o.status === 'PENDING' ? 'OUT_FOR_DELIVERY' : o.status,
         updatedAt: new Date().toISOString(),
       };
@@ -2889,6 +3038,7 @@ app.post('/api/orders/bulk-assign', requireAuth, (req, res) => {
     return o;
   });
 
+  saveDatabase();
   res.json({ message: `تم تعيين السائق لـ ${assignedCount} طلبية بنجاح` });
 });
 
@@ -3810,118 +3960,6 @@ const isValidUuid = (val: any): boolean => {
   if (!val || typeof val !== 'string') return false;
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val.trim());
 };
-
-// 26.0 POST /api/auth/register-ops: Direct Super Admin Registration from OPS Portal directly to Supabase
-app.post('/api/auth/register-ops', async (req, res) => {
-  try {
-    const { name, email, phone, password } = req.body || {};
-
-    if (!name || !name.trim()) {
-      return res.status(400).json({ error: 'يرجى إدخال الاسم الكامل للسوبر أدمن' });
-    }
-    if (!phone || !phone.trim()) {
-      return res.status(400).json({ error: 'يرجى إدخال رقم الهاتف المعتمد' });
-    }
-    if (!password || password.trim().length < 6) {
-      return res.status(400).json({ error: 'كلمة المرور يجب أن لا تقل عن 6 خانات' });
-    }
-
-    const cleanEmail = email && email.trim() ? email.trim().toLowerCase() : `${phone.replace(/\D/g, '')}@dargo-ops.io`;
-    const cleanPhone = phone.trim();
-
-    // Check duplicate in Supabase
-    const { data: existing, error: checkErr } = await supabase
-      .from('users')
-      .select('id,email,phone')
-      .or(`email.ilike.${cleanEmail},phone.eq.${cleanPhone}`);
-
-    if (checkErr) {
-      return res.status(500).json({ error: 'خطأ أثناء التحقق من الحساب في Supabase: ' + checkErr.message });
-    }
-
-    if (existing && existing.length > 0) {
-      return res.status(400).json({
-        error: `المستخدم مسجل مسبقاً في قاعدة البيانات (${cleanEmail}). يمكنك تسجيل الدخول مباشرة.`,
-      });
-    }
-
-    const newId = crypto.randomUUID();
-    const rawPass = password.trim();
-    const secureHash = hashPassword(rawPass);
-
-    const dbPayload = {
-      id: newId,
-      name: name.trim(),
-      email: cleanEmail,
-      phone: cleanPhone,
-      password: secureHash,
-      password_hash: secureHash,
-      role: 'SUPER_ADMIN',
-      role_name: 'المدير العام للنظام (Super Admin)',
-      branch: 'المقر الرئيسي للمملكة',
-      city: 'عمان',
-      is_active: true,
-      portal_access: 'OPS',
-      permissions: [
-        '*',
-        'manage_system_settings',
-        'manage_operations_admins',
-        'view_financial_audit_logs',
-        'export_database_backup',
-        'users.manage_operations',
-        'users.manage_staff',
-      ],
-      max_allowed_permissions: [
-        '*',
-        'manage_system_settings',
-        'manage_operations_admins',
-        'view_financial_audit_logs',
-        'export_database_backup',
-        'users.manage_operations',
-        'users.manage_staff',
-      ],
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
-
-    const { data: inserted, error: insertErr } = await supabase
-      .from('users')
-      .insert([dbPayload])
-      .select();
-
-    if (insertErr) {
-      console.error('Supabase register-ops insert error:', insertErr);
-      return res.status(500).json({ error: 'فشل حفظ السوبر أدمن في قاعدة بيانات Supabase: ' + insertErr.message });
-    }
-
-    const createdUser = mapDbUserToAppUser(inserted && inserted[0] ? inserted[0] : dbPayload);
-    syncUsersFromSupabase().catch(() => {});
-
-    logAuditEvent({
-      action: 'SUPER_ADMIN_REGISTERED',
-      actionNameAr: 'تسجيل حساب سوبر أدمن جديد',
-      performedBy: createdUser.id,
-      performerName: createdUser.name,
-      performerRole: 'SUPER_ADMIN',
-      targetId: createdUser.id,
-      targetType: 'USER',
-      targetName: createdUser.name,
-      details: { email: createdUser.email },
-    });
-
-    const token = generateSessionToken(createdUser);
-    const sanitizedUser = sanitizeUserForClient(createdUser);
-
-    res.status(201).json({
-      success: true,
-      message: 'تم تسجيل وإنشاء حساب السوبر أدمن الجديد في قاعدة البيانات بنجاح',
-      user: sanitizedUser,
-      token,
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
 // 26.0 POST /api/auth/verify: Verify cryptographically signed session token
 app.post('/api/auth/verify', async (req, res) => {
@@ -5303,6 +5341,42 @@ app.post('/api/invitations', requireAuth, async (req, res) => {
     const expiresAt = new Date(Date.now() + durationDays * 86400000).toISOString();
     const invitationId = crypto.randomUUID();
 
+    let validatedBranchId: string | undefined = req.body.branchId;
+    let validatedBranchName: string | undefined = branch;
+
+    if (role === 'CASHIER') {
+      if (ctx.userRole !== 'MERCHANT' && !ctx.isSuperAdmin) {
+        return res.status(403).json({
+          error: 'موظف الكاشير ونقاط البيع (CASHIER) يجب أن يُدعى حصرياً من قبل التاجر صاحب المتجر والفرع المعتمد.',
+          code: 'CASHIER_MUST_BE_INVITED_BY_MERCHANT',
+        });
+      }
+
+      const merchantOwnerId = assignedParentUserId;
+      if (!validatedBranchId) {
+        // Fallback: look up default/main branch for this merchant
+        const mainBranch = merchantBranches.find((b) => b.merchantId === merchantOwnerId && b.isMain);
+        if (mainBranch) {
+          validatedBranchId = mainBranch.id;
+          validatedBranchName = mainBranch.name;
+        } else {
+          return res.status(400).json({
+            error: 'يرجى تحديد معرف الفرع (branchId) الذي سيعمل به موظف الكاشير ونقطة البيع.',
+            code: 'BRANCH_ID_REQUIRED',
+          });
+        }
+      } else {
+        const foundBranch = merchantBranches.find((b) => b.id === validatedBranchId && b.merchantId === merchantOwnerId);
+        if (!foundBranch) {
+          return res.status(404).json({
+            error: 'الفرع المحدد غير موجود أو لا ينتمي لمتجر التاجر الحالي.',
+            code: 'BRANCH_NOT_FOUND',
+          });
+        }
+        validatedBranchName = foundBranch.name;
+      }
+    }
+
     const newInvitation: UserInvitation = {
       id: invitationId,
       tokenHash,
@@ -5319,6 +5393,7 @@ app.post('/api/invitations', requireAuth, async (req, res) => {
       ),
       tenantId: assignedTenantId,
       parentUserId: assignedParentUserId,
+      branchId: validatedBranchId,
       invitedBy: ctx.userId,
       inviterName: ctx.user?.name || 'مدير النظام',
       inviterRole: ctx.userRole,
@@ -5326,7 +5401,7 @@ app.post('/api/invitations', requireAuth, async (req, res) => {
       maxAllowedPermissions: finalMaxAllowed,
       commercialName: commercialName || undefined,
       companyName: companyName || undefined,
-      branch: branch || ctx.user?.branch || 'المقر الرئيسي للمملكة',
+      branch: validatedBranchName || ctx.user?.branch || 'المقر الرئيسي للمملكة',
       city: city || ctx.user?.city || 'عمان',
       priceList: priceList || undefined,
       pricePlanId: pricePlanId || undefined,
@@ -5646,6 +5721,7 @@ app.post(['/api/invitations/accept', '/invitations/accept'], async (req, res) =>
           storeName: invitation.commercialName || userName,
           commercialType: 'تجارة ومبيعات إلكترونية',
           branch: invitation.branch || 'المقر الرئيسي للمملكة',
+          branchId: invitation.branchId,
           city: invitation.city || 'عمان',
           priceList: invitation.priceList || 'جميع المملكة 2 (القياسية)',
           pricePlanId: invitation.pricePlanId,
@@ -5660,6 +5736,21 @@ app.post(['/api/invitations/accept', '/invitations/accept'], async (req, res) =>
           invitationId: invitation.id,
           invitedBy: invitation.invitedBy,
         };
+
+        // If Cashier, create normalized branch access record
+        if (newUser.role === 'CASHIER' && invitation.branchId && invitation.parentUserId) {
+          const uba: UserBranchAccess = {
+            id: `uba-${newUserId}-${invitation.branchId}`,
+            tenantId: newUser.tenantId || invitation.parentUserId,
+            merchantId: invitation.parentUserId,
+            userId: newUserId,
+            branchId: invitation.branchId,
+            roleInBranch: 'CASHIER',
+            isDefault: true,
+            createdAt: new Date().toISOString(),
+          };
+          userBranchAccess.push(uba);
+        }
 
         // Save to Supabase & Memory
         try {
@@ -7836,6 +7927,7 @@ app.post('/api/merchants/:merchantId/stock-transfers', requireAuth, (req, res) =
     createdBy: ctx.userId,
     createdByName: ctx.user?.name || 'المسؤول',
     createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
   };
 
   merchantStockTransfers.push(transfer);
@@ -9145,6 +9237,371 @@ app.delete('/api/merchants/:merchantId/expenses/:expenseId', requireAuth, (req, 
   saveDatabase();
   res.json({ success: true, message: 'تم حذف المصروف بنجاح' });
 });
+
+// =============================================================
+// Exact Money Helpers (Integer Fils: 1 JOD = 1000 fils)
+// Guaranteed JOD 3-Decimal Precision Arithmetic
+// =============================================================
+export function toFils(amount: number | string | null | undefined): number {
+  if (amount === null || amount === undefined || isNaN(Number(amount))) return 0;
+  return Math.round(Number(amount) * 1000);
+}
+
+export function fromFils(fils: number): number {
+  return Number((fils / 1000).toFixed(3));
+}
+
+export function roundFils3(amount: number | string | null | undefined): number {
+  return fromFils(toFils(amount));
+}
+
+// =============================================================
+// Authoritative Financial Obligations Engine (Delivere Core)
+// Proven Source Data Extraction & Legacy Reconciliation Guard
+// =============================================================
+export type ObligationType = 'MERCHANT_COD' | 'DRIVER_EARNING';
+
+export interface ResolveObligationParams {
+  tenantId: string;
+  shipmentId: string;
+  obligationType: ObligationType;
+  beneficiaryId: string;
+}
+
+export interface ResolveObligationResult {
+  obligationId: string;
+  tenantId: string;
+  shipmentId: string;
+  beneficiaryId: string;
+  obligationType: ObligationType;
+  originalAmount: number;
+  status: 'OPEN' | 'PARTIALLY_SETTLED' | 'SETTLED' | 'CANCELLED' | 'LEGACY_RECONCILIATION_REQUIRED';
+  sourceReference: string;
+  isExisting: boolean;
+}
+
+/**
+ * Resolves or safely creates a financial obligation for a delivered shipment.
+ * STRICT IMMUTABLE AUDIT RULES:
+ * 1. Checks for existing obligation in public.financial_obligations first.
+ * 2. If creating, extracts amounts EXCLUSIVELY from immutable database transaction snapshots on public.shipments.
+ * 3. MERCHANT_COD obligation original_amount MUST come directly from persisted merchant_collection snapshot.
+ * 4. DRIVER_EARNING obligation original_amount MUST come directly from persisted driver_fee snapshot.
+ * 5. NEVER queries live/mutable price plans or dynamic pricing tables for historical deliveries.
+ * 6. NEVER uses volatile in-memory fallback to fabricate authoritative database obligations.
+ * 7. If durable snapshot fields are missing, ambiguous, or if shipment is not DELIVERED, status is set to
+ *    'LEGACY_RECONCILIATION_REQUIRED' with 0.000 amount, completely blocking automatic settlement.
+ */
+export async function getOrCreateAuthoritativeObligation(
+  params: ResolveObligationParams
+): Promise<ResolveObligationResult> {
+  const { tenantId, shipmentId, obligationType, beneficiaryId } = params;
+
+  if (!isValidUuid(tenantId) || !isValidUuid(shipmentId) || !isValidUuid(beneficiaryId)) {
+    throw new Error('Invalid UUID parameter provided for financial obligation resolution.');
+  }
+
+  const normType: ObligationType = obligationType;
+
+  // 1. Check existing obligation in Supabase
+  const { data: existing, error: fetchErr } = await supabase
+    .from('financial_obligations')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .eq('shipment_id', shipmentId)
+    .eq('obligation_type', normType)
+    .limit(1);
+
+  if (fetchErr) {
+    throw new Error(`Database error fetching obligation: ${fetchErr.message}`);
+  }
+
+  if (existing && existing.length > 0) {
+    const ob = existing[0];
+    return {
+      obligationId: ob.id,
+      tenantId: ob.tenant_id,
+      shipmentId: ob.shipment_id,
+      beneficiaryId: ob.beneficiary_id,
+      obligationType: ob.obligation_type,
+      originalAmount: Number(ob.original_amount),
+      status: ob.status,
+      sourceReference: ob.source_reference || '',
+      isExisting: true,
+    };
+  }
+
+  // 2. Fetch authoritative shipment snapshot record from database
+  const { data: shipData, error: shipErr } = await supabase
+    .from('shipments')
+    .select('id, tenant_id, sequence, tracking_number, status, cod_amount, merchant_collection, delivery_fee, driver_fee, return_fee, merchant_id, driver_id, created_at')
+    .eq('id', shipmentId)
+    .limit(1);
+
+  if (shipErr || !shipData || shipData.length === 0) {
+    // Audit Rule: Never fabricate authoritative database financial obligations from volatile in-memory state.
+    // If durable database snapshot is missing, flag as LEGACY_RECONCILIATION_REQUIRED.
+    return {
+      obligationId: crypto.randomUUID(),
+      tenantId,
+      shipmentId,
+      beneficiaryId,
+      obligationType: normType,
+      originalAmount: 0.000,
+      status: 'LEGACY_RECONCILIATION_REQUIRED',
+      sourceReference: `MISSING_DURABLE_RECORD:${shipmentId} [FLAGGED: Database shipment record missing]`,
+      isExisting: false,
+    };
+  }
+
+  const ship = shipData[0];
+  let calculatedAmountFils = 0;
+  let status: 'OPEN' | 'LEGACY_RECONCILIATION_REQUIRED' = 'OPEN';
+  let sourceRef = `SHIPMENT:${ship.sequence || ship.tracking_number || ship.id}`;
+
+  // 3. Proven source data validation
+  if (normType === 'MERCHANT_COD') {
+    if (ship.merchant_id !== beneficiaryId) {
+      throw new Error(`Merchant beneficiary mismatch: shipment merchant is ${ship.merchant_id}, requested ${beneficiaryId}`);
+    }
+
+    // Contractual source: merchant_collection snapshot
+    const merchColl =
+      ship.merchant_collection !== undefined && ship.merchant_collection !== null
+        ? Number(ship.merchant_collection)
+        : null;
+
+    if (merchColl === null || isNaN(merchColl) || merchColl < 0 || ship.status !== 'DELIVERED') {
+      status = 'LEGACY_RECONCILIATION_REQUIRED';
+      calculatedAmountFils = 0;
+      sourceRef += ' [FLAGGED: Missing merchant_collection snapshot or non-delivered status]';
+    } else {
+      calculatedAmountFils = toFils(merchColl);
+    }
+  } else if (normType === 'DRIVER_EARNING') {
+    if (ship.driver_id && ship.driver_id !== beneficiaryId) {
+      throw new Error(`Driver beneficiary mismatch: shipment driver is ${ship.driver_id}, requested ${beneficiaryId}`);
+    }
+
+    const rawDriverFee = ship.driver_fee !== undefined && ship.driver_fee !== null ? Number(ship.driver_fee) : null;
+
+    if (rawDriverFee === null || isNaN(rawDriverFee) || rawDriverFee <= 0 || ship.status !== 'DELIVERED') {
+      status = 'LEGACY_RECONCILIATION_REQUIRED';
+      calculatedAmountFils = 0;
+      sourceRef += ' [FLAGGED: Missing snapshotted driver_fee or non-delivered status]';
+    } else {
+      calculatedAmountFils = toFils(rawDriverFee);
+    }
+  }
+
+  const finalAmount = fromFils(calculatedAmountFils);
+
+  // 4. Insert new authoritative obligation record
+  const newObligationId = crypto.randomUUID();
+  const dbPayload = {
+    id: newObligationId,
+    tenant_id: tenantId,
+    shipment_id: shipmentId,
+    beneficiary_id: beneficiaryId,
+    obligation_type: normType,
+    original_amount: finalAmount,
+    currency: 'JOD',
+    status,
+    source_reference: sourceRef,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  const { data: inserted, error: insertErr } = await supabase
+    .from('financial_obligations')
+    .insert([dbPayload])
+    .select();
+
+  if (insertErr) {
+    throw new Error(`Failed to insert authoritative financial obligation: ${insertErr.message}`);
+  }
+
+  const resultRow = inserted && inserted[0] ? inserted[0] : dbPayload;
+  return {
+    obligationId: resultRow.id,
+    tenantId: resultRow.tenant_id,
+    shipmentId: resultRow.shipment_id,
+    beneficiaryId: resultRow.beneficiary_id,
+    obligationType: resultRow.obligation_type,
+    originalAmount: Number(resultRow.original_amount),
+    status: resultRow.status,
+    sourceReference: resultRow.source_reference,
+    isExisting: false,
+  };
+}
+
+// =============================================================
+// Authoritative Delivery Posting Engine (Double-Entry Balanced)
+// =============================================================
+export interface DeliveryPostingParams {
+  order: {
+    id: string;
+    sequence?: string;
+    paymentType: 'COD' | 'CLIQ' | 'PREPAID';
+    totalCollection: number;      // Gross customer collection
+    merchantCollection: number;   // Merchant merchandise amount
+    deliveryFee: number;          // Delivere revenue tariff
+    driverFee?: number;           // Driver compensation
+    returnFee?: number;           // Snapshotted return fee
+  };
+  tenantAccounts?: {
+    driverCustodyAccountId?: string;     // Default 1020
+    bankCliqAccountId?: string;          // Default 1030
+    merchantPayablesAccountId?: string;  // Default 2020
+    merchantArAccountId?: string;        // Default 1070
+    deliveryRevenueAccountId?: string;   // Default 4010
+  };
+}
+
+export interface DeliveryPostingLine {
+  accountId: string;
+  accountCode: string;
+  accountName: string;
+  debit: number;
+  credit: number;
+}
+
+export interface DeliveryPostingResult {
+  isValid: boolean;
+  status: 'POSTABLE' | 'FINANCIAL_RECONCILIATION_REQUIRED';
+  reason?: string;
+  lines: DeliveryPostingLine[];
+  totalDebit: number;
+  totalCredit: number;
+}
+
+export function validateAndBuildDeliveryPosting(params: DeliveryPostingParams): DeliveryPostingResult {
+  const { order, tenantAccounts = {} } = params;
+  const driverCustodyAcc = tenantAccounts.driverCustodyAccountId || 'acc-1020-custody';
+  const bankCliqAcc = tenantAccounts.bankCliqAccountId || 'acc-1030-bank-cliq';
+  const merchPayableAcc = tenantAccounts.merchantPayablesAccountId || 'acc-2020-merch-payables';
+  const merchArAcc = tenantAccounts.merchantArAccountId || 'acc-1070-merch-ar';
+  const delivRevenueAcc = tenantAccounts.deliveryRevenueAccountId || 'acc-4010-deliv-revenue';
+
+  const grossFils = toFils(order.totalCollection);
+  const merchFils = toFils(order.merchantCollection);
+  const feeFils = toFils(order.deliveryFee);
+
+  const lines: DeliveryPostingLine[] = [];
+
+  if (order.paymentType === 'COD') {
+    // Validate standard COD mathematical equation
+    if (grossFils !== merchFils + feeFils) {
+      return {
+        isValid: false,
+        status: 'FINANCIAL_RECONCILIATION_REQUIRED',
+        reason: `COD equation mismatch: gross (${fromFils(grossFils)}) != merchant (${fromFils(merchFils)}) + deliveryFee (${fromFils(feeFils)})`,
+        lines: [],
+        totalDebit: 0,
+        totalCredit: 0,
+      };
+    }
+
+    // Balanced posting for CASH COD:
+    // DR Driver Cash Custody = Gross
+    // CR Merchant Payables = Merchant Goods
+    // CR Delivery Revenue = Tariff
+    lines.push({
+      accountId: driverCustodyAcc,
+      accountCode: '1020',
+      accountName: 'عهدة السائق النقدية',
+      debit: fromFils(grossFils),
+      credit: 0,
+    });
+    lines.push({
+      accountId: merchPayableAcc,
+      accountCode: '2020',
+      accountName: 'أمانات التجار (COD)',
+      debit: 0,
+      credit: fromFils(merchFils),
+    });
+    lines.push({
+      accountId: delivRevenueAcc,
+      accountCode: '4010',
+      accountName: 'إيرادات أجور التوصيل',
+      debit: 0,
+      credit: fromFils(feeFils),
+    });
+  } else if (order.paymentType === 'CLIQ') {
+    // CLIQ: Customer pays directly to central bank/CliQ account. Driver custody = 0.
+    if (grossFils !== merchFils + feeFils) {
+      return {
+        isValid: false,
+        status: 'FINANCIAL_RECONCILIATION_REQUIRED',
+        reason: `CLIQ equation mismatch: gross (${fromFils(grossFils)}) != merchant (${fromFils(merchFils)}) + deliveryFee (${fromFils(feeFils)})`,
+        lines: [],
+        totalDebit: 0,
+        totalCredit: 0,
+      };
+    }
+
+    lines.push({
+      accountId: bankCliqAcc,
+      accountCode: '1030',
+      accountName: 'حساب البنك / كليك المركزي',
+      debit: fromFils(grossFils),
+      credit: 0,
+    });
+    lines.push({
+      accountId: merchPayableAcc,
+      accountCode: '2020',
+      accountName: 'أمانات التجار (COD)',
+      debit: 0,
+      credit: fromFils(merchFils),
+    });
+    lines.push({
+      accountId: delivRevenueAcc,
+      accountCode: '4010',
+      accountName: 'إيرادات أجور التوصيل',
+      debit: 0,
+      credit: fromFils(feeFils),
+    });
+  } else if (order.paymentType === 'PREPAID') {
+    // PREPAID: Customer collection = 0, Driver custody = 0, Merchant COD payable = 0.
+    // Delivery fee is an account receivable billed to the merchant.
+    lines.push({
+      accountId: merchArAcc,
+      accountCode: '1070',
+      accountName: 'ذمم التجار المدينة (أجور شحن)',
+      debit: fromFils(feeFils),
+      credit: 0,
+    });
+    lines.push({
+      accountId: delivRevenueAcc,
+      accountCode: '4010',
+      accountName: 'إيرادات أجور التوصيل',
+      debit: 0,
+      credit: fromFils(feeFils),
+    });
+  }
+
+  const totalDebitFils = lines.reduce((acc, l) => acc + toFils(l.debit), 0);
+  const totalCreditFils = lines.reduce((acc, l) => acc + toFils(l.credit), 0);
+
+  if (totalDebitFils !== totalCreditFils) {
+    return {
+      isValid: false,
+      status: 'FINANCIAL_RECONCILIATION_REQUIRED',
+      reason: `Imbalanced journal posting generated: Debit ${fromFils(totalDebitFils)} != Credit ${fromFils(totalCreditFils)}`,
+      lines,
+      totalDebit: fromFils(totalDebitFils),
+      totalCredit: fromFils(totalCreditFils),
+    };
+  }
+
+  return {
+    isValid: true,
+    status: 'POSTABLE',
+    lines,
+    totalDebit: fromFils(totalDebitFils),
+    totalCredit: fromFils(totalCreditFils),
+  };
+}
 
 // -------------------------------------------------------------
 // 404 Fallback for unmatched API routes

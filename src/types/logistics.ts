@@ -407,6 +407,7 @@ export interface UserInvitation {
   commercialName?: string;
   companyName?: string;
   branch?: string;
+  branchId?: string | null;
   city?: string;
   priceList?: string;
   pricePlanId?: string;
@@ -423,6 +424,7 @@ export interface PricePlan {
   id: string;
   name: string;
   type: 'MERCHANT' | 'DRIVER';
+  merchantId?: string;
   description?: string;
   isDefault: boolean;
   defaultFee: number;
@@ -471,6 +473,7 @@ export interface Order {
   merchantCollection: number;  // دينار
   deliveryFee: number;         // دينار
   driverFee?: number;          // دينار (عمولة الكابتن)
+  returnFee?: number;          // دينار (رسوم إرجاع الطرد الموثقة)
   totalCollection: number;     // دينار
 
   isSettledWithMerchant: boolean;
@@ -679,3 +682,143 @@ export interface TenantSubscriptionContext {
     currentMonthlyOrders: number;
   };
 }
+
+// ==============================================================================
+// Enterprise Multi-Branch & Normalized Authorization Types
+// ==============================================================================
+
+export interface MerchantBranch {
+  id: string;
+  tenantId?: string;
+  merchantId: string;
+  name: string;
+  code?: string;
+  phone?: string;
+  address?: string;
+  governorate?: string;
+  city?: string;
+  latitude?: number;
+  longitude?: number;
+  isMain: boolean;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UserBranchAccess {
+  id: string;
+  tenantId?: string;
+  merchantId: string;
+  userId: string;
+  branchId: string;
+  roleInBranch: 'CASHIER' | 'BRANCH_MANAGER' | 'STAFF';
+  isDefault: boolean;
+  createdBy?: string;
+  createdAt: string;
+}
+
+export interface BranchInventoryItem {
+  id: string;
+  tenantId?: string;
+  merchantId: string;
+  branchId: string;
+  productId: string;
+  quantity: number;
+  minStockAlert: number;
+  shelfLocation?: string;
+  updatedAt: string;
+}
+
+export type StockTransferLifecycle = 'PENDING' | 'APPROVED' | 'IN_TRANSIT' | 'COMPLETED' | 'CANCELLED';
+
+export interface MerchantStockTransfer {
+  id: string;
+  tenantId?: string;
+  merchantId: string;
+  productId: string;
+  productName?: string;
+  sourceBranchId: string;
+  sourceBranchName?: string;
+  destBranchId: string;
+  destBranchName?: string;
+  quantity: number;
+  status: StockTransferLifecycle;
+  notes?: string;
+  transferNumber?: string;
+  createdBy?: string;
+  approvedBy?: string;
+  receivedBy?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface FinancialObligation {
+  id: string;
+  tenantId: string;
+  shipmentId: string;
+  beneficiaryId: string;
+  obligationType: 'MERCHANT_COD' | 'DRIVER_EARNING';
+  originalAmount: number;
+  currency: string;
+  status: 'OPEN' | 'PARTIALLY_SETTLED' | 'SETTLED' | 'CANCELLED';
+  sourceReference?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SettlementItem {
+  id: string;
+  settlementId: string;
+  tenantId: string;
+  obligationId?: string;
+  orderId?: string;
+  shipmentId?: string;
+  beneficiaryId?: string;
+  obligationType?: 'MERCHANT_COD' | 'DRIVER_EARNING';
+  allocatedAmount?: number;
+  trackingNumber?: string;
+  totalCodCollected: number;
+  deliveryFeeDeducted: number;
+  driverFeePaid?: number;
+  netSettledAmount: number;
+  allocatedAt: string;
+}
+
+export interface SettlementRecord {
+  id: string;
+  tenantId: string;
+  settlementNumber: string;
+  type: 'MERCHANT' | 'DRIVER';
+  beneficiaryId: string;
+  beneficiaryName?: string;
+  totalAmount: number;
+  paymentMethod: 'CASH' | 'CLIQ' | 'BANK_TRANSFER' | 'CHEQUE';
+  voucherId?: string;
+  journalEntryId?: string;
+  idempotencyKey?: string;
+  status: 'DRAFT' | 'APPROVED' | 'POSTED' | 'CANCELLED';
+  items?: SettlementItem[];
+  orderIds?: string[];
+  notes?: string;
+  createdBy?: string;
+  approvedBy?: string;
+  postedBy?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AccountingPeriod {
+  id: string;
+  tenantId: string;
+  periodName: string;
+  startDate: string;
+  endDate: string;
+  status: 'OPEN' | 'CLOSED' | 'LOCKED';
+  closedAt?: string;
+  closedBy?: string;
+  reopenedAt?: string;
+  reopenedBy?: string;
+  reopenReason?: string;
+  createdAt: string;
+}
+

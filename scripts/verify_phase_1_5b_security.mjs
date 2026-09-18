@@ -62,20 +62,14 @@ async function runPhase15bSecuritySuite() {
   console.log('--- 1. Authenticating Actor Sessions ---');
 
   // Super Admin
-  let superAdminLogin = await api('/api/auth/login', {
+  const superAdminLogin = await api('/api/auth/login', {
     method: 'POST',
-    body: { email: 'admin@dargo-ops.io', password: 'password123' },
+    body: { email: 'admin@dargo-tms.io', password: 'admin123' },
   });
-  if (superAdminLogin.status !== 200) {
-    superAdminLogin = await api('/api/auth/register-ops', {
-      method: 'POST',
-      body: { name: 'Super Admin Master', email: 'admin@dargo-ops.io', phone: '0790000001', password: 'password123' },
-    });
-  }
 
   const superAdminToken = superAdminLogin.data?.token;
   const superAdminUser = superAdminLogin.data?.user;
-  assert(superAdminLogin.status === 200 || superAdminLogin.status === 201, 'Super Admin authentication successful', { role: superAdminUser?.role });
+  assert(superAdminLogin.status === 200, 'Super Admin authentication successful', { role: superAdminUser?.role });
 
   // Operations Admin A (Tenant A)
   const tenantAEmail = `admin.tenanta.${Date.now()}@test.io`;

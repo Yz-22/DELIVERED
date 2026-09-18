@@ -50,22 +50,15 @@ async function runVerification() {
   // ----------------------------------------------------
   console.log('>>> 0. Setting up test credentials and tenants...');
 
-  // 1. Super Admin Auth (Login or Register)
-  let superAdminLogin = await api('/api/auth/login', {
+  // 1. Super Admin Auth (Login)
+  const superAdminLogin = await api('/api/auth/login', {
     method: 'POST',
-    body: { email: 'admin@dargo-ops.io', password: 'password123' }
+    body: { email: 'admin@dargo-tms.io', password: 'admin123' }
   });
-
-  if (superAdminLogin.status !== 200) {
-    superAdminLogin = await api('/api/auth/register-ops', {
-      method: 'POST',
-      body: { name: 'Super Admin', email: 'admin@dargo-ops.io', phone: '0790000001', password: 'password123' }
-    });
-  }
 
   const superAdminToken = superAdminLogin.data?.token;
   const superAdminUser = superAdminLogin.data?.user;
-  assert(superAdminLogin.status === 200 || superAdminLogin.status === 201, 'Super Admin authentication successful');
+  assert(superAdminLogin.status === 200, 'Super Admin authentication successful');
   assert(superAdminUser && superAdminUser.role === 'SUPER_ADMIN', 'Super Admin verified as SUPER_ADMIN role');
 
   // Create Basil Admin (Tenant 1)

@@ -29,12 +29,18 @@ export interface JournalEntry {
   entryNumber: string; // JE-2026-XXXX
   date: string;
   description: string;
-  referenceType?: 'DELIVERY' | 'SETTLEMENT' | 'VOUCHER' | 'INVOICE' | 'MANUAL';
+  referenceType?: 'DELIVERY' | 'SETTLEMENT' | 'VOUCHER' | 'INVOICE' | 'MANUAL' | 'REVERSAL';
   referenceId?: string;
   reference?: string;
   lines: JournalEntryLine[];
   totalDebit: number;
   totalCredit: number;
+  branchId?: string;
+  postingStatus?: 'LEGACY_UNVERIFIED' | 'DRAFT' | 'POSTED' | 'REVERSED';
+  isPosted?: boolean;
+  isReversed?: boolean;
+  reversalEntryId?: string;
+  idempotencyKey?: string;
   createdByName?: string;
   createdAt: string;
 }
@@ -53,7 +59,9 @@ export interface Voucher {
   accountId: string;
   contraAccountId?: string;
   notes: string;
-  status: 'POSTED' | 'DRAFT';
+  status: 'LEGACY_UNVERIFIED' | 'DRAFT' | 'POSTED' | 'CANCELLED' | 'REVERSED';
+  branchId?: string;
+  idempotencyKey?: string;
   createdAt: string;
 }
 
@@ -173,3 +181,75 @@ export interface MerchantFinancialSummary {
   accountsReceivable?: number;
   accountsPayable?: number;
 }
+
+export interface DriverCashCustodyRow {
+  date: string;
+  reference: string;
+  orderSequence?: string;
+  type: 'COD_COLLECTED' | 'CASH_REMITTED' | 'COMMISSION_EARNED' | 'ADJUSTMENT';
+  description: string;
+  debit: number; // Cash responsibility added
+  credit: number; // Cash responsibility cleared
+  runningResponsibility: number;
+}
+
+export interface DriverCashCustodyStatement {
+  driverId: string;
+  driverName: string;
+  dateFrom?: string;
+  dateTo?: string;
+  openingResponsibility: number;
+  totalCodCollected: number;
+  totalCashRemitted: number;
+  totalAdjustments: number;
+  outstandingResponsibility: number;
+  transactions: DriverCashCustodyRow[];
+}
+
+export interface MerchantStatementRow {
+  date: string;
+  reference: string;
+  branchName?: string;
+  type: 'COD_COLLECTED' | 'DELIVERY_FEE' | 'SETTLEMENT_PAYOUT' | 'RETURN_FEE' | 'ADJUSTMENT';
+  description: string;
+  debit: number; // Deductions (fees, settlements paid)
+  credit: number; // Additions (COD collected for merchant)
+  runningBalance: number;
+}
+
+export interface MerchantPayableStatement {
+  merchantId: string;
+  merchantName: string;
+  branchId?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  openingBalance: number;
+  totalCodCollected: number;
+  totalDeliveryFees: number;
+  totalSettlementsPaid: number;
+  closingBalance: number;
+  transactions: MerchantStatementRow[];
+}
+
+export interface ReconciliationIssue {
+  type: 'UNBALANCED_JOURNAL' | 'DELIVERED_WITHOUT_POSTING' | 'DRIVER_CUSTODY_MISMATCH' | 'MERCHANT_PAYABLE_MISMATCH' | 'DUPLICATE_SETTLEMENT';
+  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM';
+  entityId: string;
+  reference: string;
+  message: string;
+  expected: number | string;
+  actual: number | string;
+}
+
+export interface ReconciliationReport {
+  timestamp: string;
+  tenantId: string;
+  isBalanced: boolean;
+  totalIssuesCount: number;
+  issues: ReconciliationIssue[];
+  totalJournalEntriesAudited: number;
+  totalDeliveredOrdersAudited: number;
+  totalDriverCustodyAudited: number;
+  totalMerchantPayableAudited: number;
+}
+
