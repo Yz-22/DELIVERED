@@ -178,7 +178,8 @@ export function mapDbUserToAppUser(dbUser: any): User {
     permissions: Array.isArray(dbUser.permissions) ? dbUser.permissions : [],
     maxAllowedPermissions: Array.isArray(dbUser.max_allowed_permissions) ? dbUser.max_allowed_permissions : [],
     authProvider: dbUser.auth_provider || dbUser.authProvider || 'EMAIL_PASSWORD',
-    googleId: dbUser.google_id || dbUser.googleId || undefined,
+    authUserId: dbUser.auth_user_id || dbUser.authUserId || dbUser.google_id || dbUser.googleId || undefined,
+    googleId: dbUser.google_id || dbUser.googleId || dbUser.auth_user_id || dbUser.authUserId || undefined,
     googleEmail: dbUser.google_email || dbUser.googleEmail || undefined,
     invitationId: dbUser.invitation_id || dbUser.invitationId || undefined,
     invitedBy: dbUser.invited_by || dbUser.invitedBy || undefined,
@@ -247,8 +248,12 @@ export function mapAppUserToDbUser(appUser: any) {
   if (appUser.authProvider !== undefined || appUser.auth_provider !== undefined) {
     payload.auth_provider = appUser.authProvider || appUser.auth_provider;
   }
+  if (appUser.authUserId !== undefined || appUser.auth_user_id !== undefined) {
+    payload.auth_user_id = appUser.authUserId || appUser.auth_user_id;
+  }
   if (appUser.googleId !== undefined || appUser.google_id !== undefined) {
     payload.google_id = appUser.googleId || appUser.google_id;
+    if (!payload.auth_user_id) payload.auth_user_id = payload.google_id;
   }
   if (appUser.googleEmail !== undefined || appUser.google_email !== undefined) {
     payload.google_email = appUser.googleEmail || appUser.google_email;
@@ -6000,144 +6005,114 @@ app.post('/api/invitations/:id/resend', requireAuth, async (req, res) => {
 // -------------------------------------------------------------
 // Dedicated Helper: Resolve Existing Delivere User by Supabase Auth Identity
 // -------------------------------------------------------------
-async function findExistingDelivereUser(supabaseAuthId: string, verifiedEmail: string): Promise<User | null> {
+interface UserLookupResult {
+  user: User | null;
+  dbError?: string;
+}
+
+async function findExistingDelivereUser(supabaseAuthId: string, verifiedEmail: string): Promise<UserLookupResult> {
   const normalizedEmail = (verifiedEmail || '').toLowerCase().trim();
 
-  // 1. Search in-memory users
-  let found = users.find(
+  // 1. Search in-memory users first
+  const foundInMemory = users.find(
     (u) =>
-      (u.googleId && u.googleId === supabaseAuthId) ||
-      ((u as any).authUserId && (u as any).authUserId === supabaseAuthId) ||
-      (u.id && u.id === supabaseAuthId) ||
-      (u.email && u.email.toLowerCase().trim() === normalizedEmail) ||
-      (u.googleEmail && u.googleEmail.toLowerCase().trim() === normalizedEmail)
+      Boolean(supabaseAuthId && (
+        u.authUserId === supabaseAuthId ||
+        (u as any).auth_user_id === supabaseAuthId ||
+        u.googleId === supabaseAuthId ||
+        (u as any).google_id === supabaseAuthId ||
+        u.id === supabaseAuthId
+      )) ||
+      Boolean(normalizedEmail && (
+        (u.email && u.email.toLowerCase().trim() === normalizedEmail) ||
+        (u.googleEmail && u.googleEmail.toLowerCase().trim() === normalizedEmail) ||
+        ((u as any).google_email && (u as any).google_email.toLowerCase().trim() === normalizedEmail)
+      ))
   );
 
-  if (found) {
-    return found;
+  if (foundInMemory) {
+    return { user: foundInMemory };
   }
 
-  // 2. Query Supabase database by standard email column (case-insensitive)
-  if (normalizedEmail) {
-    try {
-      const { data: dbUsers, error: dbErr } = await supabase
-        .from('users')
-        .select('*')
-        .ilike('email', normalizedEmail)
-        .limit(1);
+  // 2. Database queries with explicit distinction between "no row found" and "fatal query error"
+  let fatalDbError: string | null = null;
 
-      if (!dbErr && Array.isArray(dbUsers) && dbUsers.length > 0) {
-        found = mapDbUserToAppUser(dbUsers[0]);
-        const idx = users.findIndex((u) => u.id === found!.id);
-        if (idx >= 0) {
-          users[idx] = found;
-        } else {
-          users.push(found);
-        }
-        return found;
+  const tryDbQuery = async (column: string, operator: 'eq' | 'ilike', value: string): Promise<User | null> => {
+    try {
+      let query = supabase.from('users').select('*');
+      if (operator === 'eq') {
+        query = query.eq(column, value);
+      } else {
+        query = query.ilike(column, value);
       }
+      const { data, error } = await query.limit(1);
+
+      if (error) {
+        // Distinguish missing column in schema (non-fatal, try next column) from fatal database error
+        const isMissingColumn =
+          error.code === '42703' ||
+          error.code === 'PGRST204' ||
+          error.message?.includes('does not exist') ||
+          error.message?.includes('Could not find the column');
+
+        if (isMissingColumn) {
+          console.warn(`[Google Auth] Column '${column}' not present in public.users: ${error.message}`);
+          return null;
+        }
+
+        // Real database, RLS, or network error
+        console.error(`[Google Auth] Database error querying column '${column}':`, error);
+        fatalDbError = error.message || 'Database query error';
+        return null;
+      }
+
+      if (Array.isArray(data) && data.length > 0) {
+        const mapped = mapDbUserToAppUser(data[0]);
+        const idx = users.findIndex((u) => u.id === mapped.id);
+        if (idx >= 0) {
+          users[idx] = mapped;
+        } else {
+          users.push(mapped);
+        }
+        return mapped;
+      }
+      return null;
     } catch (err: any) {
-      console.warn('[Google Auth] DB lookup by email notice:', err?.message);
+      console.error(`[Google Auth] Exception querying database column '${column}':`, err);
+      fatalDbError = err.message || 'Database connection exception';
+      return null;
     }
-  }
+  };
 
-  // 3. Query Supabase database by google_id
   if (supabaseAuthId) {
-    try {
-      const { data: dbUsers, error: dbErr } = await supabase
-        .from('users')
-        .select('*')
-        .eq('google_id', supabaseAuthId)
-        .limit(1);
+    // Priority 1: auth_user_id === verified supabaseUser.id
+    const userByAuthId = await tryDbQuery('auth_user_id', 'eq', supabaseAuthId);
+    if (userByAuthId) return { user: userByAuthId };
 
-      if (!dbErr && Array.isArray(dbUsers) && dbUsers.length > 0) {
-        found = mapDbUserToAppUser(dbUsers[0]);
-        const idx = users.findIndex((u) => u.id === found!.id);
-        if (idx >= 0) {
-          users[idx] = found;
-        } else {
-          users.push(found);
-        }
-        return found;
-      }
-    } catch {
-      // safe fallback if google_id column query fails
-    }
+    // Priority 2: google_id === verified supabaseUser.id
+    const userByGoogleId = await tryDbQuery('google_id', 'eq', supabaseAuthId);
+    if (userByGoogleId) return { user: userByGoogleId };
+
+    // Priority 3: primary id === verified supabaseUser.id
+    const userById = await tryDbQuery('id', 'eq', supabaseAuthId);
+    if (userById) return { user: userById };
   }
 
-  // 4. Query Supabase database by primary user id
-  if (supabaseAuthId) {
-    try {
-      const { data: dbUsers, error: dbErr } = await supabase
-        .from('users')
-        .select('*')
-        .eq('id', supabaseAuthId)
-        .limit(1);
-
-      if (!dbErr && Array.isArray(dbUsers) && dbUsers.length > 0) {
-        found = mapDbUserToAppUser(dbUsers[0]);
-        const idx = users.findIndex((u) => u.id === found!.id);
-        if (idx >= 0) {
-          users[idx] = found;
-        } else {
-          users.push(found);
-        }
-        return found;
-      }
-    } catch {
-      // safe fallback if id column comparison fails
-    }
-  }
-
-  // 5. Query Supabase database by auth_user_id (if column exists)
-  if (supabaseAuthId) {
-    try {
-      const { data: dbUsers, error: dbErr } = await supabase
-        .from('users')
-        .select('*')
-        .eq('auth_user_id', supabaseAuthId)
-        .limit(1);
-
-      if (!dbErr && Array.isArray(dbUsers) && dbUsers.length > 0) {
-        found = mapDbUserToAppUser(dbUsers[0]);
-        const idx = users.findIndex((u) => u.id === found!.id);
-        if (idx >= 0) {
-          users[idx] = found;
-        } else {
-          users.push(found);
-        }
-        return found;
-      }
-    } catch {
-      // safe fallback if auth_user_id column is absent
-    }
-  }
-
-  // 6. Query Supabase database by google_email (if column exists)
   if (normalizedEmail) {
-    try {
-      const { data: dbUsers, error: dbErr } = await supabase
-        .from('users')
-        .select('*')
-        .ilike('google_email', normalizedEmail)
-        .limit(1);
+    // Priority 4: email ilike verifiedEmail
+    const userByEmail = await tryDbQuery('email', 'ilike', normalizedEmail);
+    if (userByEmail) return { user: userByEmail };
 
-      if (!dbErr && Array.isArray(dbUsers) && dbUsers.length > 0) {
-        found = mapDbUserToAppUser(dbUsers[0]);
-        const idx = users.findIndex((u) => u.id === found!.id);
-        if (idx >= 0) {
-          users[idx] = found;
-        } else {
-          users.push(found);
-        }
-        return found;
-      }
-    } catch {
-      // safe fallback if google_email column is absent
-    }
+    // Priority 5: google_email ilike verifiedEmail
+    const userByGoogleEmail = await tryDbQuery('google_email', 'ilike', normalizedEmail);
+    if (userByGoogleEmail) return { user: userByGoogleEmail };
   }
 
-  return null;
+  if (fatalDbError) {
+    return { user: null, dbError: fatalDbError };
+  }
+
+  return { user: null };
 }
 
 // -------------------------------------------------------------
@@ -6184,7 +6159,16 @@ app.post('/api/auth/login-with-google', async (req, res) => {
       });
     }
 
-    const existingUser = await findExistingDelivereUser(supabaseAuthId, verifiedEmail);
+    const lookupResult = await findExistingDelivereUser(supabaseAuthId, verifiedEmail);
+
+    if (lookupResult.dbError) {
+      return res.status(500).json({
+        error: 'خطأ في الاتصال بقاعدة البيانات أثناء التحقق من الحساب: ' + lookupResult.dbError,
+        code: 'DATABASE_QUERY_FAILED',
+      });
+    }
+
+    const existingUser = lookupResult.user;
 
     if (!existingUser) {
       return res.status(403).json({
@@ -6193,31 +6177,80 @@ app.post('/api/auth/login-with-google', async (req, res) => {
       });
     }
 
-    if (!existingUser.isActive) {
+    const isUserActive =
+      existingUser.isActive !== false &&
+      (existingUser as any).is_active !== false &&
+      (existingUser as any).status !== 'INACTIVE' &&
+      (existingUser as any).status !== 'DEACTIVATED';
+
+    if (!isUserActive) {
       return res.status(403).json({
         error: 'تم تعطيل أو تعليق هذا الحساب. يرجى مراجعة إدارة العمليات.',
         code: 'ACCOUNT_INACTIVE',
       });
     }
 
-    // Safe linking without altering user ID, role, permissions, or hierarchy
-    if (existingUser.googleId !== supabaseAuthId || existingUser.googleEmail !== verifiedEmail) {
-      existingUser.googleId = supabaseAuthId;
-      existingUser.googleEmail = verifiedEmail;
-      existingUser.authProvider = existingUser.password ? 'HYBRID' : 'GOOGLE';
+    // Enforce identity conflict protection:
+    // If existing account is already bound to a different non-empty authUserId or googleId, REJECT with 409
+    const authIdConflict = Boolean(
+      (existingUser.authUserId && existingUser.authUserId !== supabaseAuthId) ||
+      ((existingUser as any).auth_user_id && (existingUser as any).auth_user_id !== supabaseAuthId)
+    );
+
+    const googleIdConflict = Boolean(
+      (existingUser.googleId && existingUser.googleId !== supabaseAuthId) ||
+      ((existingUser as any).google_id && (existingUser as any).google_id !== supabaseAuthId)
+    );
+
+    if (authIdConflict || googleIdConflict) {
+      return res.status(409).json({
+        error: 'هذا الحساب مرتبط بهوية تسجيل دخول مختلفة (Identity Conflict).',
+        code: 'IDENTITY_CONFLICT',
+      });
+    }
+
+    // Determine if database binding update is required
+    const needsBinding =
+      existingUser.authUserId !== supabaseAuthId ||
+      existingUser.googleId !== supabaseAuthId ||
+      existingUser.googleEmail !== verifiedEmail;
+
+    if (needsBinding) {
+      const nextAuthProvider = existingUser.password ? 'HYBRID' : 'GOOGLE';
+      const updatePayload: any = {
+        auth_user_id: supabaseAuthId,
+        google_id: supabaseAuthId,
+        google_email: verifiedEmail,
+        auth_provider: nextAuthProvider,
+        updated_at: new Date().toISOString(),
+      };
 
       try {
-        await supabase
+        const { error: updateError } = await supabase
           .from('users')
-          .update({
-            google_id: supabaseAuthId,
-            auth_provider: existingUser.authProvider,
-            updated_at: new Date().toISOString(),
-          })
+          .update(updatePayload)
           .eq('id', existingUser.id);
-      } catch (dbErr: any) {
-        console.warn('DB update user Google link error:', dbErr?.message);
+
+        if (updateError) {
+          console.error('[Google Auth] DB identity binding update failed:', updateError);
+          return res.status(500).json({
+            error: 'تعذر حفظ وربط هوية الحساب في قاعدة البيانات. يرجى إعادة المحاولة لاحقاً.',
+            code: 'DATABASE_BIND_FAILED',
+          });
+        }
+      } catch (err: any) {
+        console.error('[Google Auth] Exception during DB identity binding:', err);
+        return res.status(500).json({
+          error: 'حدث خطأ غير متوقع أثناء ربط هوية الحساب في قاعدة البيانات.',
+          code: 'DATABASE_BIND_EXCEPTION',
+        });
       }
+
+      // ONLY mutate in-memory user representation AFTER DB update succeeds
+      existingUser.authUserId = supabaseAuthId;
+      existingUser.googleId = supabaseAuthId;
+      existingUser.googleEmail = verifiedEmail;
+      existingUser.authProvider = nextAuthProvider;
     }
 
     logAuditEvent({
@@ -6295,34 +6328,84 @@ app.post(['/api/auth/supabase-google', '/api/auth/google/verify-token'], async (
       verifiedEmail.split('@')[0];
 
     // 1. Check if user already exists in Delivere memory or Supabase database
-    const existingUser = await findExistingDelivereUser(supabaseAuthId, verifiedEmail);
+    const lookupResult = await findExistingDelivereUser(supabaseAuthId, verifiedEmail);
+    const existingUser = lookupResult.user;
 
     if (existingUser) {
-      // Existing User: Preserve existing user.id, role, permissions, maxAllowedPermissions, tenantId, parentUserId 100%!
-      if (existingUser.googleId !== supabaseAuthId || existingUser.googleEmail !== verifiedEmail) {
-        existingUser.googleId = supabaseAuthId;
-        existingUser.googleEmail = verifiedEmail;
-        existingUser.authProvider = existingUser.password ? 'HYBRID' : 'GOOGLE';
+      const isUserActive =
+        existingUser.isActive !== false &&
+        (existingUser as any).is_active !== false &&
+        (existingUser as any).status !== 'INACTIVE' &&
+        (existingUser as any).status !== 'DEACTIVATED';
 
-        try {
-          await supabase
-            .from('users')
-            .update({
-              google_id: supabaseAuthId,
-              auth_provider: existingUser.authProvider,
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', existingUser.id);
-        } catch (dbErr: any) {
-          console.warn('DB update user Google link error:', dbErr?.message);
-        }
-      }
-
-      if (!existingUser.isActive) {
+      if (!isUserActive) {
         return res.status(403).json({
           error: 'تم تعطيل أو تعليق هذا الحساب. يرجى مراجعة إدارة العمليات.',
           code: 'ACCOUNT_INACTIVE',
         });
+      }
+
+      // Enforce identity conflict protection:
+      // If existing account is already bound to a different non-empty authUserId or googleId, REJECT with 409
+      const authIdConflict = Boolean(
+        (existingUser.authUserId && existingUser.authUserId !== supabaseAuthId) ||
+        ((existingUser as any).auth_user_id && (existingUser as any).auth_user_id !== supabaseAuthId)
+      );
+
+      const googleIdConflict = Boolean(
+        (existingUser.googleId && existingUser.googleId !== supabaseAuthId) ||
+        ((existingUser as any).google_id && (existingUser as any).google_id !== supabaseAuthId)
+      );
+
+      if (authIdConflict || googleIdConflict) {
+        return res.status(409).json({
+          error: 'هذا الحساب مرتبط بهوية تسجيل دخول مختلفة (Identity Conflict).',
+          code: 'IDENTITY_CONFLICT',
+        });
+      }
+
+      // Determine if database binding update is required
+      const needsBinding =
+        existingUser.authUserId !== supabaseAuthId ||
+        existingUser.googleId !== supabaseAuthId ||
+        existingUser.googleEmail !== verifiedEmail;
+
+      if (needsBinding) {
+        const nextAuthProvider = existingUser.password ? 'HYBRID' : 'GOOGLE';
+        const updatePayload: any = {
+          auth_user_id: supabaseAuthId,
+          google_id: supabaseAuthId,
+          google_email: verifiedEmail,
+          auth_provider: nextAuthProvider,
+          updated_at: new Date().toISOString(),
+        };
+
+        try {
+          const { error: updateError } = await supabase
+            .from('users')
+            .update(updatePayload)
+            .eq('id', existingUser.id);
+
+          if (updateError) {
+            console.error('[Google Auth] DB identity binding update failed:', updateError);
+            return res.status(500).json({
+              error: 'تعذر حفظ وربط هوية الحساب في قاعدة البيانات. يرجى إعادة المحاولة لاحقاً.',
+              code: 'DATABASE_BIND_FAILED',
+            });
+          }
+        } catch (err: any) {
+          console.error('[Google Auth] Exception during DB identity binding:', err);
+          return res.status(500).json({
+            error: 'حدث خطأ غير متوقع أثناء ربط هوية الحساب في قاعدة البيانات.',
+            code: 'DATABASE_BIND_EXCEPTION',
+          });
+        }
+
+        // ONLY mutate in-memory user representation AFTER DB update succeeds
+        existingUser.authUserId = supabaseAuthId;
+        existingUser.googleId = supabaseAuthId;
+        existingUser.googleEmail = verifiedEmail;
+        existingUser.authProvider = nextAuthProvider;
       }
 
       logAuditEvent({
@@ -6404,6 +6487,7 @@ app.post(['/api/auth/supabase-google', '/api/auth/google/verify-token'], async (
         permissions: assignedPermissions,
         maxAllowedPermissions: assignedMaxAllowed,
         authProvider: 'GOOGLE',
+        authUserId: supabaseAuthId,
         googleId: supabaseAuthId,
         googleEmail: verifiedEmail,
         invitationId: invitation.id,

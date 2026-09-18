@@ -384,8 +384,12 @@ export interface User {
 
   // Phase 1.5B Identity & Invitation Fields
   authProvider?: 'EMAIL_PASSWORD' | 'GOOGLE' | 'HYBRID';
+  authUserId?: string;
+  auth_user_id?: string;
   googleId?: string;
+  google_id?: string;
   googleEmail?: string;
+  google_email?: string;
   invitationId?: string;
   invitedBy?: string;
 }
