@@ -5997,12 +5997,257 @@ app.post('/api/invitations/:id/resend', requireAuth, async (req, res) => {
 // 7. Supabase Auth Google Identity Verification & Delivere Session Issuance
 // --------------------------------------------------------------------------
 // Zero-Trust Security: Frontend initiates OAuth via supabase.auth.signInWithOAuth({ provider: 'google' }).
-// Backend cryptographically verifies identity via Supabase Auth API (supabase.auth.getUser).
-// Strictly verifies email_verified status.
-// Existing Users: Safely links google_id/google_email without altering user ID, role, permissions, or hierarchy.
-// New Users: Strictly gated behind valid, unexpired, atomic invitation tokens.
-// Issues signed Delivere sessions (dargo_jwt) with HMAC-SHA256.
-app.post(['/api/auth/supabase-google', '/api/auth/google/verify-token', '/api/auth/login-with-google'], async (req, res) => {
+// -------------------------------------------------------------
+// Dedicated Helper: Resolve Existing Delivere User by Supabase Auth Identity
+// -------------------------------------------------------------
+async function findExistingDelivereUser(supabaseAuthId: string, verifiedEmail: string): Promise<User | null> {
+  const normalizedEmail = (verifiedEmail || '').toLowerCase().trim();
+
+  // 1. Search in-memory users
+  let found = users.find(
+    (u) =>
+      (u.googleId && u.googleId === supabaseAuthId) ||
+      ((u as any).authUserId && (u as any).authUserId === supabaseAuthId) ||
+      (u.id && u.id === supabaseAuthId) ||
+      (u.email && u.email.toLowerCase().trim() === normalizedEmail) ||
+      (u.googleEmail && u.googleEmail.toLowerCase().trim() === normalizedEmail)
+  );
+
+  if (found) {
+    return found;
+  }
+
+  // 2. Query Supabase database by standard email column (case-insensitive)
+  if (normalizedEmail) {
+    try {
+      const { data: dbUsers, error: dbErr } = await supabase
+        .from('users')
+        .select('*')
+        .ilike('email', normalizedEmail)
+        .limit(1);
+
+      if (!dbErr && Array.isArray(dbUsers) && dbUsers.length > 0) {
+        found = mapDbUserToAppUser(dbUsers[0]);
+        const idx = users.findIndex((u) => u.id === found!.id);
+        if (idx >= 0) {
+          users[idx] = found;
+        } else {
+          users.push(found);
+        }
+        return found;
+      }
+    } catch (err: any) {
+      console.warn('[Google Auth] DB lookup by email notice:', err?.message);
+    }
+  }
+
+  // 3. Query Supabase database by google_id
+  if (supabaseAuthId) {
+    try {
+      const { data: dbUsers, error: dbErr } = await supabase
+        .from('users')
+        .select('*')
+        .eq('google_id', supabaseAuthId)
+        .limit(1);
+
+      if (!dbErr && Array.isArray(dbUsers) && dbUsers.length > 0) {
+        found = mapDbUserToAppUser(dbUsers[0]);
+        const idx = users.findIndex((u) => u.id === found!.id);
+        if (idx >= 0) {
+          users[idx] = found;
+        } else {
+          users.push(found);
+        }
+        return found;
+      }
+    } catch {
+      // safe fallback if google_id column query fails
+    }
+  }
+
+  // 4. Query Supabase database by primary user id
+  if (supabaseAuthId) {
+    try {
+      const { data: dbUsers, error: dbErr } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', supabaseAuthId)
+        .limit(1);
+
+      if (!dbErr && Array.isArray(dbUsers) && dbUsers.length > 0) {
+        found = mapDbUserToAppUser(dbUsers[0]);
+        const idx = users.findIndex((u) => u.id === found!.id);
+        if (idx >= 0) {
+          users[idx] = found;
+        } else {
+          users.push(found);
+        }
+        return found;
+      }
+    } catch {
+      // safe fallback if id column comparison fails
+    }
+  }
+
+  // 5. Query Supabase database by auth_user_id (if column exists)
+  if (supabaseAuthId) {
+    try {
+      const { data: dbUsers, error: dbErr } = await supabase
+        .from('users')
+        .select('*')
+        .eq('auth_user_id', supabaseAuthId)
+        .limit(1);
+
+      if (!dbErr && Array.isArray(dbUsers) && dbUsers.length > 0) {
+        found = mapDbUserToAppUser(dbUsers[0]);
+        const idx = users.findIndex((u) => u.id === found!.id);
+        if (idx >= 0) {
+          users[idx] = found;
+        } else {
+          users.push(found);
+        }
+        return found;
+      }
+    } catch {
+      // safe fallback if auth_user_id column is absent
+    }
+  }
+
+  // 6. Query Supabase database by google_email (if column exists)
+  if (normalizedEmail) {
+    try {
+      const { data: dbUsers, error: dbErr } = await supabase
+        .from('users')
+        .select('*')
+        .ilike('google_email', normalizedEmail)
+        .limit(1);
+
+      if (!dbErr && Array.isArray(dbUsers) && dbUsers.length > 0) {
+        found = mapDbUserToAppUser(dbUsers[0]);
+        const idx = users.findIndex((u) => u.id === found!.id);
+        if (idx >= 0) {
+          users[idx] = found;
+        } else {
+          users.push(found);
+        }
+        return found;
+      }
+    } catch {
+      // safe fallback if google_email column is absent
+    }
+  }
+
+  return null;
+}
+
+// -------------------------------------------------------------
+// Flow B: Dedicated Normal Google Login for Existing Users
+// -------------------------------------------------------------
+app.post('/api/auth/login-with-google', async (req, res) => {
+  try {
+    const supabaseAccessToken = req.body.supabaseAccessToken || req.body.credential;
+
+    if (!supabaseAccessToken || typeof supabaseAccessToken !== 'string') {
+      return res.status(401).json({
+        error: 'رمز وصول Supabase Auth مطلوب (Supabase Access Token is required).',
+        code: 'SUPABASE_TOKEN_REQUIRED',
+      });
+    }
+
+    // Cryptographically verify identity via Supabase Auth API
+    const { data: authData, error: authError } = await supabase.auth.getUser(supabaseAccessToken.trim());
+
+    if (authError || !authData?.user) {
+      return res.status(401).json({
+        error: 'رمز وصول Supabase غير صالح أو منتهي الصلاحية: ' + (authError?.message || 'Invalid token'),
+        code: 'INVALID_SUPABASE_TOKEN',
+      });
+    }
+
+    const supabaseUser = authData.user;
+    const supabaseAuthId = String(supabaseUser.id);
+    const verifiedEmail = (supabaseUser.email || '').toLowerCase().trim();
+
+    // Verify email verification status from Supabase identity
+    const isEmailVerified = Boolean(
+      supabaseUser.email_confirmed_at ||
+      supabaseUser.confirmed_at ||
+      supabaseUser.user_metadata?.email_verified === true ||
+      supabaseUser.user_metadata?.email_verified === 'true' ||
+      supabaseUser.app_metadata?.provider === 'google'
+    );
+
+    if (!verifiedEmail || !isEmailVerified) {
+      return res.status(403).json({
+        error: 'حساب Google هذا لا يحتوي على بريد موثق ومؤكد رسمياً لدى مزود الهوية (email_verified=false).',
+        code: 'EMAIL_NOT_VERIFIED',
+      });
+    }
+
+    const existingUser = await findExistingDelivereUser(supabaseAuthId, verifiedEmail);
+
+    if (!existingUser) {
+      return res.status(403).json({
+        error: 'حساب Google هذا غير مسجل في النظام. المنظومة تتطلب حساباً مسجلاً أو رابط دعوة مسبق.',
+        code: 'USER_NOT_FOUND',
+      });
+    }
+
+    if (!existingUser.isActive) {
+      return res.status(403).json({
+        error: 'تم تعطيل أو تعليق هذا الحساب. يرجى مراجعة إدارة العمليات.',
+        code: 'ACCOUNT_INACTIVE',
+      });
+    }
+
+    // Safe linking without altering user ID, role, permissions, or hierarchy
+    if (existingUser.googleId !== supabaseAuthId || existingUser.googleEmail !== verifiedEmail) {
+      existingUser.googleId = supabaseAuthId;
+      existingUser.googleEmail = verifiedEmail;
+      existingUser.authProvider = existingUser.password ? 'HYBRID' : 'GOOGLE';
+
+      try {
+        await supabase
+          .from('users')
+          .update({
+            google_id: supabaseAuthId,
+            auth_provider: existingUser.authProvider,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', existingUser.id);
+      } catch (dbErr: any) {
+        console.warn('DB update user Google link error:', dbErr?.message);
+      }
+    }
+
+    logAuditEvent({
+      action: 'GOOGLE_LOGIN_SUCCESS',
+      actionNameAr: 'تسجيل دخول ناجح عبر مزود Supabase Google Auth',
+      performedBy: existingUser.id,
+      performerName: existingUser.name,
+      performerRole: existingUser.role,
+      targetId: existingUser.id,
+      targetType: 'USER',
+      tenantId: existingUser.parentUserId || existingUser.id,
+    });
+
+    const sessionToken = generateSessionToken(existingUser);
+    return res.json({
+      success: true,
+      message: `مرحباً بك يا ${existingUser.name}`,
+      user: sanitizeUserForClient(existingUser),
+      token: sessionToken,
+    });
+  } catch (err: any) {
+    console.error('Google normal login server error:', err);
+    return res.status(500).json({ error: 'فشل التحقق من تسجيل الدخول عبر Google: ' + err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// Flow A: Invitation Acceptance & Fallback Google Auth Endpoint
+// -------------------------------------------------------------
+app.post(['/api/auth/supabase-google', '/api/auth/google/verify-token'], async (req, res) => {
   try {
     const supabaseAccessToken = req.body.supabaseAccessToken || req.body.credential;
     const invitationToken = req.body.invitationToken;
@@ -6050,52 +6295,7 @@ app.post(['/api/auth/supabase-google', '/api/auth/google/verify-token', '/api/au
       verifiedEmail.split('@')[0];
 
     // 1. Check if user already exists in Delivere memory or Supabase database
-    let existingUser = users.find(
-      (u) =>
-        (u.googleId && u.googleId === supabaseAuthId) ||
-        (u.email && u.email.toLowerCase().trim() === verifiedEmail) ||
-        (u.googleEmail && u.googleEmail.toLowerCase().trim() === verifiedEmail)
-    );
-
-    // If not found in memory, query Supabase database by email (guaranteed standard column)
-    if (!existingUser && verifiedEmail) {
-      try {
-        const { data: dbUsers, error: dbErr } = await supabase
-          .from('users')
-          .select('*')
-          .ilike('email', verifiedEmail)
-          .limit(1);
-
-        if (!dbErr && dbUsers && dbUsers.length > 0) {
-          existingUser = mapDbUserToAppUser(dbUsers[0]);
-          if (!users.some((u) => u.id === existingUser!.id)) {
-            users.push(existingUser);
-          }
-        }
-      } catch (err: any) {
-        console.warn('DB lookup by email fallback notice:', err?.message);
-      }
-    }
-
-    // If still not found, try querying by google_id
-    if (!existingUser && supabaseAuthId) {
-      try {
-        const { data: dbUsers, error: dbErr } = await supabase
-          .from('users')
-          .select('*')
-          .eq('google_id', supabaseAuthId)
-          .limit(1);
-
-        if (!dbErr && dbUsers && dbUsers.length > 0) {
-          existingUser = mapDbUserToAppUser(dbUsers[0]);
-          if (!users.some((u) => u.id === existingUser!.id)) {
-            users.push(existingUser);
-          }
-        }
-      } catch {
-        // google_id column query safe catch
-      }
-    }
+    const existingUser = await findExistingDelivereUser(supabaseAuthId, verifiedEmail);
 
     if (existingUser) {
       // Existing User: Preserve existing user.id, role, permissions, maxAllowedPermissions, tenantId, parentUserId 100%!

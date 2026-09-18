@@ -181,6 +181,10 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     setIsGoogleLoading(true);
     setErrorMessage(null);
     try {
+      sessionStorage.setItem('delivere_oauth_intent', 'login');
+      sessionStorage.removeItem('delivere_pending_invite_token');
+      localStorage.removeItem('delivere_pending_invite_token');
+
       const redirectTo = window.location.origin;
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',

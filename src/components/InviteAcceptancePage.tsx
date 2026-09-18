@@ -266,7 +266,8 @@ export const InviteAcceptancePage: React.FC<InviteAcceptancePageProps> = ({
     setIsSubmitting(true);
 
     try {
-      // Store token locally as a fallback
+      // Store token locally and set explicit invitation OAuth intent
+      sessionStorage.setItem('delivere_oauth_intent', 'invitation');
       sessionStorage.setItem('delivere_pending_invite_token', token);
       localStorage.setItem('delivere_pending_invite_token', token);
 

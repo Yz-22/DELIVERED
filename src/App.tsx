@@ -669,28 +669,39 @@ export default function App() {
             const accessToken = await resolveSupabaseOAuthSession(8000);
             if (accessToken) {
               const urlParams = new URLSearchParams(window.location.search);
-              const isExplicitInvite =
+              const oauthIntent = sessionStorage.getItem('delivere_oauth_intent');
+              const isInviteRoute =
                 window.location.pathname.startsWith('/invite') ||
                 urlParams.has('token') ||
                 urlParams.has('invite_token') ||
                 urlParams.has('invitation');
 
-              const pendingInvite = isExplicitInvite
-                ? (urlParams.get('token') ||
-                   urlParams.get('invite_token') ||
-                   urlParams.get('invitation') ||
-                   sessionStorage.getItem('delivere_pending_invite_token') ||
-                   inviteToken)
-                : undefined;
+              const pendingInvite =
+                sessionStorage.getItem('delivere_pending_invite_token') ||
+                urlParams.get('token') ||
+                urlParams.get('invite_token') ||
+                urlParams.get('invitation') ||
+                inviteToken;
 
-              const res = await fetch('/api/auth/supabase-google', {
+              // Explicit invitation mode requires intent === 'invitation' or an active /invite URL with an actual invitation token
+              const isInvitationMode = (oauthIntent === 'invitation' || isInviteRoute) && Boolean(pendingInvite);
+              const targetEndpoint = isInvitationMode ? '/api/auth/supabase-google' : '/api/auth/login-with-google';
+
+              const reqPayload: any = {
+                supabaseAccessToken: accessToken,
+              };
+              if (isInvitationMode) {
+                reqPayload.invitationToken = pendingInvite;
+              }
+
+              const res = await fetch(targetEndpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  supabaseAccessToken: accessToken,
-                  invitationToken: pendingInvite || undefined,
-                }),
+                body: JSON.stringify(reqPayload),
               });
+
+              // Clear temporary OAuth intent immediately
+              sessionStorage.removeItem('delivere_oauth_intent');
 
               const data = await res.json();
               if (res.ok && data.token && data.user) {
@@ -708,7 +719,7 @@ export default function App() {
               } else {
                 console.warn('Backend OAuth exchange notice:', data?.error);
                 await supabase.auth.signOut();
-                if (data?.code === 'INVALID_INVITATION_TOKEN' || data?.code === 'REGISTRATION_GATED') {
+                if (data?.code === 'INVALID_INVITATION_TOKEN' || data?.code === 'REGISTRATION_GATED' || data?.code === 'USER_NOT_FOUND') {
                   sessionStorage.removeItem('delivere_pending_invite_token');
                   localStorage.removeItem('delivere_pending_invite_token');
                   setInviteToken(null);
