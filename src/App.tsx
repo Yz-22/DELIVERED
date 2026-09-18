@@ -33,6 +33,7 @@ import { LoginPage } from './components/LoginPage';
 import { InviteAcceptancePage } from './components/InviteAcceptancePage';
 import { supabase, resolveSupabaseOAuthSession } from './lib/supabase';
 import { SuperAdminMasterHub } from './components/SuperAdminMasterHub';
+import { SuperAdminShell } from './components/superadmin/SuperAdminShell';
 import { TenantBrandingProvider } from './context/TenantBrandingContext';
 import { Order, OrderStatus, User, Role, OrdersQueryResponse } from './types/logistics';
 import { CheckCircle2, AlertCircle, X } from 'lucide-react';
@@ -1066,27 +1067,14 @@ export default function App() {
     );
   }
 
-  return (
-    <TenantBrandingProvider>
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-amber-500 selection:text-slate-950">
-      {/* 1. Global Navigation Bar */}
-      <TopNavbar
-        activeSection={activeSection}
-        onChangeSection={setActiveSection}
-        onOpenScanner={() => setIsScannerOpen(true)}
-        onOpenTracking={() => setIsTrackingOpen(true)}
-        onOpenRouteOptimizer={() => setIsRouteOptimizerOpen(true)}
-        onOpenSchemaDoc={() => setIsSchemaModalOpen(true)}
-        onOpenIntegrations={() => setIsIntegrationsOpen(true)}
-        currentUser={currentUser}
-        onLogout={handleLogout}
-        onDownloadBackup={handleDownloadBackup}
-      />
+  const isSuperAdmin = currentUser?.role === 'SUPER_ADMIN';
 
+  const renderActiveWorkspace = () => (
+    <>
       {/* 1. Super Admin Master Hub & Subscriptions Management */}
       {activeSection === 'super_admin_hub' && (
         permissions.allowedSections.includes('super_admin_hub') && currentUser ? (
-          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5">
+          isSuperAdmin ? (
             <SuperAdminMasterHub
               users={allUsers}
               currentUser={currentUser}
@@ -1106,7 +1094,29 @@ export default function App() {
               }}
               showToast={showToast}
             />
-          </main>
+          ) : (
+            <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5">
+              <SuperAdminMasterHub
+                users={allUsers}
+                currentUser={currentUser}
+                onRefresh={async () => {
+                  const res = await fetch('/api/users');
+                  if (res.ok) {
+                    const data = await res.json();
+                    setAllUsers(data);
+                  }
+                }}
+                onSelectUserForLogin={(targetUser) => {
+                  setCurrentUser(targetUser);
+                  storeDelivereSession(targetUser, `delivere_jwt_${targetUser.id}`);
+                  showToast(`تم تسجيل الدخول بنجاح بحساب (${targetUser.name}) - ${targetUser.roleName || targetUser.role}`, 'success');
+                  const resolvedSec = resolveWorkspaceForUser(targetUser);
+                  setActiveSection(resolvedSec);
+                }}
+                showToast={showToast}
+              />
+            </main>
+          )
         ) : (
           <AccessDeniedView
             sectionTitle="مركز السوبر أدمن وإدارة الاشتراكات"
@@ -1487,6 +1497,51 @@ export default function App() {
           homeSectionName="تسجيل الخروج والعودة لتسجيل الدخول"
         />
       )}
+    </>
+  );
+
+  return (
+    <TenantBrandingProvider>
+      {isSuperAdmin && currentUser ? (
+        <SuperAdminShell
+          activeSection={activeSection}
+          onChangeSection={setActiveSection}
+          currentUser={currentUser}
+          onLogout={handleLogout}
+          onRefresh={async () => {
+            const res = await fetch('/api/users');
+            if (res.ok) {
+              const data = await res.json();
+              setAllUsers(data);
+            }
+          }}
+          onOpenScanner={() => setIsScannerOpen(true)}
+          onOpenTracking={() => setIsTrackingOpen(true)}
+          onOpenRouteOptimizer={() => setIsRouteOptimizerOpen(true)}
+          onOpenSchemaDoc={() => setIsSchemaModalOpen(true)}
+          onOpenIntegrations={() => setIsIntegrationsOpen(true)}
+          onDownloadBackup={handleDownloadBackup}
+        >
+          {renderActiveWorkspace()}
+        </SuperAdminShell>
+      ) : (
+        <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-amber-500 selection:text-slate-950">
+          {/* 1. Global Navigation Bar */}
+          <TopNavbar
+            activeSection={activeSection}
+            onChangeSection={setActiveSection}
+            onOpenScanner={() => setIsScannerOpen(true)}
+            onOpenTracking={() => setIsTrackingOpen(true)}
+            onOpenRouteOptimizer={() => setIsRouteOptimizerOpen(true)}
+            onOpenSchemaDoc={() => setIsSchemaModalOpen(true)}
+            onOpenIntegrations={() => setIsIntegrationsOpen(true)}
+            currentUser={currentUser}
+            onLogout={handleLogout}
+            onDownloadBackup={handleDownloadBackup}
+          />
+          {renderActiveWorkspace()}
+        </div>
+      )}
 
       {/* Floating Toast Notification */}
       {toastMessage && (
@@ -1596,7 +1651,6 @@ export default function App() {
           }
         }}
       />
-    </div>
-  </TenantBrandingProvider>
+    </TenantBrandingProvider>
   );
 }
