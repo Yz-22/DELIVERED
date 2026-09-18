@@ -17,7 +17,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { User, Role } from '../types/logistics';
-import { supabase } from '../lib/supabase';
+import { supabase, resolveSupabaseOAuthSession } from '../lib/supabase';
 import { storeDelivereSession } from '../lib/auth';
 
 interface InviteAcceptancePageProps {
@@ -183,16 +183,14 @@ export const InviteAcceptancePage: React.FC<InviteAcceptancePageProps> = ({
 
     const checkSupabaseInviteCallback = async () => {
       try {
-        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-        if (sessionError) {
-          console.warn('Supabase invite getSession error:', sessionError);
-          return;
-        }
-
         const hasOAuthIndicator =
           window.location.hash.includes('access_token') ||
           window.location.search.includes('code=') ||
-          window.location.hash.includes('error=');
+          window.location.hash.includes('code=') ||
+          window.location.hash.includes('error=') ||
+          window.location.search.includes('error=');
+
+        if (!hasOAuthIndicator) return;
 
         if (window.location.hash.includes('error=')) {
           const hashParams = new URLSearchParams(window.location.hash.substring(1));
@@ -203,14 +201,16 @@ export const InviteAcceptancePage: React.FC<InviteAcceptancePageProps> = ({
           return;
         }
 
-        if (session?.access_token && hasOAuthIndicator) {
-          if (!isCancelled) setIsSubmitting(true);
+        if (!isCancelled) setIsSubmitting(true);
 
+        const accessToken = await resolveSupabaseOAuthSession(8000);
+
+        if (accessToken) {
           const res = await fetch('/api/auth/supabase-google', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              supabaseAccessToken: session.access_token,
+              supabaseAccessToken: accessToken,
               invitationToken: token,
             }),
           });
@@ -230,8 +230,6 @@ export const InviteAcceptancePage: React.FC<InviteAcceptancePageProps> = ({
             }
           } else {
             await supabase.auth.signOut();
-            sessionStorage.removeItem('delivere_pending_invite_token');
-            localStorage.removeItem('delivere_pending_invite_token');
             if (window.history.replaceState) {
               window.history.replaceState(null, '', window.location.pathname);
             }

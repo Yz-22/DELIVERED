@@ -31,7 +31,7 @@ import { CashierWorkspace } from './components/CashierWorkspace';
 import { ReportsAndStatements } from './components/ReportsAndStatements';
 import { LoginPage } from './components/LoginPage';
 import { InviteAcceptancePage } from './components/InviteAcceptancePage';
-import { supabase } from './lib/supabase';
+import { supabase, resolveSupabaseOAuthSession } from './lib/supabase';
 import { OpsSuperAdminLogin } from './components/OpsSuperAdminLogin';
 import { SuperAdminMasterHub } from './components/SuperAdminMasterHub';
 import { TenantBrandingProvider } from './context/TenantBrandingContext';
@@ -658,50 +658,60 @@ export default function App() {
     let isMounted = true;
     const initAuthAndUsers = async () => {
       try {
-        // Check for returning Supabase OAuth session (e.g. redirected to root /)
-        if (supabase && !inviteToken) {
-          const hasOAuthParams =
-            window.location.hash.includes('access_token') ||
-            window.location.search.includes('code=');
+        const hasOAuthParams =
+          typeof window !== 'undefined' &&
+          (window.location.hash.includes('access_token') ||
+            window.location.search.includes('code=') ||
+            window.location.hash.includes('code=') ||
+            window.location.hash.includes('error=') ||
+            window.location.search.includes('error='));
 
-          if (hasOAuthParams) {
-            try {
-              const { data: { session } } = await supabase.auth.getSession();
-              if (session?.access_token) {
-                const pendingInvite =
-                  sessionStorage.getItem('delivere_pending_invite_token') ||
-                  localStorage.getItem('delivere_pending_invite_token');
+        // Check for returning Supabase OAuth session
+        if (supabase && hasOAuthParams) {
+          try {
+            const accessToken = await resolveSupabaseOAuthSession(8000);
+            if (accessToken) {
+              const urlParams = new URLSearchParams(window.location.search);
+              const pendingInvite =
+                urlParams.get('token') ||
+                urlParams.get('invite_token') ||
+                urlParams.get('invitation') ||
+                sessionStorage.getItem('delivere_pending_invite_token') ||
+                localStorage.getItem('delivere_pending_invite_token') ||
+                inviteToken;
 
-                const res = await fetch('/api/auth/supabase-google', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    supabaseAccessToken: session.access_token,
-                    invitationToken: pendingInvite || undefined,
-                  }),
-                });
+              const res = await fetch('/api/auth/supabase-google', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  supabaseAccessToken: accessToken,
+                  invitationToken: pendingInvite || undefined,
+                }),
+              });
 
-                const data = await res.json();
-                if (res.ok && data.token && data.user) {
-                  sessionStorage.removeItem('delivere_pending_invite_token');
-                  localStorage.removeItem('delivere_pending_invite_token');
-                  storeDelivereSession(data.user, data.token);
-                  if (window.history.replaceState) {
-                    window.history.replaceState(null, '', window.location.pathname);
-                  }
-                  if (isMounted) {
-                    handleLoginSuccess(data.user, data.token);
-                  }
-                  return;
-                } else {
-                  await supabase.auth.signOut();
-                  sessionStorage.removeItem('delivere_pending_invite_token');
-                  localStorage.removeItem('delivere_pending_invite_token');
+              const data = await res.json();
+              if (res.ok && data.token && data.user) {
+                sessionStorage.removeItem('delivere_pending_invite_token');
+                localStorage.removeItem('delivere_pending_invite_token');
+                storeDelivereSession(data.user, data.token);
+                if (window.history.replaceState) {
+                  window.history.replaceState(null, '', window.location.pathname);
+                }
+                setInviteToken(null);
+                if (isMounted) {
+                  handleLoginSuccess(data.user, data.token);
+                }
+                return;
+              } else {
+                console.warn('Backend OAuth exchange failed:', data?.error);
+                await supabase.auth.signOut();
+                if (pendingInvite) {
+                  setInviteToken(pendingInvite);
                 }
               }
-            } catch (authErr) {
-              console.warn('OAuth session exchange warning in App.tsx:', authErr);
             }
+          } catch (authErr) {
+            console.warn('OAuth session exchange warning in App.tsx:', authErr);
           }
         }
 

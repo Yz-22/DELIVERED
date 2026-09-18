@@ -14,7 +14,7 @@ import {
   KeyRound,
 } from 'lucide-react';
 import { User } from '../types/logistics';
-import { supabase } from '../lib/supabase';
+import { supabase, resolveSupabaseOAuthSession } from '../lib/supabase';
 import { storeDelivereSession, clearDelivereSession } from '../lib/auth';
 
 interface LoginPageProps {
@@ -92,16 +92,14 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
     const checkSupabaseAuthSession = async () => {
       try {
-        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-        if (sessionError) {
-          console.warn('Supabase getSession error:', sessionError);
-          return;
-        }
-
         const hasOAuthIndicator =
           window.location.hash.includes('access_token') ||
           window.location.search.includes('code=') ||
-          window.location.hash.includes('error=');
+          window.location.hash.includes('code=') ||
+          window.location.hash.includes('error=') ||
+          window.location.search.includes('error=');
+
+        if (!hasOAuthIndicator) return;
 
         if (window.location.hash.includes('error=')) {
           const hashParams = new URLSearchParams(window.location.hash.substring(1));
@@ -112,9 +110,11 @@ export const LoginPage: React.FC<LoginPageProps> = ({
           return;
         }
 
-        if (session?.access_token && hasOAuthIndicator) {
-          if (!isCancelled) setIsGoogleLoading(true);
+        if (!isCancelled) setIsGoogleLoading(true);
 
+        const accessToken = await resolveSupabaseOAuthSession(8000);
+
+        if (accessToken) {
           const pendingInvite =
             sessionStorage.getItem('delivere_pending_invite_token') ||
             localStorage.getItem('delivere_pending_invite_token');
@@ -123,7 +123,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              supabaseAccessToken: session.access_token,
+              supabaseAccessToken: accessToken,
               invitationToken: pendingInvite || undefined,
             }),
           });
@@ -145,7 +145,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({
           } else {
             // Sign out from Supabase to prevent stuck token loop
             await supabase.auth.signOut();
-            clearDelivereSession();
 
             if (window.history.replaceState) {
               window.history.replaceState(null, '', window.location.pathname);
