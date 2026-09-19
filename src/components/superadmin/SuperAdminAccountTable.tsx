@@ -35,6 +35,7 @@ interface SuperAdminAccountTableProps {
   onOpenPasswordModal: (user: User) => void;
   onToggleStatus: (user: User) => void;
   onSelectUserForLogin: (user: User) => void;
+  onOpenDetailDrawer?: (user: User) => void;
   showToast: (msg: string, type?: 'success' | 'error') => void;
 }
 
@@ -47,6 +48,7 @@ export const SuperAdminAccountTable: React.FC<SuperAdminAccountTableProps> = ({
   onOpenPasswordModal,
   onToggleStatus,
   onSelectUserForLogin,
+  onOpenDetailDrawer,
   showToast,
 }) => {
   const [activeMenuUserId, setActiveMenuUserId] = useState<string | null>(null);
@@ -448,6 +450,21 @@ export const SuperAdminAccountTable: React.FC<SuperAdminAccountTableProps> = ({
                                 <LogIn className="w-3.5 h-3.5 text-amber-400" />
                                 <span>دخول ومعاينة الحساب</span>
                               </button>
+
+                              {/* View Full Account Details */}
+                              {onOpenDetailDrawer && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setActiveMenuUserId(null);
+                                    onOpenDetailDrawer(u);
+                                  }}
+                                  className="w-full flex items-center gap-2 px-2.5 py-1.5 text-xs font-bold text-slate-200 hover:text-white hover:bg-slate-800 rounded-lg transition-colors text-right cursor-pointer"
+                                >
+                                  <Building2 className="w-3.5 h-3.5 text-blue-400" />
+                                  <span>تفاصيل الترخيص والحساب</span>
+                                </button>
+                              )}
 
                               {/* Toggle Subsystems */}
                               <button

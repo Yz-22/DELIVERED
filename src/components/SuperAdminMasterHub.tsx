@@ -28,6 +28,9 @@ import { getAuthHeaders } from '../lib/auth';
 import { SuperAdminKpiGrid } from './superadmin/SuperAdminKpiGrid';
 import { SuperAdminToolbar } from './superadmin/SuperAdminToolbar';
 import { SuperAdminAccountTable } from './superadmin/SuperAdminAccountTable';
+import { AccountDetailDrawer } from './superadmin/AccountDetailDrawer';
+import { AttentionRequiredSection } from './superadmin/AttentionRequiredSection';
+import { RecentActivitySection } from './superadmin/RecentActivitySection';
 
 interface SuperAdminMasterHubProps {
   users: User[];
@@ -52,6 +55,7 @@ export const SuperAdminMasterHub: React.FC<SuperAdminMasterHubProps> = ({
 
   // Modals state
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [selectedUserForDrawer, setSelectedUserForDrawer] = useState<User | null>(null);
   const [selectedUserForRenewal, setSelectedUserForRenewal] = useState<User | null>(null);
   const [selectedUserForModules, setSelectedUserForModules] = useState<User | null>(null);
   const [selectedUserForPassword, setSelectedUserForPassword] = useState<User | null>(null);
@@ -111,8 +115,10 @@ export const SuperAdminMasterHub: React.FC<SuperAdminMasterHubProps> = ({
   const activeSubs = users.filter((u) => u.isActive && u.subscriptionStatus !== 'SUSPENDED').length;
   const suspendedSubs = users.filter((u) => !u.isActive || u.subscriptionStatus === 'SUSPENDED').length;
   const totalMRR = users.reduce((sum, u) => {
-    if (u.subscriptionStatus === 'ACTIVE' && u.subscriptionPrice) {
-      return sum + (u.subscriptionBillingCycle === 'ANNUAL' ? u.subscriptionPrice / 12 : u.subscriptionPrice);
+    const isActiveSub = (u.isActive ?? true) && u.subscriptionStatus !== 'SUSPENDED';
+    if (isActiveSub && u.subscriptionPrice) {
+      const isAnnual = u.subscriptionBillingCycle === 'ANNUAL' || u.subscriptionBillingCycle === 'YEARLY';
+      return sum + (isAnnual ? u.subscriptionPrice / 12 : u.subscriptionPrice);
     }
     return sum;
   }, 0);
@@ -435,13 +441,29 @@ export const SuperAdminMasterHub: React.FC<SuperAdminMasterHubProps> = ({
 
       {/* 2. Compact Enterprise KPI Grid */}
       <SuperAdminKpiGrid
+        totalAccounts={users.length}
         totalTenants={totalTenants}
         activeSubs={activeSubs}
         suspendedSubs={suspendedSubs}
         totalMRR={totalMRR}
       />
 
-      {/* 3. Compact Search & Filter Toolbar */}
+      {/* 3. Attention Required & Recent Activity Overview Section */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <AttentionRequiredSection
+          users={users}
+          onOpenRenewal={(user) => {
+            setSelectedUserForRenewal(user);
+            setRenewalPlan(user.subscriptionPlan || 'PROFESSIONAL');
+            setRenewalPrice(user.subscriptionPrice || 85);
+          }}
+          onToggleStatus={handleToggleStatus}
+          onSelectForLogin={onSelectUserForLogin}
+        />
+        <RecentActivitySection />
+      </div>
+
+      {/* 4. Compact Search & Filter Toolbar */}
       <SuperAdminToolbar
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
@@ -460,11 +482,12 @@ export const SuperAdminMasterHub: React.FC<SuperAdminMasterHubProps> = ({
         }}
       />
 
-      {/* 4. Enterprise Accounts & Subscriptions DataTable */}
+      {/* 5. Enterprise Accounts & Subscriptions DataTable */}
       <SuperAdminAccountTable
         users={filteredUsers}
         visiblePasswords={visiblePasswords}
         onTogglePasswordVisibility={togglePasswordVisibility}
+        onOpenDetailDrawer={(user) => setSelectedUserForDrawer(user)}
         onOpenRenewModal={(user) => {
           setSelectedUserForRenewal(user);
           setRenewalPlan(user.subscriptionPlan || 'PROFESSIONAL');
@@ -1067,6 +1090,25 @@ export const SuperAdminMasterHub: React.FC<SuperAdminMasterHubProps> = ({
           </div>
         </div>
       )}
+
+      {/* Account Detail Drawer */}
+      <AccountDetailDrawer
+        user={selectedUserForDrawer}
+        isOpen={Boolean(selectedUserForDrawer)}
+        onClose={() => setSelectedUserForDrawer(null)}
+        onSelectForLogin={onSelectUserForLogin}
+        onOpenRenewal={(user) => {
+          setSelectedUserForRenewal(user);
+          setRenewalPlan(user.subscriptionPlan || 'PROFESSIONAL');
+          setRenewalPrice(user.subscriptionPrice || 85);
+        }}
+        onOpenModules={(user) => setSelectedUserForModules(user)}
+        onOpenPasswordReset={(user) => {
+          setSelectedUserForPassword(user);
+          setNewPasswordVal('');
+        }}
+        onToggleStatus={handleToggleStatus}
+      />
     </div>
   );
 };

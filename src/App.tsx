@@ -34,6 +34,7 @@ import { InviteAcceptancePage } from './components/InviteAcceptancePage';
 import { supabase, resolveSupabaseOAuthSession } from './lib/supabase';
 import { SuperAdminMasterHub } from './components/SuperAdminMasterHub';
 import { SuperAdminShell } from './components/superadmin/SuperAdminShell';
+import { ImpersonationBanner } from './components/superadmin/ImpersonationBanner';
 import { TenantBrandingProvider } from './context/TenantBrandingContext';
 import { Order, OrderStatus, User, Role, OrdersQueryResponse } from './types/logistics';
 import { CheckCircle2, AlertCircle, X } from 'lucide-react';
@@ -103,6 +104,7 @@ export default function App() {
   // Authentication & Current User Session
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [impersonatingAdmin, setImpersonatingAdmin] = useState<User | null>(null);
   const [authState, setAuthState] = useState<'INITIALIZING' | 'AUTHENTICATED' | 'UNAUTHENTICATED'>('INITIALIZING');
   const isAuthChecking = authState === 'INITIALIZING';
   const [cliqOrder, setCliqOrder] = useState<Order | null>(null);
@@ -1069,6 +1071,16 @@ export default function App() {
 
   const isSuperAdmin = currentUser?.role === 'SUPER_ADMIN';
 
+  const handleExitImpersonation = () => {
+    if (impersonatingAdmin) {
+      setCurrentUser(impersonatingAdmin);
+      storeDelivereSession(impersonatingAdmin, `delivere_jwt_${impersonatingAdmin.id}`);
+      setImpersonatingAdmin(null);
+      setActiveSection('super_admin_hub');
+      showToast('تم إنهاء وضع المعاينة والعودة لحساب المدير العام (Super Admin)', 'success');
+    }
+  };
+
   const renderActiveWorkspace = () => (
     <>
       {/* 1. Super Admin Master Hub & Subscriptions Management */}
@@ -1086,9 +1098,12 @@ export default function App() {
                 }
               }}
               onSelectUserForLogin={(targetUser) => {
+                if (currentUser?.role === 'SUPER_ADMIN' && !impersonatingAdmin) {
+                  setImpersonatingAdmin(currentUser);
+                }
                 setCurrentUser(targetUser);
                 storeDelivereSession(targetUser, `delivere_jwt_${targetUser.id}`);
-                showToast(`تم تسجيل الدخول بنجاح بحساب (${targetUser.name}) - ${targetUser.roleName || targetUser.role}`, 'success');
+                showToast(`تم الدخول في وضع المعاينة بحساب (${targetUser.name}) - ${targetUser.roleName || targetUser.role}`, 'success');
                 const resolvedSec = resolveWorkspaceForUser(targetUser);
                 setActiveSection(resolvedSec);
               }}
@@ -1107,9 +1122,12 @@ export default function App() {
                   }
                 }}
                 onSelectUserForLogin={(targetUser) => {
+                  if (currentUser?.role === 'SUPER_ADMIN' && !impersonatingAdmin) {
+                    setImpersonatingAdmin(currentUser);
+                  }
                   setCurrentUser(targetUser);
                   storeDelivereSession(targetUser, `delivere_jwt_${targetUser.id}`);
-                  showToast(`تم تسجيل الدخول بنجاح بحساب (${targetUser.name}) - ${targetUser.roleName || targetUser.role}`, 'success');
+                  showToast(`تم الدخول في وضع المعاينة بحساب (${targetUser.name}) - ${targetUser.roleName || targetUser.role}`, 'success');
                   const resolvedSec = resolveWorkspaceForUser(targetUser);
                   setActiveSection(resolvedSec);
                 }}
@@ -1502,6 +1520,12 @@ export default function App() {
 
   return (
     <TenantBrandingProvider>
+      {impersonatingAdmin && currentUser && (
+        <ImpersonationBanner
+          impersonatedUser={currentUser}
+          onExitImpersonation={handleExitImpersonation}
+        />
+      )}
       {isSuperAdmin && currentUser ? (
         <SuperAdminShell
           activeSection={activeSection}

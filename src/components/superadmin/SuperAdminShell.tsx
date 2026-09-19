@@ -51,8 +51,6 @@ export const SuperAdminShell: React.FC<SuperAdminShellProps> = ({
         onLogout={onLogout}
         isCollapsed={isCollapsed}
         onToggleCollapse={() => setIsCollapsed(!isCollapsed)}
-        onOpenScanner={onOpenScanner}
-        onOpenTracking={onOpenTracking}
         onOpenIntegrations={onOpenIntegrations}
         onOpenSchemaDoc={onOpenSchemaDoc}
         isMobileOpen={isMobileOpen}

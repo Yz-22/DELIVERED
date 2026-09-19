@@ -98,39 +98,13 @@ export const SuperAdminTopBar: React.FC<SuperAdminTopBarProps> = ({
           </button>
         )}
 
-        {/* Quick Scanner Action */}
-        {onOpenScanner && (
-          <button
-            type="button"
-            onClick={onOpenScanner}
-            className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-slate-800/80 hover:bg-slate-700/80 text-slate-200 border border-slate-700/80 rounded-xl text-xs font-bold transition-all cursor-pointer"
-            title="ماسح الباركود السريع"
-          >
-            <Scan className="w-3.5 h-3.5 text-amber-400" />
-            <span>الماسح</span>
-          </button>
-        )}
-
-        {/* Live Tracking Action */}
-        {onOpenTracking && (
-          <button
-            type="button"
-            onClick={onOpenTracking}
-            className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-slate-800/80 hover:bg-slate-700/80 text-slate-200 border border-slate-700/80 rounded-xl text-xs font-bold transition-all cursor-pointer"
-            title="التتبع الحي الميداني"
-          >
-            <Radio className="w-3.5 h-3.5 text-emerald-400" />
-            <span>التتبع</span>
-          </button>
-        )}
-
-        {/* Backup Download */}
+        {/* Platform Backup Download */}
         {onDownloadBackup && (
           <button
             type="button"
             onClick={onDownloadBackup}
-            className="hidden md:flex items-center gap-1.5 px-3 py-1.5 bg-slate-800/80 hover:bg-slate-700/80 text-slate-200 border border-slate-700/80 rounded-xl text-xs font-bold transition-all cursor-pointer"
-            title="تحميل نسخة احتياطية من البيانات"
+            className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-slate-800/80 hover:bg-slate-700/80 text-slate-200 border border-slate-700/80 rounded-xl text-xs font-bold transition-all cursor-pointer"
+            title="تحميل نسخة احتياطية سحابية"
           >
             <Download className="w-3.5 h-3.5 text-cyan-400" />
             <span>نسخة احتياطية</span>
