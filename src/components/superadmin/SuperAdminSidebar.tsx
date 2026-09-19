@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Shield,
   Users,
@@ -7,9 +7,10 @@ import {
   LogOut,
   ChevronRight,
   ChevronLeft,
+  ChevronDown,
   Sliders,
   Code2,
-  ExternalLink,
+  Terminal,
 } from 'lucide-react';
 import { AppSection } from '../TopNavbar';
 import { User } from '../../types/logistics';
@@ -46,29 +47,31 @@ export const SuperAdminSidebar: React.FC<SuperAdminSidebarProps> = ({
   isMobileOpen = false,
   onCloseMobile,
 }) => {
+  const [isDevToolsOpen, setIsDevToolsOpen] = useState(false);
+
   // Pure Platform Governance & Administration Primary Navigation
   const platformNavItems: PlatformNavItem[] = [
     {
       id: 'super_admin_hub',
       label: 'مركز إدارة المنصة',
-      description: 'الشركات والاشتراكات والتراخيص',
+      description: 'نظرة عامة والشركات والاشتراكات',
       icon: Shield,
     },
     {
       id: 'users',
       label: 'المستخدمون والصلاحيات',
-      description: 'إدارة الحسابات وفئات الوصول',
+      description: 'إدارة الحسابات والدعوات والوصول',
       icon: Users,
     },
     {
       id: 'reports_statements',
       label: 'التقارير وسجلات النشاط',
-      description: 'كشوفات الحساب والتدقيق العام',
+      description: 'الكشوفات المالية وسجل التدقيق',
       icon: FileText,
     },
     {
       id: 'settings',
-      label: 'إعدادات النظام والمنصة',
+      label: 'إعدادات المنصة والتسعير',
       description: 'التكوينات والتراخيص الجذرية',
       icon: Settings,
     },
@@ -195,42 +198,75 @@ export const SuperAdminSidebar: React.FC<SuperAdminSidebarProps> = ({
             })}
           </div>
 
-          {/* Developer & Integration Shortcuts */}
+          {/* Collapsible Developer & Integration Tools */}
           <div className="space-y-1 pt-2 border-t border-slate-800/60">
-            {!isCollapsed && (
-              <div className="px-3 pb-1.5 text-[11px] font-bold text-slate-400">
-                أدوات المطورين والربط
+            {!isCollapsed ? (
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setIsDevToolsOpen(!isDevToolsOpen)}
+                  className="w-full flex items-center justify-between px-3 py-1.5 text-[11px] font-bold text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
+                >
+                  <span className="flex items-center gap-1.5">
+                    <Terminal className="w-3.5 h-3.5 text-slate-500" />
+                    <span>أدوات المطورين</span>
+                  </span>
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 transition-transform duration-200 ${
+                      isDevToolsOpen ? 'rotate-180 text-amber-400' : ''
+                    }`}
+                  />
+                </button>
+
+                {isDevToolsOpen && (
+                  <div className="pt-1 pr-2 space-y-1 animate-in fade-in duration-150">
+                    {onOpenIntegrations && (
+                      <button
+                        type="button"
+                        onClick={onOpenIntegrations}
+                        className="w-full flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800/50 transition-all cursor-pointer"
+                      >
+                        <Sliders className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                        <span>الربط البرمجي (APIs)</span>
+                      </button>
+                    )}
+
+                    {onOpenSchemaDoc && (
+                      <button
+                        type="button"
+                        onClick={onOpenSchemaDoc}
+                        className="w-full flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800/50 transition-all cursor-pointer"
+                      >
+                        <Code2 className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                        <span>مخطط البيانات والتوثيق</span>
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
-            )}
-
-            {onOpenIntegrations && (
-              <button
-                type="button"
-                onClick={onOpenIntegrations}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold text-slate-400 hover:text-slate-200 hover:bg-slate-800/40 transition-all cursor-pointer ${
-                  isCollapsed ? 'justify-center px-0' : ''
-                }`}
-                title={isCollapsed ? 'الربط البرمجي (APIs & Webhooks)' : undefined}
-                aria-label="الربط البرمجي و Webhooks"
-              >
-                <Sliders className="w-4 h-4 text-slate-400 shrink-0" />
-                {!isCollapsed && <span>الربط البرمجي (APIs)</span>}
-              </button>
-            )}
-
-            {onOpenSchemaDoc && (
-              <button
-                type="button"
-                onClick={onOpenSchemaDoc}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold text-slate-400 hover:text-slate-200 hover:bg-slate-800/40 transition-all cursor-pointer ${
-                  isCollapsed ? 'justify-center px-0' : ''
-                }`}
-                title={isCollapsed ? 'مخطط البيانات والتوثيق' : undefined}
-                aria-label="مخطط البيانات والتوثيق"
-              >
-                <Code2 className="w-4 h-4 text-slate-400 shrink-0" />
-                {!isCollapsed && <span>مخطط البيانات والتوثيق</span>}
-              </button>
+            ) : (
+              <div className="space-y-1">
+                {onOpenIntegrations && (
+                  <button
+                    type="button"
+                    onClick={onOpenIntegrations}
+                    className="w-full flex items-center justify-center py-2 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
+                    title="الربط البرمجي (APIs)"
+                  >
+                    <Sliders className="w-4 h-4" />
+                  </button>
+                )}
+                {onOpenSchemaDoc && (
+                  <button
+                    type="button"
+                    onClick={onOpenSchemaDoc}
+                    className="w-full flex items-center justify-center py-2 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
+                    title="مخطط البيانات"
+                  >
+                    <Code2 className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
             )}
           </div>
         </div>

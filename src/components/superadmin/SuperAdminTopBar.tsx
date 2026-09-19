@@ -98,19 +98,6 @@ export const SuperAdminTopBar: React.FC<SuperAdminTopBarProps> = ({
           </button>
         )}
 
-        {/* Platform Backup Download */}
-        {onDownloadBackup && (
-          <button
-            type="button"
-            onClick={onDownloadBackup}
-            className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-slate-800/80 hover:bg-slate-700/80 text-slate-200 border border-slate-700/80 rounded-xl text-xs font-bold transition-all cursor-pointer"
-            title="تحميل نسخة احتياطية سحابية"
-          >
-            <Download className="w-3.5 h-3.5 text-cyan-400" />
-            <span>نسخة احتياطية</span>
-          </button>
-        )}
-
         <div className="h-6 w-px bg-slate-800 mx-1 hidden sm:block" />
 
         {/* User Profile Dropdown Menu */}

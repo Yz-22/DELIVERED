@@ -16,6 +16,11 @@ import {
   AlertTriangle,
   CheckCircle2,
   Users,
+  LayoutDashboard,
+  Activity,
+  ArrowLeft,
+  Eye,
+  ExternalLink,
 } from 'lucide-react';
 import {
   User,
@@ -31,6 +36,8 @@ import { SuperAdminAccountTable } from './superadmin/SuperAdminAccountTable';
 import { AccountDetailDrawer } from './superadmin/AccountDetailDrawer';
 import { AttentionRequiredSection } from './superadmin/AttentionRequiredSection';
 import { RecentActivitySection } from './superadmin/RecentActivitySection';
+import { SystemHealthStrip } from './superadmin/SystemHealthStrip';
+import { SuperAdminSubscriptionsTab } from './superadmin/SuperAdminSubscriptionsTab';
 
 interface SuperAdminMasterHubProps {
   users: User[];
@@ -47,6 +54,7 @@ export const SuperAdminMasterHub: React.FC<SuperAdminMasterHubProps> = ({
   onSelectUserForLogin,
   showToast,
 }) => {
+  const [activeTab, setActiveTab] = useState<'overview' | 'accounts' | 'subscriptions' | 'audit'>('overview');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterRole, setFilterRole] = useState<string>('ALL');
   const [filterStatus, setFilterStatus] = useState<string>('ALL');
@@ -391,10 +399,10 @@ export const SuperAdminMasterHub: React.FC<SuperAdminMasterHubProps> = ({
             </div>
             <div>
               <h1 className="text-xl font-bold tracking-tight text-white">
-                مركز إدارة المنصة
+                مركز إدارة المنصة السحابية
               </h1>
               <p className="text-xs text-slate-400">
-                إدارة الشركات والحسابات والاشتراكات والتراخيص
+                إدارة الشركات والتراخيص والاشتراكات وصلاحيات المنظومة
               </p>
             </div>
           </div>
@@ -439,66 +447,229 @@ export const SuperAdminMasterHub: React.FC<SuperAdminMasterHubProps> = ({
         </div>
       </div>
 
-      {/* 2. Compact Enterprise KPI Grid */}
-      <SuperAdminKpiGrid
-        totalAccounts={users.length}
-        totalTenants={totalTenants}
-        activeSubs={activeSubs}
-        suspendedSubs={suspendedSubs}
-        totalMRR={totalMRR}
-      />
+      {/* 2. Control Center Navigation Tabs */}
+      <div className="flex items-center gap-1.5 bg-slate-900/90 p-1.5 rounded-2xl border border-slate-800 overflow-x-auto">
+        <button
+          type="button"
+          onClick={() => setActiveTab('overview')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+            activeTab === 'overview'
+              ? 'bg-amber-500 text-slate-950 shadow-md'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+          }`}
+        >
+          <LayoutDashboard className="w-4 h-4" />
+          <span>نظرة عامة</span>
+        </button>
 
-      {/* 3. Attention Required & Recent Activity Overview Section */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <AttentionRequiredSection
-          users={users}
-          onOpenRenewal={(user) => {
-            setSelectedUserForRenewal(user);
-            setRenewalPlan(user.subscriptionPlan || 'PROFESSIONAL');
-            setRenewalPrice(user.subscriptionPrice || 85);
-          }}
-          onToggleStatus={handleToggleStatus}
-          onSelectForLogin={onSelectUserForLogin}
-        />
-        <RecentActivitySection />
+        <button
+          type="button"
+          onClick={() => setActiveTab('accounts')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+            activeTab === 'accounts'
+              ? 'bg-amber-500 text-slate-950 shadow-md'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+          }`}
+        >
+          <Building2 className="w-4 h-4" />
+          <span>إدارة الشركات والحسابات</span>
+          <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-extrabold ${
+            activeTab === 'accounts' ? 'bg-slate-950 text-amber-400' : 'bg-slate-800 text-slate-300'
+          }`}>
+            {users.length}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('subscriptions')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+            activeTab === 'subscriptions'
+              ? 'bg-amber-500 text-slate-950 shadow-md'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+          }`}
+        >
+          <CreditCard className="w-4 h-4" />
+          <span>الاشتراكات والباقات</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('audit')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+            activeTab === 'audit'
+              ? 'bg-amber-500 text-slate-950 shadow-md'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+          }`}
+        >
+          <Activity className="w-4 h-4" />
+          <span>سجل النشاط والتدقيق</span>
+        </button>
       </div>
 
-      {/* 4. Compact Search & Filter Toolbar */}
-      <SuperAdminToolbar
-        searchQuery={searchQuery}
-        onSearchChange={setSearchQuery}
-        filterRole={filterRole}
-        onRoleChange={setFilterRole}
-        filterPlan={filterPlan}
-        onPlanChange={setFilterPlan}
-        filterStatus={filterStatus}
-        onStatusChange={setFilterStatus}
-        totalResults={filteredUsers.length}
-        onResetFilters={() => {
-          setSearchQuery('');
-          setFilterRole('ALL');
-          setFilterPlan('ALL');
-          setFilterStatus('ALL');
-        }}
-      />
+      {/* TAB 1: EXECUTIVE OVERVIEW */}
+      {activeTab === 'overview' && (
+        <div className="space-y-5 animate-in fade-in duration-200">
+          {/* System Health Compact Strip */}
+          <SystemHealthStrip />
 
-      {/* 5. Enterprise Accounts & Subscriptions DataTable */}
-      <SuperAdminAccountTable
-        users={filteredUsers}
-        visiblePasswords={visiblePasswords}
-        onTogglePasswordVisibility={togglePasswordVisibility}
-        onOpenDetailDrawer={(user) => setSelectedUserForDrawer(user)}
-        onOpenRenewModal={(user) => {
-          setSelectedUserForRenewal(user);
-          setRenewalPlan(user.subscriptionPlan || 'PROFESSIONAL');
-          setRenewalPrice(user.subscriptionPrice || 85);
-        }}
-        onOpenModulesModal={(user) => setSelectedUserForModules(user)}
-        onOpenPasswordModal={(user) => setSelectedUserForPassword(user)}
-        onToggleStatus={handleToggleStatus}
-        onSelectUserForLogin={onSelectUserForLogin}
-        showToast={showToast}
-      />
+          {/* 5 Real Verified KPIs */}
+          <SuperAdminKpiGrid
+            totalAccounts={users.length}
+            totalTenants={totalTenants}
+            activeSubs={activeSubs}
+            suspendedSubs={suspendedSubs}
+            totalMRR={totalMRR}
+          />
+
+          {/* Attention & Activity Row */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <AttentionRequiredSection
+              users={users}
+              onOpenRenewal={(user) => {
+                setSelectedUserForRenewal(user);
+                setRenewalPlan(user.subscriptionPlan || 'PROFESSIONAL');
+                setRenewalPrice(user.subscriptionPrice || 85);
+              }}
+              onToggleStatus={handleToggleStatus}
+              onSelectForLogin={onSelectUserForLogin}
+            />
+            <RecentActivitySection />
+          </div>
+
+          {/* Recent Accounts Snippet with CTA to Full Accounts Table */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3 shadow-xs">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <Building2 className="w-4 h-4 text-amber-400" />
+                <h3 className="text-xs font-bold text-white">أحدث الشركات والحسابات المسجلة</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveTab('accounts')}
+                className="flex items-center gap-1.5 text-xs font-bold text-amber-400 hover:text-amber-300 transition-colors cursor-pointer"
+              >
+                <span>إدارة كافة الحسابات ({users.length})</span>
+                <ArrowLeft className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-right text-xs text-slate-300">
+                <thead className="bg-slate-950/60 text-slate-400 font-bold border-b border-slate-800">
+                  <tr>
+                    <th className="p-2.5">الاسم / الشركة</th>
+                    <th className="p-2.5">الدور الوظيفي</th>
+                    <th className="p-2.5">باقة الاشتراك</th>
+                    <th className="p-2.5">الحالة</th>
+                    <th className="p-2.5 text-center">معاينة الحساب</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {users.slice(0, 5).map((user) => (
+                    <tr key={user.id} className="hover:bg-slate-800/30 transition-colors">
+                      <td className="p-2.5 font-bold text-white">
+                        <div>{user.companyName || user.storeName || user.name}</div>
+                        <div className="text-[10px] text-slate-400 font-normal">{user.email}</div>
+                      </td>
+                      <td className="p-2.5">
+                        <span className="px-2 py-0.5 bg-slate-800 text-slate-300 rounded text-[10px] font-bold">
+                          {user.roleName || user.role}
+                        </span>
+                      </td>
+                      <td className="p-2.5 font-mono text-amber-300 font-bold">
+                        {user.subscriptionPlan || 'PROFESSIONAL'}
+                      </td>
+                      <td className="p-2.5">
+                        {user.isActive && user.subscriptionStatus !== 'SUSPENDED' ? (
+                          <span className="text-emerald-400 font-bold text-[11px]">● ساري</span>
+                        ) : (
+                          <span className="text-rose-400 font-bold text-[11px]">● موقوف</span>
+                        )}
+                      </td>
+                      <td className="p-2.5 text-center">
+                        <button
+                          type="button"
+                          onClick={() => onSelectUserForLogin(user)}
+                          className="px-2.5 py-1 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 rounded-lg text-[10px] font-bold transition-all cursor-pointer inline-flex items-center gap-1"
+                          title="دخول في وضع المعاينة"
+                        >
+                          <Eye className="w-3 h-3" />
+                          <span>معاينة</span>
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 2: FULL ACCOUNTS & COMPANIES DIRECTORY */}
+      {activeTab === 'accounts' && (
+        <div className="space-y-4 animate-in fade-in duration-200">
+          <SuperAdminToolbar
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            filterRole={filterRole}
+            onRoleChange={setFilterRole}
+            filterPlan={filterPlan}
+            onPlanChange={setFilterPlan}
+            filterStatus={filterStatus}
+            onStatusChange={setFilterStatus}
+            totalResults={filteredUsers.length}
+            onResetFilters={() => {
+              setSearchQuery('');
+              setFilterRole('ALL');
+              setFilterPlan('ALL');
+              setFilterStatus('ALL');
+            }}
+          />
+
+          <SuperAdminAccountTable
+            users={filteredUsers}
+            visiblePasswords={visiblePasswords}
+            onTogglePasswordVisibility={togglePasswordVisibility}
+            onOpenDetailDrawer={(user) => setSelectedUserForDrawer(user)}
+            onOpenRenewModal={(user) => {
+              setSelectedUserForRenewal(user);
+              setRenewalPlan(user.subscriptionPlan || 'PROFESSIONAL');
+              setRenewalPrice(user.subscriptionPrice || 85);
+            }}
+            onOpenModulesModal={(user) => setSelectedUserForModules(user)}
+            onOpenPasswordModal={(user) => setSelectedUserForPassword(user)}
+            onToggleStatus={handleToggleStatus}
+            onSelectUserForLogin={onSelectUserForLogin}
+            showToast={showToast}
+          />
+        </div>
+      )}
+
+      {/* TAB 3: SUBSCRIPTIONS & LICENSING HUB */}
+      {activeTab === 'subscriptions' && (
+        <div className="animate-in fade-in duration-200">
+          <SuperAdminSubscriptionsTab
+            users={users}
+            onOpenRenewModal={(user) => {
+              setSelectedUserForRenewal(user);
+              setRenewalPlan(user.subscriptionPlan || 'PROFESSIONAL');
+              setRenewalPrice(user.subscriptionPrice || 85);
+            }}
+            onOpenModulesModal={(user) => setSelectedUserForModules(user)}
+            onToggleStatus={handleToggleStatus}
+            showToast={showToast}
+          />
+        </div>
+      )}
+
+      {/* TAB 4: AUDIT STREAM & ACTIVITY LOGS */}
+      {activeTab === 'audit' && (
+        <div className="animate-in fade-in duration-200">
+          <RecentActivitySection />
+        </div>
+      )}
 
       {/* ------------------------------------------------------------- */}
       {/* MODAL 1: Create New Tenant Account */}
