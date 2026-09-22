@@ -1,6 +1,8 @@
 process.env.VERCEL = '1';
 
-import app from '../server.ts';
+import serverModule, { app as rawApp } from '../dist/server.cjs';
+
+const app: any = rawApp || (serverModule as any)?.app || (serverModule as any)?.default?.app || (serverModule as any)?.default || serverModule;
 
 export default function handler(req: any, res: any) {
   try {
