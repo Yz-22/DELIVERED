@@ -5,7 +5,7 @@
 // ============================================================================
 
 import { SupabaseClient } from '@supabase/supabase-js';
-import { AuthenticatedOperationContext, OperationalError, parseRpcError } from './operationalLogisticsService.js';
+import { AuthenticatedOperationContext, OperationalError, parseRpcError } from './operationalLogisticsService.ts';
 import {
   TaskListFilters,
   ExceptionListFilters,
@@ -29,7 +29,7 @@ import {
   RecordExceptionParams,
   ResolveExceptionParams,
   ExceptionSeverity,
-} from '../types/operationalTasks.js';
+} from '../types/operationalTasks.ts';
 
 // UUID validation helper
 function isValidUuid(id: any): boolean {
