@@ -153,6 +153,17 @@ export const CreateOrderModal: React.FC<CreateOrderModalProps> = ({
     });
   };
 
+  const handleTotalCollectionChange = (val: string) => {
+    const total = parseFloat(val) || 0;
+    const fee = parseFloat(formData.deliveryFee) || 0;
+    const netMerchant = Math.max(0, total - fee);
+    setFormData({
+      ...formData,
+      totalCollection: val,
+      merchantCollection: netMerchant.toFixed(1),
+    });
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.recipientName || !formData.recipientPhone || !formData.area) {
@@ -544,9 +555,7 @@ export const CreateOrderModal: React.FC<CreateOrderModalProps> = ({
                     type="number"
                     step="0.5"
                     value={formData.totalCollection}
-                    onChange={(e) =>
-                      setFormData({ ...formData, totalCollection: e.target.value })
-                    }
+                    onChange={(e) => handleTotalCollectionChange(e.target.value)}
                     className="w-full text-sm font-black bg-emerald-100/60 border border-emerald-300 rounded-lg p-2 text-emerald-900 font-mono"
                   />
                   <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-bold text-emerald-700">

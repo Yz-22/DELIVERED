@@ -65,7 +65,6 @@ export const ToolbarFilter: React.FC<ToolbarFilterProps> = ({
   const [showFiltersMenu, setShowFiltersMenu] = useState(false);
   const [showGroupByMenu, setShowGroupByMenu] = useState(false);
   const [bulkDriverSelect, setBulkDriverSelect] = useState('');
-  const [bulkStatusSelect, setBulkStatusSelect] = useState('');
 
   const hasActiveFilters =
     statusFilter !== 'ALL' ||
@@ -104,48 +103,6 @@ export const ToolbarFilter: React.FC<ToolbarFilterProps> = ({
 
           {/* Quick Bulk Actions */}
           <div className="flex flex-wrap items-center gap-2">
-            {/* Bulk Status Update */}
-            <div
-              className={`flex items-center gap-1.5 border rounded-md px-2 py-1 shadow-xs transition-colors ${
-                canBulkStatusChange
-                  ? 'bg-white border-slate-300'
-                  : 'bg-slate-100/90 border-slate-300 text-slate-400 cursor-not-allowed'
-              }`}
-              title={
-                !canBulkStatusChange
-                  ? 'معطل: ليس لديك صلاحية تعديل الحالات جماعياً (يتطلب حساب مدير أو موظف عمليات)'
-                  : undefined
-              }
-            >
-              {!canBulkStatusChange && <Lock className="w-3.5 h-3.5 text-slate-400" />}
-              <span className="text-xs text-slate-600 font-medium">تغيير الحالة:</span>
-              <select
-                disabled={!canBulkStatusChange}
-                value={bulkStatusSelect}
-                onChange={(e) => {
-                  if (e.target.value) {
-                    onBulkStatusChange(e.target.value as OrderStatus);
-                    setBulkStatusSelect('');
-                  }
-                }}
-                className={`text-xs font-semibold bg-transparent border-none outline-none focus:ring-0 ${
-                  canBulkStatusChange ? 'text-slate-800 cursor-pointer' : 'text-slate-400 cursor-not-allowed'
-                }`}
-              >
-                <option value="">{canBulkStatusChange ? 'اختر الحالة...' : 'غير مصرح (معطل)'}</option>
-                <option value="OUT_FOR_DELIVERY">جاري التوصيل</option>
-                <option value="DELIVERED">تم التسليم</option>
-                <option value="POSTPONED">مؤجل</option>
-                <option value="CANCELLED">ملغي</option>
-                <option value="RETURNED">مرتجع للمتجر</option>
-              </select>
-              {!canBulkStatusChange && (
-                <span className="text-[10px] bg-slate-200 text-slate-600 font-bold px-1.5 py-0.5 rounded">
-                  مقيد
-                </span>
-              )}
-            </div>
-
             {/* Bulk Driver Assign */}
             <div
               className={`flex items-center gap-1.5 border rounded-md px-2 py-1 shadow-xs transition-colors ${

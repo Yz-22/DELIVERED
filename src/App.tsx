@@ -1,43 +1,10 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { TopNavbar, AppSection } from './components/TopNavbar';
-import { OperationsHeader } from './components/OperationsHeader';
-import { ToolbarFilter } from './components/ToolbarFilter';
-import { OrdersDataGrid } from './components/OrdersDataGrid';
-import { KanbanBoard } from './components/KanbanBoard';
-import { KpiSummaryView } from './components/KpiSummaryView';
-import { DriverPortal } from './components/DriverPortal';
-import { FinancialSettlements } from './components/FinancialSettlements';
-import { MerchantPortal } from './components/MerchantPortal';
-import { ReverseLogistics } from './components/ReverseLogistics';
-import { RouteOptimizerModal } from './components/RouteOptimizerModal';
-import { BarcodeScannerModal } from './components/BarcodeScannerModal';
-import { PublicTrackingModal } from './components/PublicTrackingModal';
-import { CreateOrderModal } from './components/CreateOrderModal';
-import { QuickOrderModal } from './components/QuickOrderModal';
-import { BatchImportModal } from './components/BatchImportModal';
-import { OrderDetailsDrawer } from './components/OrderDetailsDrawer';
-import { ThermalWaybillModal } from './components/ThermalWaybillModal';
-import { SchemaAndApiModal } from './components/SchemaAndApiModal';
-import { IntegrationsModal } from './components/IntegrationsModal';
-import { CliqPaymentModal } from './components/CliqPaymentModal';
-import { OperationsDashboardGrid } from './components/OperationsDashboardGrid';
-import { UsersManagement } from './components/UsersManagement';
-import { ManifestsStatements } from './components/ManifestsStatements';
-import { StaffPortal } from './components/StaffPortal';
-import { AccessDeniedView } from './components/AccessDeniedView';
-import { AdminSettings } from './components/AdminSettings';
-import { MerchantBranches } from './components/MerchantBranches';
-import { CashierWorkspace } from './components/CashierWorkspace';
-import { ReportsAndStatements } from './components/ReportsAndStatements';
+import { AppSection } from './components/TopNavbar';
 import { LoginPage } from './components/LoginPage';
 import { InviteAcceptancePage } from './components/InviteAcceptancePage';
 import { supabase, resolveSupabaseOAuthSession } from './lib/supabase';
-import { SuperAdminMasterHub } from './components/SuperAdminMasterHub';
-import { SuperAdminShell } from './components/superadmin/SuperAdminShell';
-import { ImpersonationBanner } from './components/superadmin/ImpersonationBanner';
 import { TenantBrandingProvider } from './context/TenantBrandingContext';
 import { Order, OrderStatus, User, Role, OrdersQueryResponse } from './types/logistics';
-import { CheckCircle2, AlertCircle, X } from 'lucide-react';
 import { resolveWorkspaceForUser } from './lib/workspaceResolver';
 import {
   getAuthHeaders as getAppAuthHeaders,
@@ -46,6 +13,11 @@ import {
   clearDelivereSession,
   getStoredDelivereSession,
 } from './lib/auth';
+
+// Modular Shell Architecture
+import { ProductShell } from './components/shell/ProductShell';
+import { WorkspaceViewResolver } from './components/shell/WorkspaceViewResolver';
+import { GlobalOverlayLayer, ToastState } from './components/shell/GlobalOverlayLayer';
 
 export default function App() {
   // Check OPS portal from subdomain, path, query param, or hash
@@ -74,25 +46,7 @@ export default function App() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  const handleSwitchToOps = () => {
-    setIsOpsMode(true);
-    try {
-      window.history.pushState(null, '', '/ops');
-    } catch {
-      // fallback
-    }
-  };
-
-  const handleSwitchToStandard = () => {
-    setIsOpsMode(false);
-    try {
-      window.history.pushState(null, '', '/');
-    } catch {
-      // fallback
-    }
-  };
-
-  // Primary Navigation Section: Operations, Driver Mobile, Financial Settlements, Merchant Portal, Reverse Logistics
+  // Primary Navigation Section
   const [activeSection, setActiveSection] = useState<AppSection | null>(() => {
     const saved = getStoredDelivereSession();
     return resolveWorkspaceForUser(saved?.user);
@@ -109,7 +63,7 @@ export default function App() {
   const isAuthChecking = authState === 'INITIALIZING';
   const [cliqOrder, setCliqOrder] = useState<Order | null>(null);
 
-  // Invite Token URL detector: only active when explicitly opening an invitation link or on /invite route
+  // Invite Token URL detector
   const [inviteToken, setInviteToken] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
     const searchParams = new URLSearchParams(window.location.search);
@@ -279,42 +233,6 @@ export default function App() {
     }
   }, [currentRole]);
 
-  // Helper label for authorized fallback section
-  const getSectionTitle = (sec?: AppSection): string => {
-    switch (sec) {
-      case 'super_admin_hub':
-        return 'المدير العام للنظام';
-      case 'operations_grid':
-        return 'لوحة العمليات المركزية';
-      case 'operations':
-        return 'جدول إدارة الطلبيات';
-      case 'manifests':
-        return 'كشوفات ومنافست التوزيع';
-      case 'users':
-        return 'إدارة المستخدمين وقوائم الأسعار';
-      case 'staff_portal':
-        return 'بوابة موظف العمليات والفرز';
-      case 'driver_portal':
-        return 'بوابة الكابتن وتوصيل الطرود';
-      case 'merchant_portal':
-        return 'بوابة المتجر والمخزن والطلبيات';
-      case 'merchant_branches':
-        return 'إدارة فروع المتجر والمناقلات المخزنية';
-      case 'cashier_workspace':
-        return 'مساحة الكاشير ونقاط البيع السريعة (POS)';
-      case 'reports_statements':
-        return 'التقارير وكشوفات الحسابات الموحدة';
-      case 'settlements':
-        return 'التسويات والحسابات المالية';
-      case 'reverse_logistics':
-        return 'اللوجستيات العكسية ومستودع المرتجعات';
-      case 'settings':
-        return 'الإعدادات، قوائم الأسعار، والمناطق';
-      default:
-        return 'البوابة الرئيسية';
-    }
-  };
-
   // Guard activeSection: automatically redirect if switched to a role lacking access
   useEffect(() => {
     if (activeSection && !permissions.allowedSections.includes(activeSection)) {
@@ -374,7 +292,7 @@ export default function App() {
   const [activeWaybillOrders, setActiveWaybillOrders] = useState<Order[] | null>(null);
 
   // Toast Notification
-  const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+  const [toastMessage, setToastMessage] = useState<ToastState | null>(null);
 
   const showToast = (text: string, type: 'success' | 'error' = 'success') => {
     setToastMessage({ text, type });
@@ -391,7 +309,6 @@ export default function App() {
     if (authState !== 'AUTHENTICATED' || !currentUser?.id) return;
     try {
       const headers = getAuthHeaders();
-      // Only fetch if an authorization token/header exists
       if (!headers['Authorization']) return;
       const res = await fetch('/api/users', { headers });
       if (res.ok) {
@@ -432,35 +349,6 @@ export default function App() {
     setCurrentUser(null);
     setAuthState('UNAUTHENTICATED');
     showToast('تم تسجيل الخروج من النظام بنجاح');
-  };
-
-  const handleSelectUser = async (user: User) => {
-    setCurrentUser(user);
-    let switchToken = getAuthToken(user);
-    try {
-      const res = await fetch('/api/auth/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: user.id }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data?.token) switchToken = data.token;
-      }
-    } catch {
-      // Ignore network errors
-    }
-
-    storeDelivereSession(user, switchToken);
-    setAuthState('AUTHENTICATED');
-
-    const targetSection = resolveWorkspaceForUser(user);
-    setActiveSection(targetSection);
-    if (targetSection) {
-      showToast(`تم التبديل بنجاح إلى حساب: ${user.name} (${user.roleName || user.role})`);
-    } else {
-      showToast(`تنبيه: حساب المستخدم (${user.name}) لا يمتلك مساحة عمل مصرحاً بها`, 'error');
-    }
   };
 
   const handleAddUser = async (newUserData: Partial<User>): Promise<User | null> => {
@@ -545,7 +433,6 @@ export default function App() {
         prev.map((u) => (u.id === id ? { ...u, ...updatedUser } : u))
       );
 
-      // If updating the currently logged in user, refresh session
       if (currentUser && currentUser.id === id) {
         setCurrentUser(updatedUser);
         let existingToken = '';
@@ -671,7 +558,6 @@ export default function App() {
                 urlParams.get('invitation') ||
                 inviteToken;
 
-              // Explicit invitation mode requires intent === 'invitation' or an active /invite URL with an actual invitation token
               const isInvitationMode = (oauthIntent === 'invitation' || isInviteRoute) && Boolean(pendingInvite);
               const targetEndpoint = isInvitationMode ? '/api/auth/supabase-google' : '/api/auth/login-with-google';
 
@@ -688,7 +574,6 @@ export default function App() {
                 body: JSON.stringify(reqPayload),
               });
 
-              // Clear temporary OAuth intent immediately
               sessionStorage.removeItem('delivere_oauth_intent');
 
               const data = await res.json();
@@ -1013,6 +898,28 @@ export default function App() {
     showToast('تم تصدير ملف CSV بنجاح');
   };
 
+  const handleExitImpersonation = () => {
+    if (impersonatingAdmin) {
+      setCurrentUser(impersonatingAdmin);
+      storeDelivereSession(impersonatingAdmin, `delivere_jwt_${impersonatingAdmin.id}`);
+      setImpersonatingAdmin(null);
+      setActiveSection('super_admin_hub');
+      showToast('تم إنهاء وضع المعاينة والعودة لحساب المدير العام (Super Admin)', 'success');
+    }
+  };
+
+  const handleSelectUserForLogin = (targetUser: User) => {
+    if (currentUser?.role === 'SUPER_ADMIN' && !impersonatingAdmin) {
+      setImpersonatingAdmin(currentUser);
+    }
+    setCurrentUser(targetUser);
+    storeDelivereSession(targetUser, `delivere_jwt_${targetUser.id}`);
+    showToast(`تم الدخول في وضع المعاينة بحساب (${targetUser.name}) - ${targetUser.roleName || targetUser.role}`, 'success');
+    const resolvedSec = resolveWorkspaceForUser(targetUser);
+    setActiveSection(resolvedSec);
+  };
+
+  // 1. Session & Auth Verification Spinner
   if (isAuthChecking) {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-100 font-sans" dir="rtl">
@@ -1022,6 +929,7 @@ export default function App() {
     );
   }
 
+  // 2. Unauthenticated Boundary
   if (!currentUser) {
     if (inviteToken) {
       return (
@@ -1051,17 +959,14 @@ export default function App() {
         />
         {toastMessage && (
           <div
+            role="status"
+            aria-live="polite"
             className={`fixed bottom-5 left-5 z-50 px-4 py-3 rounded-xl shadow-xl flex items-center gap-2.5 text-xs font-bold ${
               toastMessage.type === 'success'
                 ? 'bg-emerald-600 text-white shadow-emerald-600/20'
                 : 'bg-rose-600 text-white shadow-rose-600/20'
             }`}
           >
-            {toastMessage.type === 'success' ? (
-              <CheckCircle2 className="w-4 h-4" />
-            ) : (
-              <AlertCircle className="w-4 h-4" />
-            )}
             <span>{toastMessage.text}</span>
           </div>
         )}
@@ -1069,604 +974,119 @@ export default function App() {
     );
   }
 
-  const isSuperAdmin = currentUser?.role === 'SUPER_ADMIN';
-
-  const handleExitImpersonation = () => {
-    if (impersonatingAdmin) {
-      setCurrentUser(impersonatingAdmin);
-      storeDelivereSession(impersonatingAdmin, `delivere_jwt_${impersonatingAdmin.id}`);
-      setImpersonatingAdmin(null);
-      setActiveSection('super_admin_hub');
-      showToast('تم إنهاء وضع المعاينة والعودة لحساب المدير العام (Super Admin)', 'success');
-    }
-  };
-
-  const renderActiveWorkspace = () => (
-    <>
-      {/* 1. Super Admin Master Hub & Subscriptions Management */}
-      {activeSection === 'super_admin_hub' && (
-        permissions.allowedSections.includes('super_admin_hub') && currentUser ? (
-          isSuperAdmin ? (
-            <SuperAdminMasterHub
-              users={allUsers}
-              currentUser={currentUser}
-              onRefresh={async () => {
-                const res = await fetch('/api/users');
-                if (res.ok) {
-                  const data = await res.json();
-                  setAllUsers(data);
-                }
-              }}
-              onSelectUserForLogin={(targetUser) => {
-                if (currentUser?.role === 'SUPER_ADMIN' && !impersonatingAdmin) {
-                  setImpersonatingAdmin(currentUser);
-                }
-                setCurrentUser(targetUser);
-                storeDelivereSession(targetUser, `delivere_jwt_${targetUser.id}`);
-                showToast(`تم الدخول في وضع المعاينة بحساب (${targetUser.name}) - ${targetUser.roleName || targetUser.role}`, 'success');
-                const resolvedSec = resolveWorkspaceForUser(targetUser);
-                setActiveSection(resolvedSec);
-              }}
-              showToast={showToast}
-            />
-          ) : (
-            <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5">
-              <SuperAdminMasterHub
-                users={allUsers}
-                currentUser={currentUser}
-                onRefresh={async () => {
-                  const res = await fetch('/api/users');
-                  if (res.ok) {
-                    const data = await res.json();
-                    setAllUsers(data);
-                  }
-                }}
-                onSelectUserForLogin={(targetUser) => {
-                  if (currentUser?.role === 'SUPER_ADMIN' && !impersonatingAdmin) {
-                    setImpersonatingAdmin(currentUser);
-                  }
-                  setCurrentUser(targetUser);
-                  storeDelivereSession(targetUser, `delivere_jwt_${targetUser.id}`);
-                  showToast(`تم الدخول في وضع المعاينة بحساب (${targetUser.name}) - ${targetUser.roleName || targetUser.role}`, 'success');
-                  const resolvedSec = resolveWorkspaceForUser(targetUser);
-                  setActiveSection(resolvedSec);
-                }}
-                showToast={showToast}
-              />
-            </main>
-          )
-        ) : (
-          <AccessDeniedView
-            sectionTitle="مركز السوبر أدمن وإدارة الاشتراكات"
-            requiredRole="المدير العام للنظام (SUPER_ADMIN)"
-            currentRole={currentRole}
-            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
-            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
-          />
-        )
-      )}
-
-      {/* 2. Operations Dashboard Grid (ERP Summary Matrix) */}
-      {activeSection === 'operations_grid' && (
-        permissions.allowedSections.includes('operations_grid') ? (
-          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5">
-            <OperationsDashboardGrid
-              orders={orders}
-              onSelectMetricFilter={(filterKey, status) => {
-                if (status) {
-                  setStatusFilter(status);
-                } else if (filterKey === 'ACTIVE') {
-                  setStatusFilter('ALL');
-                }
-                setActiveSection('operations');
-              }}
-              onNavigateToSection={(sec) => setActiveSection(sec as AppSection)}
-            />
-          </main>
-        ) : (
-          <AccessDeniedView
-            sectionTitle="لوحة مؤشرات العمليات (Operations Matrix)"
-            requiredRole="إدارة العمليات والفرز (ADMIN / OPERATOR)"
-            currentRole={currentRole}
-            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
-            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
-          />
-        )
-      )}
-
-      {/* 3. Operations Section (Table / Kanban / KPI) */}
-      {activeSection === 'operations' && (
-        permissions.allowedSections.includes('operations') ? (
-          <>
-            <OperationsHeader
-              viewMode={viewMode}
-              setViewMode={setViewMode}
-              onOpenCreateModal={() => setIsCreateModalOpen(true)}
-              onOpenQuickModal={() => setIsQuickModalOpen(true)}
-              onOpenBatchModal={() => setIsBatchModalOpen(true)}
-              onRefresh={fetchOrders}
-              onExportCSV={handleExportCSV}
-              canCreateOrder={permissions.canCreateOrder}
-              canExportCSV={permissions.canExportCSV}
-              stats={stats}
-              isLoading={isLoading}
-            />
-
-            <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5 space-y-4">
-              <ToolbarFilter
-                searchQuery={searchQuery}
-                setSearchQuery={setSearchQuery}
-                statusFilter={statusFilter}
-                setStatusFilter={setStatusFilter}
-                governorateFilter={governorateFilter}
-                setGovernorateFilter={setGovernorateFilter}
-                driverFilter={driverFilter}
-                setDriverFilter={setDriverFilter}
-                merchantFilter={merchantFilter}
-                setMerchantFilter={setMerchantFilter}
-                groupBy={groupBy}
-                setGroupBy={setGroupBy}
-                merchants={merchants}
-                drivers={drivers}
-                selectedCount={selectedIds.length}
-                onBulkStatusChange={handleBulkStatusChange}
-                onBulkAssignDriver={handleBulkAssignDriver}
-                onClearSelection={handleClearSelection}
-                onBulkPrintWaybills={handleBulkPrintWaybills}
-                canBulkStatusChange={permissions.canBulkStatusChange}
-                canBulkAssignDriver={permissions.canBulkAssignDriver}
-              />
-
-              {viewMode === 'grid' && (
-                <OrdersDataGrid
-                  orders={orders}
-                  selectedIds={selectedIds}
-                  onToggleSelect={handleToggleSelect}
-                  onToggleSelectAll={handleToggleSelectAll}
-                  onViewDetails={(order) => setActiveOrderDetails(order)}
-                  onPrintWaybill={(order) => setActiveWaybillOrders([order])}
-                  onChangeStatus={handleChangeStatus}
-                  onAssignDriver={handleAssignDriver}
-                  drivers={drivers}
-                  pagination={pagination}
-                  onPageChange={(page) => setPagination((prev) => ({ ...prev, page }))}
-                  onLimitChange={(limit) => setPagination((prev) => ({ ...prev, limit, page: 1 }))}
-                  groupBy={groupBy}
-                  isLoading={isLoading}
-                />
-              )}
-
-              {viewMode === 'kanban' && (
-                <KanbanBoard
-                  orders={orders}
-                  onViewDetails={(order) => setActiveOrderDetails(order)}
-                  onPrintWaybill={(order) => setActiveWaybillOrders([order])}
-                  onChangeStatus={(orderId, status) => handleChangeStatus(orderId, status)}
-                  drivers={drivers}
-                />
-              )}
-
-              {viewMode === 'kpi' && (
-                <KpiSummaryView orders={orders} drivers={drivers} stats={stats} />
-              )}
-            </main>
-          </>
-        ) : (
-          <AccessDeniedView
-            sectionTitle="جدول العمليات والطلبيات الشامل"
-            requiredRole="إدارة العمليات والفرز (ADMIN / OPERATOR)"
-            currentRole={currentRole}
-            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
-            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
-          />
-        )
-      )}
-
-      {/* 4. Manifests & Financial Statements */}
-      {activeSection === 'manifests' && (
-        permissions.allowedSections.includes('manifests') ? (
-          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5">
-            <ManifestsStatements
-              orders={orders}
-              drivers={drivers}
-              merchants={merchants}
-              onPrintThermalBatch={(selected) => {
-                setActiveWaybillOrders(selected);
-                showToast(`تم فتح حزمة طباعة البوالص لـ ${selected.length} شحنة`);
-              }}
-            />
-          </main>
-        ) : (
-          <AccessDeniedView
-            sectionTitle="كشوفات ومنافست التوزيع"
-            requiredRole="إدارة العمليات وموظف الفرز (ADMIN / OPERATOR)"
-            currentRole={currentRole}
-            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
-            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
-          />
-        )
-      )}
-
-      {/* 5. Users & Roles Management (RBAC & Price Lists) - STRICTLY ADMIN ONLY */}
-      {activeSection === 'users' && (
-        permissions.canManageUsers ? (
-          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5">
-            <UsersManagement
-              users={allUsers}
-              currentUser={currentUser}
-              onAddUser={handleAddUser}
-              onUpdateUser={handleUpdateUser}
-            />
-          </main>
-        ) : (
-          <AccessDeniedView
-            sectionTitle="إدارة المستخدمين وقوائم الأسعار والصلاحيات"
-            requiredRole="مدير العمليات والنظام (ADMIN)"
-            currentRole={currentRole}
-            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
-            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
-          />
-        )
-      )}
-
-      {/* 6. Operations Staff Portal (Inbound, Sorting & Dispatch) */}
-      {activeSection === 'staff_portal' && (
-        permissions.allowedSections.includes('staff_portal') ? (
-          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5">
-            <StaffPortal
-              orders={orders}
-              drivers={drivers}
-              onOpenScanner={() => setIsScannerOpen(true)}
-              onOpenWaybill={(order) => setActiveWaybillOrders([order])}
-              onOpenWaybillBatch={(ordersList) => {
-                setActiveWaybillOrders(ordersList);
-                showToast(`تم فتح طباعة البوالص لـ ${ordersList.length} شحنة`);
-              }}
-              onChangeOrderStatus={handleChangeStatus}
-              onAssignDriver={handleAssignDriver}
-            />
-          </main>
-        ) : (
-          <AccessDeniedView
-            sectionTitle="بوابة موظف العمليات والفرز والمستودع"
-            requiredRole="موظف العمليات أو مدير النظام"
-            currentRole={currentRole}
-            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
-            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
-          />
-        )
-      )}
-
-      {/* 7. Driver Mobile Portal Section */}
-      {activeSection === 'driver_portal' && (
-        permissions.allowedSections.includes('driver_portal') ? (
-          <main className="flex-1 py-4">
-            <DriverPortal
-              drivers={drivers}
-              currentUser={currentUser}
-              onOrderUpdated={fetchOrders}
-              onOpenWaybill={(order) => setActiveWaybillOrders([order])}
-            />
-          </main>
-        ) : (
-          <AccessDeniedView
-            sectionTitle="بوابة الكابتن وتوصيل الشحنات الميدانية"
-            requiredRole="كابتن توصيل معتمد (DRIVER)"
-            currentRole={currentRole}
-            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
-            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
-          />
-        )
-      )}
-
-      {/* 8. Financial Settlements Section */}
-      {activeSection === 'settlements' && (
-        permissions.canAccessFinancials ? (
-          <main className="flex-1 py-4">
-            <FinancialSettlements />
-          </main>
-        ) : (
-          <AccessDeniedView
-            sectionTitle="الحسابات والتسويات المالية"
-            requiredRole="حساب تاجر أو مدير النظام المالي"
-            currentRole={currentRole}
-            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
-            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
-          />
-        )
-      )}
-
-      {/* 9. Merchant Self-Service Portal */}
-      {activeSection === 'merchant_portal' && (
-        permissions.allowedSections.includes('merchant_portal') ? (
-          <main className="flex-1 py-4">
-            <MerchantPortal
-              merchants={merchants}
-              currentUser={currentUser}
-              onOpenWaybill={(order) => setActiveWaybillOrders([order])}
-              onViewOrderDetails={(order) => setActiveOrderDetails(order)}
-              onOrderCreated={fetchOrders}
-            />
-          </main>
-        ) : (
-          <AccessDeniedView
-            sectionTitle="بوابة التاجر والخدمة الذاتية"
-            requiredRole="حساب تاجر معتمد أو الإدارة"
-            currentRole={currentRole}
-            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
-            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
-          />
-        )
-      )}
-
-      {/* 10. Reverse Logistics & Warehouse Shelving - STRICTLY ADMIN & OPERATOR */}
-      {activeSection === 'reverse_logistics' && (
-        permissions.canAccessReverseLogistics ? (
-          <main className="flex-1 py-4">
-            <ReverseLogistics
-              merchants={merchants}
-              orders={orders}
-              onRefreshOrders={fetchOrders}
-              onOpenWaybill={(order) => setActiveWaybillOrders([order])}
-            />
-          </main>
-        ) : (
-          <AccessDeniedView
-            sectionTitle="اللوجستيات العكسية ومستودع الطرود المرتجعة"
-            requiredRole="أمين المستودع أو إدارة العمليات (ADMIN / OPERATOR)"
-            currentRole={currentRole}
-            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
-            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
-          />
-        )
-      )}
-
-      {/* 11. Admin Settings & Pricing - STRICTLY ADMIN ONLY (Matching user screenshot) */}
-      {activeSection === 'settings' && (
-        currentRole === 'ADMIN' ? (
-          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5">
-            <AdminSettings
-              merchants={merchants}
-              onOpenIntegrations={() => setIsIntegrationsOpen(true)}
-            />
-          </main>
-        ) : (
-          <AccessDeniedView
-            sectionTitle="إعدادات النظام، التسعير والمناطق"
-            requiredRole="مدير العمليات والنظام (ADMIN)"
-            currentRole={currentRole}
-            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
-            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
-          />
-        )
-      )}
-
-      {/* 12. Merchant Multi-Branch & Stock Transfer Architecture */}
-      {activeSection === 'merchant_branches' && (
-        permissions.allowedSections.includes('merchant_branches') ? (
-          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5">
-            <MerchantBranches
-              currentUser={currentUser}
-              merchants={merchants}
-              merchantId={currentUser?.role === 'MERCHANT' ? currentUser.id : undefined}
-            />
-          </main>
-        ) : (
-          <AccessDeniedView
-            sectionTitle="إدارة فروع المتجر والمناقلات المخزنية"
-            requiredRole="حساب تاجر أو إدارة العمليات"
-            currentRole={currentRole}
-            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
-            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
-          />
-        )
-      )}
-
-      {/* 13. Cashier & POS Dedicated Workspace */}
-      {activeSection === 'cashier_workspace' && (
-        permissions.allowedSections.includes('cashier_workspace') && currentUser ? (
-          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5">
-            <CashierWorkspace
-              currentUser={currentUser}
-              merchants={merchants}
-              onOrderCreated={fetchOrders}
-              onLogout={handleLogout}
-            />
-          </main>
-        ) : (
-          <AccessDeniedView
-            sectionTitle="مساحة الكاشير ونقاط البيع السريعة (POS)"
-            requiredRole="أمين الصندوق (CASHIER)"
-            currentRole={currentRole}
-            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
-            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
-          />
-        )
-      )}
-
-      {/* 14. Statements & Financial / Operational Reports */}
-      {activeSection === 'reports_statements' && (
-        permissions.allowedSections.includes('reports_statements') ? (
-          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5">
-            <ReportsAndStatements
-              currentUser={currentUser}
-              merchants={merchants}
-              drivers={drivers}
-            />
-          </main>
-        ) : (
-          <AccessDeniedView
-            sectionTitle="التقارير وكشوفات الحسابات الموحدة"
-            requiredRole="محاسب مالي أو إدارة العمليات أو تاجر"
-            currentRole={currentRole}
-            onNavigateHome={() => permissions.allowedSections.length > 0 ? setActiveSection(permissions.allowedSections[0]) : handleLogout()}
-            homeSectionName={permissions.allowedSections.length > 0 ? getSectionTitle(permissions.allowedSections[0]) : 'تسجيل الخروج'}
-          />
-        )
-      )}
-
-      {/* 15. Fail-Closed Fallback Access Denied for Unknown / Unauthorized Workspace */}
-      {(!activeSection || permissions.allowedSections.length === 0 || !permissions.allowedSections.includes(activeSection)) && (
-        <AccessDeniedView
-          sectionTitle="منظومة التحكم والوصول الآمن (Delivere Security Matrix)"
-          requiredRole="حساب معتمد ومفعل داخل منظومة ديليفري"
-          currentRole={(currentRole || 'غير محدد') as Role}
-          onNavigateHome={handleLogout}
-          homeSectionName="تسجيل الخروج والعودة لتسجيل الدخول"
-        />
-      )}
-    </>
-  );
-
+  // 3. Authenticated Modular Product Shell
   return (
     <TenantBrandingProvider>
-      {impersonatingAdmin && currentUser && (
-        <ImpersonationBanner
-          impersonatedUser={currentUser}
-          onExitImpersonation={handleExitImpersonation}
-        />
-      )}
-      {isSuperAdmin && currentUser ? (
-        <SuperAdminShell
+      <ProductShell
+        activeSection={activeSection}
+        onChangeSection={setActiveSection}
+        currentUser={currentUser}
+        impersonatingAdmin={impersonatingAdmin}
+        onExitImpersonation={handleExitImpersonation}
+        onLogout={handleLogout}
+        onRefresh={fetchUsers}
+        onOpenScanner={() => setIsScannerOpen(true)}
+        onOpenTracking={() => setIsTrackingOpen(true)}
+        onOpenRouteOptimizer={() => setIsRouteOptimizerOpen(true)}
+        onOpenSchemaDoc={() => setIsSchemaModalOpen(true)}
+        onOpenIntegrations={() => setIsIntegrationsOpen(true)}
+        onDownloadBackup={handleDownloadBackup}
+      >
+        <WorkspaceViewResolver
           activeSection={activeSection}
-          onChangeSection={setActiveSection}
+          setActiveSection={setActiveSection}
           currentUser={currentUser}
-          onLogout={handleLogout}
-          onRefresh={async () => {
-            const res = await fetch('/api/users');
-            if (res.ok) {
-              const data = await res.json();
-              setAllUsers(data);
-            }
-          }}
-          onOpenScanner={() => setIsScannerOpen(true)}
-          onOpenTracking={() => setIsTrackingOpen(true)}
-          onOpenRouteOptimizer={() => setIsRouteOptimizerOpen(true)}
-          onOpenSchemaDoc={() => setIsSchemaModalOpen(true)}
-          onOpenIntegrations={() => setIsIntegrationsOpen(true)}
-          onDownloadBackup={handleDownloadBackup}
-        >
-          {renderActiveWorkspace()}
-        </SuperAdminShell>
-      ) : (
-        <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-amber-500 selection:text-slate-950">
-          {/* 1. Global Navigation Bar */}
-          <TopNavbar
-            activeSection={activeSection}
-            onChangeSection={setActiveSection}
-            onOpenScanner={() => setIsScannerOpen(true)}
-            onOpenTracking={() => setIsTrackingOpen(true)}
-            onOpenRouteOptimizer={() => setIsRouteOptimizerOpen(true)}
-            onOpenSchemaDoc={() => setIsSchemaModalOpen(true)}
-            onOpenIntegrations={() => setIsIntegrationsOpen(true)}
-            currentUser={currentUser}
-            onLogout={handleLogout}
-            onDownloadBackup={handleDownloadBackup}
-          />
-          {renderActiveWorkspace()}
-        </div>
-      )}
+          allUsers={allUsers}
+          merchants={merchants}
+          drivers={drivers}
+          orders={orders}
+          stats={stats}
+          isLoading={isLoading}
+          pagination={pagination}
+          setPagination={setPagination}
+          permissions={permissions}
+          viewMode={viewMode}
+          setViewMode={setViewMode}
+          searchQuery={searchQuery}
+          setSearchQuery={setSearchQuery}
+          statusFilter={statusFilter}
+          setStatusFilter={setStatusFilter}
+          governorateFilter={governorateFilter}
+          setGovernorateFilter={setGovernorateFilter}
+          driverFilter={driverFilter}
+          setDriverFilter={setDriverFilter}
+          merchantFilter={merchantFilter}
+          setMerchantFilter={setMerchantFilter}
+          groupBy={groupBy}
+          setGroupBy={setGroupBy}
+          selectedIds={selectedIds}
+          fetchOrders={fetchOrders}
+          fetchUsers={fetchUsers}
+          handleAddUser={handleAddUser}
+          handleUpdateUser={handleUpdateUser}
+          handleChangeStatus={handleChangeStatus}
+          handleAssignDriver={handleAssignDriver}
+          handleBulkStatusChange={handleBulkStatusChange}
+          handleBulkAssignDriver={handleBulkAssignDriver}
+          handleBulkPrintWaybills={handleBulkPrintWaybills}
+          handleExportCSV={handleExportCSV}
+          handleToggleSelect={handleToggleSelect}
+          handleToggleSelectAll={handleToggleSelectAll}
+          handleClearSelection={handleClearSelection}
+          handleLogout={handleLogout}
+          showToast={showToast}
+          setIsCreateModalOpen={setIsCreateModalOpen}
+          setIsQuickModalOpen={setIsQuickModalOpen}
+          setIsBatchModalOpen={setIsBatchModalOpen}
+          setIsScannerOpen={setIsScannerOpen}
+          setIsIntegrationsOpen={setIsIntegrationsOpen}
+          setActiveOrderDetails={setActiveOrderDetails}
+          setActiveWaybillOrders={setActiveWaybillOrders}
+          onSelectUserForLogin={handleSelectUserForLogin}
+        />
+      </ProductShell>
 
-      {/* Floating Toast Notification */}
-      {toastMessage && (
-        <div className="fixed bottom-5 left-5 z-50 flex items-center gap-2 px-4 py-2.5 rounded-xl shadow-lg bg-slate-900 text-white text-xs font-bold border border-slate-800 animate-in fade-in slide-in-from-bottom-2">
-          {toastMessage.type === 'success' ? (
-            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-          ) : (
-            <AlertCircle className="w-4 h-4 text-rose-400" />
-          )}
-          <span>{toastMessage.text}</span>
-          <button onClick={() => setToastMessage(null)} className="text-slate-400 hover:text-white mr-1">
-            <X className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      )}
-
-      {/* Modals & Drawers */}
-      <CreateOrderModal
-        isOpen={isCreateModalOpen}
-        onClose={() => setIsCreateModalOpen(false)}
-        onSubmit={handleCreateOrder}
-        merchants={merchants}
-        drivers={drivers}
-        onAddNewMerchant={handleAddUser}
-      />
-
-      <QuickOrderModal
-        isOpen={isQuickModalOpen}
-        onClose={() => setIsQuickModalOpen(false)}
-        onSubmit={handleQuickOrder}
-        merchants={merchants}
-        onAddNewMerchant={handleAddUser}
-      />
-
-      <BatchImportModal
-        isOpen={isBatchModalOpen}
-        onClose={() => setIsBatchModalOpen(false)}
-        onSubmit={handleBatchImport}
-        merchants={merchants}
-      />
-
-      <BarcodeScannerModal
-        isOpen={isScannerOpen}
-        onClose={() => setIsScannerOpen(false)}
-        drivers={drivers}
+      {/* Global Modals, Drawers & Toast Layer */}
+      <GlobalOverlayLayer
+        isCreateModalOpen={isCreateModalOpen}
+        onCloseCreateModal={() => setIsCreateModalOpen(false)}
+        onSubmitCreateOrder={handleCreateOrder}
+        isQuickModalOpen={isQuickModalOpen}
+        onCloseQuickModal={() => setIsQuickModalOpen(false)}
+        onSubmitQuickOrder={handleQuickOrder}
+        isBatchModalOpen={isBatchModalOpen}
+        onCloseBatchModal={() => setIsBatchModalOpen(false)}
+        onSubmitBatchImport={handleBatchImport}
+        isScannerOpen={isScannerOpen}
+        onCloseScanner={() => setIsScannerOpen(false)}
         onScanSuccess={fetchOrders}
-      />
-
-      <PublicTrackingModal
-        isOpen={isTrackingOpen}
-        onClose={() => setIsTrackingOpen(false)}
-      />
-
-      <RouteOptimizerModal
-        isOpen={isRouteOptimizerOpen}
-        onClose={() => setIsRouteOptimizerOpen(false)}
-        drivers={drivers}
+        isTrackingOpen={isTrackingOpen}
+        onCloseTracking={() => setIsTrackingOpen(false)}
+        isRouteOptimizerOpen={isRouteOptimizerOpen}
+        onCloseRouteOptimizer={() => setIsRouteOptimizerOpen(false)}
         onAppliedOptimization={fetchOrders}
-      />
-
-      <OrderDetailsDrawer
-        order={activeOrderDetails}
-        isOpen={!!activeOrderDetails}
-        onClose={() => setActiveOrderDetails(null)}
-        onPrintWaybill={(order) => {
-          setActiveWaybillOrders([order]);
-          setActiveOrderDetails(null);
-        }}
-        onChangeStatus={handleChangeStatus}
-        onAssignDriver={handleAssignDriver}
-        onOpenCliqPayment={(order) => setCliqOrder(order)}
-        drivers={drivers}
-      />
-
-      <ThermalWaybillModal
-        orders={activeWaybillOrders}
-        isOpen={!!activeWaybillOrders && activeWaybillOrders.length > 0}
-        onClose={() => setActiveWaybillOrders(null)}
-      />
-
-      <IntegrationsModal
-        isOpen={isIntegrationsOpen}
-        onClose={() => setIsIntegrationsOpen(false)}
-        merchants={merchants}
+        isIntegrationsOpen={isIntegrationsOpen}
+        onCloseIntegrations={() => setIsIntegrationsOpen(false)}
         onOrderCreatedFromWebhook={() => {
           fetchOrders();
           showToast('تم استقبال وتوليد طلبية متجر إلكتروني بنجاح عبر Webhook!');
         }}
-      />
-
-      <SchemaAndApiModal
-        isOpen={isSchemaModalOpen}
-        onClose={() => setIsSchemaModalOpen(false)}
-      />
-
-      {/* Jordan JoPACC CliQ Payment Modal */}
-      <CliqPaymentModal
-        isOpen={!!cliqOrder}
-        order={cliqOrder}
-        onClose={() => setCliqOrder(null)}
-        onSuccess={(updatedOrder) => {
+        isSchemaModalOpen={isSchemaModalOpen}
+        onCloseSchemaModal={() => setIsSchemaModalOpen(false)}
+        activeOrderDetails={activeOrderDetails}
+        onCloseOrderDetails={() => setActiveOrderDetails(null)}
+        onPrintSingleWaybill={(order) => {
+          setActiveWaybillOrders([order]);
+          setActiveOrderDetails(null);
+        }}
+        onChangeOrderStatus={handleChangeStatus}
+        onAssignDriver={handleAssignDriver}
+        onOpenCliqPayment={(order) => setCliqOrder(order)}
+        activeWaybillOrders={activeWaybillOrders}
+        onCloseWaybillModal={() => setActiveWaybillOrders(null)}
+        cliqOrder={cliqOrder}
+        onCloseCliqPayment={() => setCliqOrder(null)}
+        onCliqSuccess={(updatedOrder) => {
           showToast(`تم توثيق دفع حوالة CliQ للشحنة (${updatedOrder.sequence}) بنجاح!`);
           setCliqOrder(null);
           fetchOrders();
@@ -1674,6 +1094,12 @@ export default function App() {
             setActiveOrderDetails(updatedOrder);
           }
         }}
+        merchants={merchants}
+        drivers={drivers}
+        currentUser={currentUser}
+        onAddNewUser={handleAddUser}
+        toastMessage={toastMessage}
+        onCloseToast={() => setToastMessage(null)}
       />
     </TenantBrandingProvider>
   );

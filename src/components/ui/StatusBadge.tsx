@@ -1,18 +1,69 @@
 import React from 'react';
 import { OrderStatus } from '../../types/logistics';
 
-interface StatusBadgeProps {
-  status: OrderStatus | string;
-  className?: string;
+export type StatusTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger' | 'brand' | 'purple';
+
+export interface StatusBadgeProps {
+  status?: OrderStatus | string;
+  tone?: StatusTone;
+  label?: string;
+  dot?: boolean;
   size?: 'sm' | 'md' | 'lg';
+  className?: string;
 }
 
 export const StatusBadge: React.FC<StatusBadgeProps> = ({
   status,
-  className = '',
+  tone,
+  label,
+  dot = true,
   size = 'md',
+  className = '',
 }) => {
-  const getStatusConfig = (st: string) => {
+  // If specific semantic tone is requested directly
+  const getToneConfig = (t: StatusTone) => {
+    switch (t) {
+      case 'success':
+        return {
+          bg: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
+          dot: 'bg-emerald-400',
+        };
+      case 'warning':
+        return {
+          bg: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
+          dot: 'bg-amber-400',
+        };
+      case 'danger':
+        return {
+          bg: 'bg-rose-500/10 text-rose-400 border-rose-500/30',
+          dot: 'bg-rose-400',
+        };
+      case 'info':
+        return {
+          bg: 'bg-sky-500/10 text-sky-400 border-sky-500/30',
+          dot: 'bg-sky-400',
+        };
+      case 'brand':
+        return {
+          bg: 'bg-amber-500/15 text-amber-300 border-amber-500/40',
+          dot: 'bg-amber-400',
+        };
+      case 'purple':
+        return {
+          bg: 'bg-purple-500/10 text-purple-400 border-purple-500/30',
+          dot: 'bg-purple-400',
+        };
+      case 'neutral':
+      default:
+        return {
+          bg: 'bg-slate-800/80 text-slate-300 border-slate-700/60',
+          dot: 'bg-slate-400',
+        };
+    }
+  };
+
+  // Backward-compatible OrderStatus / domain status mapper
+  const getDomainStatusConfig = (st: string) => {
     switch (st) {
       case 'DELIVERED':
         return {
@@ -82,14 +133,33 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({
         };
       default:
         return {
-          label: st,
+          label: st || '',
           bg: 'bg-slate-800 text-slate-300 border-slate-700',
           dot: 'bg-slate-400',
         };
     }
   };
 
-  const config = getStatusConfig(status);
+  let displayLabel = label;
+  let bgClasses = '';
+  let dotClasses = '';
+
+  if (tone) {
+    const config = getToneConfig(tone);
+    bgClasses = config.bg;
+    dotClasses = config.dot;
+    displayLabel = label || status || '';
+  } else if (status) {
+    const config = getDomainStatusConfig(status);
+    bgClasses = config.bg;
+    dotClasses = config.dot;
+    displayLabel = label || config.label;
+  } else {
+    const config = getToneConfig('neutral');
+    bgClasses = config.bg;
+    dotClasses = config.dot;
+    displayLabel = label || '';
+  }
 
   const sizeClasses = {
     sm: 'text-[10px] px-1.5 py-0.5 gap-1 font-semibold',
@@ -99,11 +169,10 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({
 
   return (
     <span
-      className={`inline-flex items-center rounded-full border ${config.bg} ${sizeClasses} ${className} select-none whitespace-nowrap`}
-      dir="rtl"
+      className={`inline-flex items-center rounded-full border ${bgClasses} ${sizeClasses} ${className} select-none whitespace-nowrap`}
     >
-      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${config.dot}`} />
-      <span>{config.label}</span>
+      {dot && <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotClasses}`} />}
+      <span>{displayLabel}</span>
     </span>
   );
 };

@@ -40,6 +40,13 @@ import type {
   ReconciliationReport,
   ReconciliationIssue,
 } from './src/types/accounting.ts';
+import {
+  OperationalLogisticsService,
+  OperationalError,
+  type AuthenticatedOperationContext,
+} from './src/services/operationalLogisticsService.ts';
+import { OperationalTaskService } from './src/services/operationalTaskService.ts';
+import { MerchantInventoryService, InventoryServiceError } from './src/services/merchantInventoryService.ts';
 
 const app = express();
 const PORT = 3000;
@@ -136,7 +143,36 @@ export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_KEY,
   },
 });
 
+export const operationalLogisticsService = new OperationalLogisticsService(supabase);
+export const operationalTaskService = new OperationalTaskService(supabase);
+export const merchantInventoryService = new MerchantInventoryService(supabase);
+
 // Data mappers between Supabase database columns and application types
+export async function ensureTenantRecordExists(tenantId: string | null | undefined, tenantName?: string): Promise<boolean> {
+  if (!tenantId || !isValidUuid(tenantId)) return false;
+  try {
+    const { data: existing } = await supabase.from('tenants').select('id').eq('id', tenantId).limit(1);
+    if (existing && existing.length > 0) {
+      return true;
+    }
+    const { error } = await supabase.from('tenants').insert([{
+      id: tenantId,
+      name: tenantName || 'شركة ديليفري المتقدمة',
+      code: 'TNT-' + tenantId.slice(0, 8),
+      is_active: true,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }]);
+    if (error) {
+      console.warn('[Tenants] Warning inserting tenant record:', error.message);
+    }
+    return true;
+  } catch (err: any) {
+    console.warn('[Tenants] Exception ensuring tenant record:', err?.message);
+    return false;
+  }
+}
+
 export function mapDbUserToAppUser(dbUser: any): User {
   if (!dbUser) return dbUser;
   return {
@@ -165,7 +201,12 @@ export function mapDbUserToAppUser(dbUser: any): User {
     accountManager: dbUser.account_manager || dbUser.accountManager || 'باسل البلبيسي',
     vehicleType: dbUser.vehicle_type || dbUser.vehicleType,
     vehiclePlate: dbUser.vehicle_plate || dbUser.vehiclePlate,
-    isActive: dbUser.is_active !== undefined ? Boolean(dbUser.is_active) : (dbUser.isActive !== undefined ? Boolean(dbUser.isActive) : true),
+    isActive: (() => {
+      const raw = dbUser.is_active !== undefined ? dbUser.is_active : dbUser.isActive;
+      if (raw === false || raw === 'false' || raw === 0 || raw === '0') return false;
+      if (dbUser.status === 'INACTIVE' || dbUser.status === 'DEACTIVATED' || dbUser.subscription_status === 'SUSPENDED' || dbUser.subscriptionStatus === 'SUSPENDED') return false;
+      return true;
+    })(),
     tenantId: dbUser.tenant_id || dbUser.tenantId || (dbUser.role === 'SUPER_ADMIN' ? '00000000-0000-0000-0000-000000000001' : (dbUser.parent_user_id || dbUser.id)),
     portalAccess: dbUser.portal_access || dbUser.portalAccess || (
       dbUser.role === 'SUPER_ADMIN' ? 'OPS' :
@@ -192,9 +233,9 @@ export function mapAppUserToDbUser(appUser: any) {
   if (appUser.name !== undefined) payload.name = String(appUser.name).trim();
   if (appUser.email !== undefined) payload.email = String(appUser.email).trim().toLowerCase();
   if (appUser.phone !== undefined) payload.phone = String(appUser.phone).trim();
-  if (appUser.password !== undefined) {
-    payload.password = String(appUser.password).trim();
-    payload.password_hash = String(appUser.password).trim();
+  if (appUser.password !== undefined || appUser.password_hash !== undefined) {
+    const rawP = appUser.password || appUser.password_hash;
+    if (rawP) payload.password_hash = String(rawP).trim();
   }
   if (appUser.role !== undefined) payload.role = appUser.role;
   if (appUser.roleName !== undefined || appUser.role_name !== undefined) {
@@ -353,26 +394,116 @@ export interface AtomicClaimResult {
 }
 
 export async function claimInvitationAtomically(tokenHash: string): Promise<AtomicClaimResult> {
-  // Look up invitation in memory
-  let invitation = userInvitations.find((i) => i.tokenHash === tokenHash);
-  if (!invitation) {
-    try {
-      const { data: dbData } = await supabase
+  const nowIso = new Date().toISOString();
+
+  // 1. DATABASE-LEVEL ATOMIC CLAIM:
+  // Atomically claim the row in PostgreSQL if and only if status = 'PENDING' AND expires_at > NOW().
+  // PostgreSQL locks the matching row. Only one transaction/request can update status from PENDING -> ACCEPTED.
+  try {
+    if (supabase) {
+      const { data: claimedRows, error } = await supabase
+        .from('user_invitations')
+        .update({
+          status: 'ACCEPTED',
+          accepted_at: nowIso,
+          updated_at: nowIso,
+        })
+        .eq('token_hash', tokenHash)
+        .eq('status', 'PENDING')
+        .gt('expires_at', nowIso)
+        .select('*');
+
+      if (error) {
+        console.error('[InvitationClaim] Database atomic reservation query error:', error.message);
+      }
+
+      if (claimedRows && claimedRows.length > 0) {
+        const claimedDbRecord = claimedRows[0];
+        const invitation = mapDbInvitationToAppInvitation(claimedDbRecord);
+        const invId = invitation.id;
+
+        // Add to local process memory set for fast local deduplication
+        activeInvitationClaims.add(invId);
+
+        const release = async () => {
+          activeInvitationClaims.delete(invId);
+          invitation.status = 'PENDING';
+          invitation.acceptedAt = undefined;
+          invitation.acceptedByUserId = undefined;
+
+          try {
+            if (supabase) {
+              await supabase
+                .from('user_invitations')
+                .update({
+                  status: 'PENDING',
+                  accepted_at: null,
+                  accepted_by_user_id: null,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('id', invId);
+            }
+          } catch {
+            // ignore
+          }
+        };
+
+        const commit = async (acceptedByUserId: string) => {
+          activeInvitationClaims.delete(invId);
+          const commitIso = new Date().toISOString();
+          invitation.status = 'ACCEPTED';
+          invitation.acceptedAt = commitIso;
+          invitation.acceptedByUserId = acceptedByUserId;
+          invitation.updatedAt = commitIso;
+
+          try {
+            if (supabase) {
+              await supabase
+                .from('user_invitations')
+                .update({
+                  status: 'ACCEPTED',
+                  accepted_at: commitIso,
+                  accepted_by_user_id: acceptedByUserId,
+                  updated_at: commitIso,
+                })
+                .eq('id', invId);
+            }
+          } catch {
+            // ignore
+          }
+        };
+
+        return {
+          success: true,
+          invitation,
+          release,
+          commit,
+        };
+      }
+    }
+  } catch (dbErr: any) {
+    console.warn('[InvitationClaim] Database reservation error:', dbErr?.message || dbErr);
+  }
+
+  // 2. Fallback check for in-memory or database status to return exact error code
+  let existingInv = userInvitations.find((i) => i.tokenHash === tokenHash);
+  try {
+    if (supabase) {
+      const { data: checkData } = await supabase
         .from('user_invitations')
         .select('*')
         .eq('token_hash', tokenHash)
         .limit(1);
 
-      if (dbData && dbData.length > 0) {
-        invitation = mapDbInvitationToAppInvitation(dbData[0]);
-        userInvitations.push(invitation);
+      if (checkData && checkData.length > 0) {
+        existingInv = mapDbInvitationToAppInvitation(checkData[0]);
       }
-    } catch {
-      // ignore
     }
+  } catch {
+    // ignore
   }
 
-  if (!invitation) {
+  if (!existingInv) {
     return {
       success: false,
       errorCode: 'INVITATION_NOT_FOUND',
@@ -380,24 +511,15 @@ export async function claimInvitationAtomically(tokenHash: string): Promise<Atom
     };
   }
 
-  // In-process synchronous lock check (prevents concurrent async ticks within same process)
-  if (activeInvitationClaims.has(invitation.id)) {
+  if (existingInv.status === 'ACCEPTED') {
     return {
       success: false,
       errorCode: 'INVITATION_ALREADY_USED',
-      errorMessage: 'تم استخدام رابط الدعوة مسبقاً أو أنه قيد المعالجة حالياً.',
+      errorMessage: 'تم استخدام رابط الدعوة مسبقاً أو قيد المعالجة حالياً.',
     };
   }
 
-  if (invitation.status === 'ACCEPTED') {
-    return {
-      success: false,
-      errorCode: 'INVITATION_ALREADY_USED',
-      errorMessage: 'تم استخدام رابط الدعوة مسبقاً.',
-    };
-  }
-
-  if (invitation.status === 'REVOKED') {
+  if (existingInv.status === 'REVOKED') {
     return {
       success: false,
       errorCode: 'INVITATION_REVOKED',
@@ -405,8 +527,7 @@ export async function claimInvitationAtomically(tokenHash: string): Promise<Atom
     };
   }
 
-  if (new Date() > new Date(invitation.expiresAt) || invitation.status === 'EXPIRED') {
-    invitation.status = 'EXPIRED';
+  if (new Date() > new Date(existingInv.expiresAt) || existingInv.status === 'EXPIRED') {
     return {
       success: false,
       errorCode: 'INVITATION_EXPIRED',
@@ -414,107 +535,10 @@ export async function claimInvitationAtomically(tokenHash: string): Promise<Atom
     };
   }
 
-  // Acquire in-memory lock synchronously before any DB await
-  activeInvitationClaims.add(invitation.id);
-
-  // Database-level conditional atomic update
-  const nowIso = new Date().toISOString();
-  let dbClaimed = false;
-
-  try {
-    const { data: updatedRows, error: dbErr } = await supabase
-      .from('user_invitations')
-      .update({
-        status: 'ACCEPTED',
-        accepted_at: nowIso,
-        updated_at: nowIso,
-      })
-      .eq('id', invitation.id)
-      .eq('status', 'PENDING')
-      .select('*');
-
-    if (!dbErr && Array.isArray(updatedRows)) {
-      if (updatedRows.length > 0) {
-        dbClaimed = true;
-      } else {
-        // Check if row actually exists in DB with non-PENDING status
-        const { data: existingDbRow } = await supabase
-          .from('user_invitations')
-          .select('status')
-          .eq('id', invitation.id)
-          .limit(1);
-
-        if (existingDbRow && existingDbRow.length > 0) {
-          activeInvitationClaims.delete(invitation.id);
-          invitation.status = existingDbRow[0].status || 'ACCEPTED';
-          return {
-            success: false,
-            errorCode: 'INVITATION_ALREADY_USED',
-            errorMessage: 'تم استخدام رابط الدعوة مسبقاً.',
-          };
-        }
-      }
-    }
-  } catch (err: any) {
-    // DB fallback - proceed with in-memory claim
-  }
-
-  // Mark in-memory invitation accepted
-  invitation.status = 'ACCEPTED';
-  invitation.acceptedAt = nowIso;
-  invitation.updatedAt = nowIso;
-
-  const invId = invitation.id;
-
-  const release = async () => {
-    activeInvitationClaims.delete(invId);
-    if (invitation) {
-      invitation.status = 'PENDING';
-      invitation.acceptedAt = undefined;
-      invitation.acceptedByUserId = undefined;
-    }
-
-    if (dbClaimed) {
-      try {
-        await supabase
-          .from('user_invitations')
-          .update({
-            status: 'PENDING',
-            accepted_at: null,
-            accepted_by_user_id: null,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', invId);
-      } catch {
-        // ignore
-      }
-    }
-  };
-
-  const commit = async (acceptedByUserId: string) => {
-    invitation!.acceptedByUserId = acceptedByUserId;
-    activeInvitationClaims.delete(invId);
-
-    if (dbClaimed) {
-      try {
-        await supabase
-          .from('user_invitations')
-          .update({
-            accepted_by_user_id: acceptedByUserId,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', invId);
-      } catch {
-        // ignore
-      }
-    }
-  };
-
   return {
-    success: true,
-    invitation,
-    release,
-    commit,
+    success: false,
+    errorCode: 'INVITATION_ALREADY_USED',
+    errorMessage: 'رابط الدعوة قيد المعالجة حالياً من قِبَل طلب آخر.',
   };
 }
 
@@ -1413,6 +1437,36 @@ function populateOrder(order: Order): Order {
   };
 }
 
+// Role-Based Response DTO Sanitizer (Strict Financial Visibility Enforcement)
+function sanitizeOrderForRole(order: Order, ctx: RequesterContext): any {
+  const populated = populateOrder(order);
+  if (ctx.isDriver) {
+    const copy: any = { ...populated };
+    // Strictly strip sensitive merchant delivery fee and company commercial fields from driver response
+    delete copy.deliveryFee;
+    delete copy.merchantCollection;
+    delete copy.pricePlanId;
+    delete copy.priceList;
+    delete copy.companyRevenue;
+    delete copy.companyMargin;
+    delete copy.merchantPayable;
+    delete copy.merchantSettlementId;
+    delete copy.merchantSettlementStatus;
+    if (copy.merchant) {
+      copy.merchant = {
+        id: copy.merchant.id,
+        name: copy.merchant.name,
+        commercialName: copy.merchant.commercialName,
+        phone: copy.merchant.phone,
+        address: copy.merchant.address,
+        city: copy.merchant.city,
+      };
+    }
+    return copy;
+  }
+  return populated;
+}
+
 // -------------------------------------------------------------
 // Database Synchronization Layer (Supabase Official)
 // -------------------------------------------------------------
@@ -1483,19 +1537,41 @@ function verifyPassword(inputPass: string, storedPass?: string, storedHash?: str
     }
   }
 
-  // 2. Backward compatibility: Salted SHA-256 fallback
-  if (storedHash) {
-    const saltedSha256 = crypto.createHash('sha256').update(cleanInput + PASSWORD_SALT).digest('hex');
-    if (saltedSha256 === storedHash) return true;
+  // 2. Backward compatibility for legacy hashed accounts: Salted SHA-256 fallback with constant-time check
+  if (storedHash && !storedHash.startsWith('scrypt$')) {
+    try {
+      const saltedSha256 = crypto.createHash('sha256').update(cleanInput + PASSWORD_SALT).digest('hex');
+      if (
+        saltedSha256.length === storedHash.length &&
+        crypto.timingSafeEqual(Buffer.from(saltedSha256, 'hex'), Buffer.from(storedHash, 'hex'))
+      ) {
+        return true;
+      }
 
-    // 3. Backward compatibility: Direct standard SHA-256 fallback
-    const directSha256 = crypto.createHash('sha256').update(cleanInput).digest('hex');
-    if (directSha256 === storedHash) return true;
+      const directSha256 = crypto.createHash('sha256').update(cleanInput).digest('hex');
+      if (
+        directSha256.length === storedHash.length &&
+        crypto.timingSafeEqual(Buffer.from(directSha256, 'hex'), Buffer.from(storedHash, 'hex'))
+      ) {
+        return true;
+      }
+    } catch {
+      // ignore
+    }
   }
 
-  // 4. Backward compatibility: Plaintext check for legacy/seed records
-  if (storedPass && cleanInput === storedPass.trim()) return true;
-  if (storedHash && cleanInput === storedHash.trim()) return true;
+  // 3. Backward compatibility: Plaintext check for legacy seed records with timing-safe string comparison
+  if (storedPass && storedPass.trim()) {
+    try {
+      const inputBuf = Buffer.from(cleanInput);
+      const storedBuf = Buffer.from(storedPass.trim());
+      if (inputBuf.length === storedBuf.length && crypto.timingSafeEqual(inputBuf, storedBuf)) {
+        return true;
+      }
+    } catch {
+      // ignore
+    }
+  }
 
   return false;
 }
@@ -1756,7 +1832,18 @@ interface RequesterContext {
 // =============================================================
 // Cryptographic Session Token Architecture (HMAC-SHA256 Signed JWT)
 // =============================================================
-const SESSION_SECRET = process.env.SESSION_SECRET || 'dargo_hmac_sha256_secret_key_v1_2026_x9k2p8z';
+const RESOLVED_JWT_SECRET = (process.env.JWT_SECRET || process.env.SESSION_SECRET || '').trim();
+
+if (!RESOLVED_JWT_SECRET) {
+  if (process.env.NODE_ENV === 'production') {
+    console.error('FATAL ERROR: JWT_SECRET or SESSION_SECRET environment variable is missing in production!');
+    process.exit(1);
+  } else {
+    console.warn('[SECURITY_WARNING] JWT_SECRET or SESSION_SECRET is missing. Development fallback active.');
+  }
+}
+
+const SESSION_SECRET = RESOLVED_JWT_SECRET || 'delivere_dev_session_secret_2026_x9k2p8z';
 const SESSION_EXPIRATION_MS = 24 * 60 * 60 * 1000; // 24 Hours
 
 // Revocation registry for logged-out or invalidated session IDs (jti)
@@ -1945,34 +2032,40 @@ async function resolveAuthenticatedUser(req: express.Request): Promise<User | nu
 
   const candidateUserId = payload.userId;
 
-  // 1. Check in-memory users cache first
   let matchedUser = users.find((u) => u && u.id === candidateUserId);
 
-  // 2. If not found, look up in Supabase
-  if (!matchedUser) {
+  // Always re-verify user record against Supabase database source of truth if available
+  if (isValidUuid(candidateUserId)) {
     try {
-      if (isValidUuid(candidateUserId)) {
-        const { data, error } = await supabase
-          .from('users')
-          .select('*')
-          .eq('id', candidateUserId)
-          .limit(1);
-        if (!error && data && data.length > 0) {
-          matchedUser = mapDbUserToAppUser(data[0]);
-          const idx = users.findIndex((u) => u.id === matchedUser!.id);
-          if (idx >= 0) users[idx] = matchedUser!;
-          else users.push(matchedUser!);
-        }
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', candidateUserId)
+        .limit(1);
+      if (!error && data && data.length > 0) {
+        matchedUser = mapDbUserToAppUser(data[0]);
+        const idx = users.findIndex((u) => u.id === matchedUser!.id);
+        if (idx >= 0) users[idx] = matchedUser!;
+        else users.push(matchedUser!);
       }
     } catch {
-      // fallback
+      // fallback to memory
     }
   }
 
   if (!matchedUser) return null;
 
   // Enforce Account Active Status (Disabled/Inactive User Protection)
-  if ((matchedUser as any).isActive === false || (matchedUser as any).is_active === false || (matchedUser as any).status === 'INACTIVE' || (matchedUser as any).status === 'DEACTIVATED') {
+  const isInactive =
+    matchedUser.isActive === false ||
+    (matchedUser as any).is_active === false ||
+    (matchedUser as any).is_active === 'false' ||
+    (matchedUser as any).is_active === 0 ||
+    (matchedUser as any).status === 'INACTIVE' ||
+    (matchedUser as any).status === 'DEACTIVATED' ||
+    matchedUser.subscriptionStatus === 'SUSPENDED';
+
+  if (isInactive) {
     return null;
   }
 
@@ -2413,7 +2506,7 @@ app.delete('/api/price-plans/:id', requireAuth, (req, res) => {
 });
 
 // Bulk assign price plan to users
-app.post('/api/price-plans/:id/assign', requireAuth, (req, res) => {
+app.post('/api/price-plans/:id/assign', requireAuth, async (req, res) => {
   const plan = pricePlans.find((p) => p.id === req.params.id);
   if (!plan) {
     return res.status(404).json({ error: 'قائمة التسعيرة غير موجودة' });
@@ -2424,19 +2517,50 @@ app.post('/api/price-plans/:id/assign', requireAuth, (req, res) => {
     return res.status(400).json({ error: 'قائمة المستخدمين غير صحيحة' });
   }
 
+  const invalidReasons: string[] = [];
   let updatedCount = 0;
+  const targetUserIdsToSync: string[] = [];
+
   users.forEach((u) => {
     if (userIds.includes(u.id)) {
+      if (u.role === 'SUPER_ADMIN' || u.role === 'ADMIN') {
+        invalidReasons.push(`${u.name}: لا ينطبق تخصيص خطط التسعير على مدراء النظام`);
+        return;
+      }
+      if (plan.type === 'MERCHANT' && u.role !== 'MERCHANT') {
+        invalidReasons.push(`${u.name}: خطة تسعير التجار مخصصة لحسابات التجار فقط`);
+        return;
+      }
+      if (plan.type === 'DRIVER' && u.role !== 'DRIVER') {
+        invalidReasons.push(`${u.name}: خطة تسعير السائقين مخصصة لحسابات السائقين فقط`);
+        return;
+      }
       u.pricePlanId = plan.id;
       u.priceList = plan.name;
+      targetUserIdsToSync.push(u.id);
       updatedCount++;
     }
   });
 
+  if (targetUserIdsToSync.length > 0) {
+    try {
+      await supabase.from('users').update({
+        price_plan_id: plan.id,
+        price_list: plan.name,
+        updated_at: new Date().toISOString(),
+      }).in('id', targetUserIdsToSync);
+    } catch (err) {
+      console.warn('Warning syncing price plan to Supabase:', err);
+    }
+  }
+
   saveDatabase();
   res.json({
-    message: `تم تعيين تسعيرة "${plan.name}" لـ ${updatedCount} مستخدمين بنجاح`,
+    message: updatedCount > 0
+      ? `تم تعيين تسعيرة "${plan.name}" لـ ${updatedCount} مستخدمين بنجاح`
+      : 'لم يتم تعديل أي مستخدمين بسبب عدم مطابقة الأدوار الوظيفية',
     updatedCount,
+    invalidReasons,
   });
 });
 
@@ -2606,14 +2730,14 @@ app.get('/api/orders', requireAuth, (req, res) => {
       cancelled: tenantOrders.filter((o) => o?.status === 'CANCELLED').length,
       postponed: tenantOrders.filter((o) => o?.status === 'POSTPONED').length,
       totalCOD: tenantOrders.reduce((sum, o) => sum + (o?.totalCollection || 0), 0),
-      totalDeliveryFees: tenantOrders.reduce((sum, o) => sum + (o?.deliveryFee || 0), 0),
+      totalDeliveryFees: ctx.isDriver ? 0 : tenantOrders.reduce((sum, o) => sum + (o?.deliveryFee || 0), 0),
     };
 
     // Pagination Slice
     const total = filtered.length;
     const totalPages = Math.ceil(total / limit) || 1;
     const startIndex = (page - 1) * limit;
-    const paginatedOrders = filtered.slice(startIndex, startIndex + limit).map(populateOrder);
+    const paginatedOrders = filtered.slice(startIndex, startIndex + limit).map((o) => sanitizeOrderForRole(o, ctx));
 
     res.json({
       orders: paginatedOrders,
@@ -2643,7 +2767,7 @@ app.get('/api/orders/:id', requireAuth, (req, res) => {
     return res.status(403).json({ error: 'غير مصرح بالوصول إلى هذه الشحنة' });
   }
 
-  res.json(populateOrder(order));
+  res.json(sanitizeOrderForRole(order, ctx));
 });
 
 // 3. POST /api/orders: Create new order (Full form)
@@ -2681,12 +2805,16 @@ app.post('/api/orders', requireAuth, (req, res) => {
       return res.status(403).json({ error: 'غير مصرح بتعيين سائق خارج نطاق شركتك' });
     }
 
-    const mColl = parseFloat(merchantCollection) || 0;
     const finalDeliveryFee =
       deliveryFee !== undefined && deliveryFee !== null && deliveryFee !== ''
         ? parseFloat(deliveryFee)
         : getMerchantDeliveryFee(merchantId, governorate);
-    const tot = totalCollection !== undefined ? parseFloat(totalCollection) : mColl + finalDeliveryFee;
+    const tot = totalCollection !== undefined && totalCollection !== null && totalCollection !== ''
+      ? parseFloat(totalCollection)
+      : (parseFloat(merchantCollection) || 0) + finalDeliveryFee;
+    const mColl = totalCollection !== undefined && totalCollection !== null && totalCollection !== ''
+      ? Math.max(0, tot - finalDeliveryFee)
+      : (parseFloat(merchantCollection) || 0);
     const calcDriverFee = driverId ? getDriverCompensationFee(driverId, governorate) : undefined;
 
     let orderBranchId: string | undefined = req.body.branchId;
@@ -2894,6 +3022,8 @@ app.post('/api/orders/batch', requireAuth, (req, res) => {
 });
 
 // 6. PATCH /api/orders/:id/status: Update Order Status
+// [LEGACY COMPATIBILITY ONLY - UNSAFE FOR PHASE 3C MULTI-LEG CUSTODY]
+// Phase 3C operational state transitions MUST use /api/operational/* domain contracts.
 app.patch('/api/orders/:id/status', requireAuth, (req, res) => {
   const ctx = getRequesterContext(req);
   const { status, note, cancellationReason } = req.body;
@@ -2904,6 +3034,14 @@ app.patch('/api/orders/:id/status', requireAuth, (req, res) => {
 
   if (!canAccessOrder(ctx, order)) {
     return res.status(403).json({ error: 'غير مصرح بتعديل حالة هذه الشحنة' });
+  }
+
+  // Phase 3C Guard: Direct mutation to RETURNED is forbidden
+  if (status === 'RETURNED') {
+    return res.status(400).json({
+      error: 'لا يمكن تحويل الشحنة إلى مرتجع (RETURNED) مباشرة. يجب بدء مسار الإرجاع وتأكيد استلام التاجر عبر مسارات /api/operational/returns/*',
+      code: 'INVALID_STATUS_TRANSITION',
+    });
   }
 
   const oldStatus = order.status;
@@ -2942,10 +3080,12 @@ app.patch('/api/orders/:id/status', requireAuth, (req, res) => {
   });
 
   saveDatabase();
-  res.json(populateOrder(order));
+  res.json(sanitizeOrderForRole(order, ctx));
 });
 
 // 7. PATCH /api/orders/:id/assign: Assign driver to single order
+// [LEGACY COMPATIBILITY ONLY - UNSAFE FOR PHASE 3C MULTI-LEG CUSTODY]
+// Does not record shipment_leg_assignments or validate multi-leg sequencing. Use /api/operational/legs/:id/assign instead.
 app.patch('/api/orders/:id/assign', requireAuth, (req, res) => {
   const ctx = getRequesterContext(req);
   const { driverId } = req.body;
@@ -2973,7 +3113,7 @@ app.patch('/api/orders/:id/assign', requireAuth, (req, res) => {
   order.updatedAt = new Date().toISOString();
 
   saveDatabase();
-  res.json(populateOrder(order));
+  res.json(sanitizeOrderForRole(order, ctx));
 });
 
 // 8. POST /api/orders/bulk-status: Bulk Status Update
@@ -2982,6 +3122,14 @@ app.post('/api/orders/bulk-status', requireAuth, (req, res) => {
   const { ids, status, note } = req.body;
   if (!Array.isArray(ids) || ids.length === 0) {
     return res.status(400).json({ error: 'لم يتم تحديد أي طلبيات' });
+  }
+
+  // Phase 3C Guard: Direct bulk mutation to RETURNED is forbidden
+  if (status === 'RETURNED') {
+    return res.status(400).json({
+      error: 'لا يمكن تحويل الشحنات إلى مرتجع (RETURNED) عبر التعديل الجماعي المباشر. يجب استخدام مسارات الإرجاع التشغيلية /api/operational/returns/*',
+      code: 'INVALID_STATUS_TRANSITION',
+    });
   }
 
   let updatedCount = 0;
@@ -3138,6 +3286,8 @@ app.get('/api/orders/track/:query', (req, res) => {
 });
 
 // 14. POST /api/orders/scan: Warehouse Barcode Scanner Dispatch Action
+// [LEGACY COMPATIBILITY ONLY - UNSAFE FOR PHASE 3C MULTI-LEG CUSTODY]
+// Mutates status without custody verification or facility access checks. Use GET /api/operational/scan + domain mutation routes instead.
 app.post('/api/orders/scan', requireAuth, (req, res) => {
   const ctx = getRequesterContext(req);
   const { barcode, action, driverId, note } = req.body;
@@ -3185,8 +3335,10 @@ app.post('/api/orders/scan', requireAuth, (req, res) => {
     order.deliveredAt = new Date().toISOString();
     logNote = logNote || 'تم تأكيد تسليم الطرد عبر الماسح';
   } else if (action === 'RETURN') {
-    newStatus = 'RETURNED';
-    logNote = logNote || 'تم تسجيل الطرد كمرتجع رسمي في المستودع';
+    return res.status(400).json({
+      error: 'لا يمكن تحويل الشحنة إلى مرتجع مباشرة. يرجى استخدام الماسح التشغيلي الموحد ومسارات الإرجاع /api/operational/returns/*',
+      code: 'INVALID_STATUS_TRANSITION',
+    });
   }
 
   order.status = newStatus;
@@ -3203,17 +3355,10 @@ app.post('/api/orders/scan', requireAuth, (req, res) => {
     },
   ];
 
-  const merchant = users.find((u) => u.id === order.merchantId);
-  const driver = users.find((u) => u.id === order.driverId);
-
   res.json({
     success: true,
     message: `تم تحديث الشحنة (${order.sequence}) بنجاح إلى: ${newStatus}`,
-    order: {
-      ...order,
-      merchant,
-      driver,
-    },
+    order: sanitizeOrderForRole(order, ctx),
   });
 });
 
@@ -3608,7 +3753,7 @@ app.patch('/api/orders/:id/shelf', requireAuth, (req, res) => {
   res.json({
     success: true,
     message: `تم تحديث موقع الرف إلى [${order.warehouseShelf || 'غير محدد'}]`,
-    order,
+    order: sanitizeOrderForRole(order, ctx),
   });
 });
 
@@ -3704,7 +3849,7 @@ app.post('/api/orders/:id/verify-pod', requireAuth, (req, res) => {
   res.json({
     success: true,
     message: `تم تسليم الطرد رقم (${order.sequence}) بنجاح وتوثيق إثبات التسليم الإلكتروني`,
-    order: populateOrder(order),
+    order: sanitizeOrderForRole(order, ctx),
   });
 });
 
@@ -3901,9 +4046,46 @@ app.post('/api/auth/login', async (req, res) => {
 
     const user = mapDbUserToAppUser(rawUser);
 
-    if (user.isActive === false) {
+    const inputPass = (password || '').toString().trim();
+    const isPassValid = verifyPassword(
+      inputPass,
+      rawUser.password,
+      rawUser.password_hash
+    );
+
+    if (!isPassValid) {
+      return res.status(401).json({
+        error: 'كلمة المرور غير صحيحة، يرجى التحقق والمحاولة مرة أخرى.',
+      });
+    }
+
+    // Modern Password Migration: If user logged in using legacy format or missing scrypt hash, re-hash and persist scrypt
+    if (!rawUser.password_hash || !rawUser.password_hash.startsWith('scrypt$')) {
+      const newSecureHash = hashPassword(inputPass);
+      rawUser.password_hash = newSecureHash;
+      if (supabase) {
+        try {
+          await supabase.from('users').update({ password_hash: newSecureHash }).eq('id', rawUser.id);
+        } catch (mErr: any) {
+          console.warn('[PasswordMigration] Non-blocking upgrade warning:', mErr?.message || mErr);
+        }
+      }
+    }
+
+    // Enforce Account Active Status AFTER credential verification
+    const isAccountDisabled =
+      user.isActive === false ||
+      rawUser.is_active === false ||
+      rawUser.is_active === 'false' ||
+      rawUser.is_active === 0 ||
+      rawUser.status === 'INACTIVE' ||
+      rawUser.status === 'DEACTIVATED' ||
+      user.subscriptionStatus === 'SUSPENDED';
+
+    if (isAccountDisabled) {
       return res.status(403).json({
-        error: 'تم تعطيل هذا الحساب من قبل إدارة النظام. يرجى مراجعة المسؤول.',
+        error: 'هذا الحساب موقوف. يرجى التواصل مع مسؤول النظام.',
+        code: 'ACCOUNT_DISABLED',
       });
     }
 
@@ -3912,19 +4094,6 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(403).json({
         error: 'عفواً، بوابة OPS مخصصة حصرياً للمدير العام للنظام (Super Admin). يرجى التوجه إلى بوابة العمليات والتجار العامة.',
         isNotSuperAdmin: true,
-      });
-    }
-
-    const inputPass = (password || '').toString().trim();
-    const isPassValid = verifyPassword(
-      inputPass,
-      rawUser.password || (user.role === 'SUPER_ADMIN' || user.role === 'ADMIN' ? 'admin123' : '123456'),
-      rawUser.password_hash
-    );
-
-    if (!isPassValid) {
-      return res.status(401).json({
-        error: 'كلمة المرور غير صحيحة، يرجى التحقق والمحاولة مرة أخرى.',
       });
     }
 
@@ -4396,6 +4565,14 @@ app.post('/api/users', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'الاسم ورقم الهاتف مطلوبان لإنشاء الحساب' });
     }
 
+    const primaryRoles = ['SUPER_ADMIN', 'ADMIN', 'MERCHANT', 'DRIVER'];
+    if (primaryRoles.includes(role)) {
+      return res.status(403).json({
+        error: 'إنشاء حسابات النظام الرئيسية (مدير عام، مدير عمليات، تاجر، سائق) يتم حصرياً عبر نظام الدعوات المشفرة (Invitations Only).',
+        code: 'PRIMARY_ACCOUNTS_REQUIRE_INVITATION',
+      });
+    }
+
     // Role Hierarchy & Downward-Only Validation Matrix
     const getUserRoleRank = (r: string): number => {
       switch (r) {
@@ -4506,7 +4683,6 @@ app.post('/api/users', requireAuth, async (req, res) => {
       name: name.trim(),
       email: cleanEmail,
       phone: cleanPhone,
-      password: secureHash,
       password_hash: secureHash,
       role,
       role_name: defaultRoleName,
@@ -4531,18 +4707,34 @@ app.post('/api/users', requireAuth, async (req, res) => {
       updated_at: new Date().toISOString(),
     };
 
+    // Ensure parent/tenant record exists in tenants table
+    const targetTenantId = (assignedParentId && isValidUuid(assignedParentId)) ? assignedParentId : (ctx.tenantId || newId);
+    await ensureTenantRecordExists(targetTenantId, commercialName?.trim() || companyName?.trim() || name.trim());
+
+    dbPayload.parent_user_id = targetTenantId;
+
     const { data: inserted, error: insertErr } = await supabase
       .from('users')
       .insert([dbPayload])
       .select();
 
-    if (insertErr) {
-      console.error('Supabase user insert error:', insertErr);
-      return res.status(500).json({ error: 'فشل حفظ المستخدم في Supabase: ' + insertErr.message });
+    if (insertErr || !inserted || inserted.length === 0) {
+      console.error('[Users] Fatal user insert error:', insertErr);
+      return res.status(500).json({
+        error: 'فشل حفظ وتفعيل الحساب في قاعدة البيانات المركزية. (Database Persistence Error)',
+        code: 'USER_PERSISTENCE_FAILED',
+      });
     }
 
-    const createdUser = mapDbUserToAppUser(inserted && inserted[0] ? inserted[0] : dbPayload);
-    // Maintain in-memory users cache synchronously
+    const { data: verifiedRows } = await supabase.from('users').select('*').eq('id', newId).limit(1);
+    if (!verifiedRows || verifiedRows.length === 0) {
+      return res.status(500).json({
+        error: 'تعذر التحقق من تسجيل الحساب في قاعدة البيانات المركزية.',
+        code: 'USER_VERIFICATION_FAILED',
+      });
+    }
+
+    const createdUser = mapDbUserToAppUser(verifiedRows[0]);
     const existingIdx = users.findIndex((u) => u && u.id === createdUser.id);
     if (existingIdx >= 0) {
       users[existingIdx] = createdUser;
@@ -4659,7 +4851,7 @@ const handleUserUpdate = async (req: express.Request, res: express.Response) => 
     if (req.body.password && req.body.password.trim()) {
       const rawPass = req.body.password.trim();
       const secureHash = hashPassword(rawPass);
-      dbUpdates.password = secureHash;
+      delete dbUpdates.password;
       dbUpdates.password_hash = secureHash;
     }
 
@@ -5707,16 +5899,31 @@ app.post(['/api/invitations/accept', '/invitations/accept'], async (req, res) =>
 
         // Update in Supabase & memory
         Object.assign(existingUser, updates);
-        try {
-          await supabase
-            .from('users')
-            .update(mapAppUserToDbUser(existingUser))
-            .eq('id', existingUser.id);
-        } catch (dbErr: any) {
-          console.warn('Supabase user identity link fallback to memory:', dbErr?.message);
+        await ensureTenantRecordExists(existingUser.tenantId || existingUser.id, existingUser.commercialName || existingUser.name);
+        const { error: updateErr } = await supabase
+          .from('users')
+          .update(mapAppUserToDbUser(existingUser))
+          .eq('id', existingUser.id);
+
+        if (updateErr) {
+          console.error('[Invitation Accept] Identity link update error:', updateErr);
+          await claim.release!();
+          return res.status(500).json({
+            error: 'فشل ربط وتعديل البيانات في قاعدة البيانات المركزية. (Database Persistence Error)',
+            code: 'USER_PERSISTENCE_FAILED',
+          });
         }
 
-        authenticatedUser = existingUser;
+        const { data: verifiedRows } = await supabase.from('users').select('*').eq('id', existingUser.id).limit(1);
+        if (!verifiedRows || verifiedRows.length === 0) {
+          await claim.release!();
+          return res.status(500).json({
+            error: 'تعذر التحقق من تحديث الحساب في قاعدة البيانات.',
+            code: 'USER_VERIFICATION_FAILED',
+          });
+        }
+
+        authenticatedUser = mapDbUserToAppUser(verifiedRows[0]);
       } else {
         // ----------------------------------------------------------------------
         // New User: Create account according to the invitation specifications
@@ -5734,18 +5941,38 @@ app.post(['/api/invitations/accept', '/invitations/accept'], async (req, res) =>
 
         const newUserId = crypto.randomUUID();
         const isSuperAdminRole = invitation.role === 'SUPER_ADMIN';
+        const isAdminRole = invitation.role === 'ADMIN';
+
         const assignedTenantId = isSuperAdminRole
           ? '00000000-0000-0000-0000-000000000001'
-          : (invitation.tenantId || invitation.parentUserId || newUserId);
+          : (isAdminRole ? newUserId : (invitation.tenantId || invitation.parentUserId || newUserId));
+
         const assignedPortalAccess = isSuperAdminRole
           ? 'OPS'
           : (invitation.role === 'MERCHANT' ? 'MERCHANT' : (invitation.role === 'DRIVER' ? 'DRIVER' : (invitation.role === 'CASHIER' ? 'CASHIER' : 'OPS')));
+
+        const canonicalAdminPermissions = [
+          'pos.access', 'pos.discount', 'pos.void_sale', 'pos.custom_items',
+          'warehouse.view', 'warehouse.manage_products', 'warehouse.adjust_stock', 'warehouse.view_cost_price',
+          'invoices.view', 'invoices.create', 'invoices.delete',
+          'accounting.view_pnl', 'accounting.expenses', 'accounting.wallet_payouts',
+          'shipments.create', 'shipments.dispatch', 'users.manage_staff'
+        ];
+
         const assignedPermissions = isSuperAdminRole
           ? ['*']
-          : (invitation.permissions && invitation.permissions.length > 0 ? invitation.permissions : ['orders.view']);
+          : (isAdminRole
+              ? canonicalAdminPermissions
+              : (invitation.permissions && invitation.permissions.length > 0 ? invitation.permissions : ['orders.view']));
+
         const assignedMaxAllowed = isSuperAdminRole
           ? ['*']
-          : (invitation.maxAllowedPermissions && invitation.maxAllowedPermissions.length > 0 ? invitation.maxAllowedPermissions : assignedPermissions);
+          : (isAdminRole
+              ? canonicalAdminPermissions
+              : (invitation.maxAllowedPermissions && invitation.maxAllowedPermissions.length > 0 ? invitation.maxAllowedPermissions : assignedPermissions));
+
+        const validPricePlanId = (isAdminRole || isSuperAdminRole) ? undefined : invitation.pricePlanId;
+        const validPriceList = (isAdminRole || isSuperAdminRole) ? undefined : (invitation.priceList || 'جميع المملكة 2 (القياسية)');
 
         const newUser: User = {
           id: newUserId,
@@ -5754,7 +5981,7 @@ app.post(['/api/invitations/accept', '/invitations/accept'], async (req, res) =>
           phone: String(phone || invitation.phone || '0790000000').trim(),
           password: rawPass ? hashPassword(rawPass) : undefined,
           role: invitation.role,
-          roleName: invitation.roleName || (isSuperAdminRole ? 'المدير العام للنظام (Super Admin)' : undefined),
+          roleName: invitation.roleName || (isSuperAdminRole ? 'المدير العام للنظام (Super Admin)' : (isAdminRole ? 'مدير العمليات' : undefined)),
           tenantId: assignedTenantId,
           portalAccess: assignedPortalAccess,
           commercialName: invitation.commercialName || userName,
@@ -5763,10 +5990,10 @@ app.post(['/api/invitations/accept', '/invitations/accept'], async (req, res) =>
           branch: invitation.branch || 'المقر الرئيسي للمملكة',
           branchId: invitation.branchId,
           city: invitation.city || 'عمان',
-          priceList: invitation.priceList || 'جميع المملكة 2 (القياسية)',
-          pricePlanId: invitation.pricePlanId,
+          priceList: validPriceList,
+          pricePlanId: validPricePlanId,
           isActive: true,
-          parentUserId: isSuperAdminRole ? null : (invitation.parentUserId || null),
+          parentUserId: isSuperAdminRole ? null : (isAdminRole ? null : (invitation.parentUserId || null)),
           createdById: invitation.invitedBy,
           permissions: assignedPermissions,
           maxAllowedPermissions: assignedMaxAllowed,
@@ -5792,14 +6019,39 @@ app.post(['/api/invitations/accept', '/invitations/accept'], async (req, res) =>
           userBranchAccess.push(uba);
         }
 
-        // Save to Supabase & Memory
-        try {
-          await supabase.from('users').insert([mapAppUserToDbUser(newUser)]);
-        } catch (dbErr: any) {
-          console.warn('Supabase user creation fallback to memory:', dbErr?.message);
+        // Save to Supabase (FATAL ON ERROR - NO IN-MEMORY FALLBACK)
+        await ensureTenantRecordExists(assignedTenantId, newUser.commercialName || userName);
+        const dbPayload = mapAppUserToDbUser(newUser);
+        const { data: insertedRows, error: dbInsertErr } = await supabase.from('users').insert([dbPayload]).select('*');
+
+        if (dbInsertErr || !insertedRows || insertedRows.length === 0) {
+          console.error('[Invitation Accept] Fatal DB insert error:', dbInsertErr);
+          await claim.release!();
+          return res.status(500).json({
+            error: 'فشل حفظ وتفعيل الحساب في قاعدة البيانات المركزية. (Database Persistence Error)',
+            code: 'USER_PERSISTENCE_FAILED',
+          });
         }
-        users.push(newUser);
-        authenticatedUser = newUser;
+
+        // Verification re-read from PostgreSQL
+        const { data: verifiedRows, error: verifyErr } = await supabase.from('users').select('*').eq('id', newUserId).limit(1);
+        if (verifyErr || !verifiedRows || verifiedRows.length === 0) {
+          console.error('[Invitation Accept] Verification re-read failed:', verifyErr);
+          await claim.release!();
+          return res.status(500).json({
+            error: 'تعذر التحقق من تسجيل وتفعيل الحساب في قاعدة البيانات المركزية.',
+            code: 'USER_VERIFICATION_FAILED',
+          });
+        }
+
+        const persistedUser = mapDbUserToAppUser(verifiedRows[0]);
+        const existingIdx = users.findIndex((u) => u.id === persistedUser.id);
+        if (existingIdx >= 0) {
+          users[existingIdx] = persistedUser;
+        } else {
+          users.push(persistedUser);
+        }
+        authenticatedUser = persistedUser;
       }
 
       await claim.commit!(authenticatedUser.id);
@@ -6180,13 +6432,16 @@ app.post('/api/auth/login-with-google', async (req, res) => {
     const isUserActive =
       existingUser.isActive !== false &&
       (existingUser as any).is_active !== false &&
+      (existingUser as any).is_active !== 'false' &&
+      (existingUser as any).is_active !== 0 &&
       (existingUser as any).status !== 'INACTIVE' &&
-      (existingUser as any).status !== 'DEACTIVATED';
+      (existingUser as any).status !== 'DEACTIVATED' &&
+      existingUser.subscriptionStatus !== 'SUSPENDED';
 
     if (!isUserActive) {
       return res.status(403).json({
-        error: 'تم تعطيل أو تعليق هذا الحساب. يرجى مراجعة إدارة العمليات.',
-        code: 'ACCOUNT_INACTIVE',
+        error: 'هذا الحساب موقوف. يرجى التواصل مع مسؤول النظام.',
+        code: 'ACCOUNT_DISABLED',
       });
     }
 
@@ -6335,13 +6590,16 @@ app.post(['/api/auth/supabase-google', '/api/auth/google/verify-token'], async (
       const isUserActive =
         existingUser.isActive !== false &&
         (existingUser as any).is_active !== false &&
+        (existingUser as any).is_active !== 'false' &&
+        (existingUser as any).is_active !== 0 &&
         (existingUser as any).status !== 'INACTIVE' &&
-        (existingUser as any).status !== 'DEACTIVATED';
+        (existingUser as any).status !== 'DEACTIVATED' &&
+        existingUser.subscriptionStatus !== 'SUSPENDED';
 
       if (!isUserActive) {
         return res.status(403).json({
-          error: 'تم تعطيل أو تعليق هذا الحساب. يرجى مراجعة إدارة العمليات.',
-          code: 'ACCOUNT_INACTIVE',
+          error: 'هذا الحساب موقوف. يرجى التواصل مع مسؤول النظام.',
+          code: 'ACCOUNT_DISABLED',
         });
       }
 
@@ -6428,42 +6686,87 @@ app.post(['/api/auth/supabase-google', '/api/auth/google/verify-token'], async (
       });
     }
 
-    // 2. New User: Registration Gating - Require Valid Invitation
-    if (!invitationToken || !String(invitationToken).trim()) {
+    // 2. New User / Safe Orphan Healing: Find matching invitation
+    let invitation: UserInvitation | null = null;
+    let claim: AtomicClaimResult | null = null;
+
+    if (invitationToken && String(invitationToken).trim()) {
+      const tokenHash = crypto.createHash('sha256').update(String(invitationToken).trim()).digest('hex');
+      claim = await claimInvitationAtomically(tokenHash);
+      if (claim.success && claim.invitation) {
+        invitation = claim.invitation;
+      }
+    }
+
+    // Safe Orphan Healing Fallback: Check if valid invitation exists for verifiedEmail in DB
+    if (!invitation) {
+      try {
+        const { data: orphanInvs } = await supabase
+          .from('user_invitations')
+          .select('*')
+          .ilike('email', verifiedEmail)
+          .in('status', ['PENDING', 'ACCEPTED'])
+          .order('created_at', { ascending: false })
+          .limit(1);
+
+        if (orphanInvs && orphanInvs.length > 0) {
+          const matchedInv = mapDbInvitationToAppInvitation(orphanInvs[0]);
+          // Verify no public.users record exists for this verified email
+          const { data: checkUser } = await supabase.from('users').select('id').ilike('email', verifiedEmail).limit(1);
+          if (!checkUser || checkUser.length === 0) {
+            invitation = matchedInv;
+            console.log(`[Safe Orphan Healing] Matched valid orphaned invitation ${invitation.id} for ${verifiedEmail}`);
+          }
+        }
+      } catch (err: any) {
+        console.warn('[Safe Orphan Healing] Error checking orphan invitations:', err?.message);
+      }
+    }
+
+    if (!invitation) {
       return res.status(403).json({
         error: 'تسجيل الدخول عبر Google متاح فقط للمستخدمين المدعوين مسبقاً أو المسجلين في النظام. يرجى التواصل مع إدارة العمليات لتلقي رابط دعوة.',
         code: 'REGISTRATION_GATED',
       });
     }
 
-    const tokenHash = crypto.createHash('sha256').update(String(invitationToken).trim()).digest('hex');
-    const claim = await claimInvitationAtomically(tokenHash);
-
-    if (!claim.success) {
-      return res.status(403).json({
-        error: claim.errorMessage || 'رابط الدعوة المرفق غير صالح أو منتهي الصلاحية أو تم استخدامه مسبقاً.',
-        code: claim.errorCode || 'INVALID_INVITATION_TOKEN',
-      });
-    }
-
-    const invitation = claim.invitation!;
     const newUserId = crypto.randomUUID();
 
     try {
       // Authorization context strictly derived from invitation; identity strictly derived from Supabase
       const isSuperAdminRole = invitation.role === 'SUPER_ADMIN';
+      const isAdminRole = invitation.role === 'ADMIN';
+
       const assignedTenantId = isSuperAdminRole
         ? '00000000-0000-0000-0000-000000000001'
-        : (invitation.tenantId || invitation.parentUserId || newUserId);
+        : (isAdminRole ? newUserId : (invitation.tenantId || invitation.parentUserId || newUserId));
+
       const assignedPortalAccess = isSuperAdminRole
         ? 'OPS'
         : (invitation.role === 'MERCHANT' ? 'MERCHANT' : (invitation.role === 'DRIVER' ? 'DRIVER' : (invitation.role === 'CASHIER' ? 'CASHIER' : 'OPS')));
+
+      const canonicalAdminPermissions = [
+        'pos.access', 'pos.discount', 'pos.void_sale', 'pos.custom_items',
+        'warehouse.view', 'warehouse.manage_products', 'warehouse.adjust_stock', 'warehouse.view_cost_price',
+        'invoices.view', 'invoices.create', 'invoices.delete',
+        'accounting.view_pnl', 'accounting.expenses', 'accounting.wallet_payouts',
+        'shipments.create', 'shipments.dispatch', 'users.manage_staff'
+      ];
+
       const assignedPermissions = isSuperAdminRole
         ? ['*']
-        : (invitation.permissions && invitation.permissions.length > 0 ? invitation.permissions : ['orders.view']);
+        : (isAdminRole
+            ? canonicalAdminPermissions
+            : (invitation.permissions && invitation.permissions.length > 0 ? invitation.permissions : ['orders.view']));
+
       const assignedMaxAllowed = isSuperAdminRole
         ? ['*']
-        : (invitation.maxAllowedPermissions && invitation.maxAllowedPermissions.length > 0 ? invitation.maxAllowedPermissions : assignedPermissions);
+        : (isAdminRole
+            ? canonicalAdminPermissions
+            : (invitation.maxAllowedPermissions && invitation.maxAllowedPermissions.length > 0 ? invitation.maxAllowedPermissions : assignedPermissions));
+
+      const validPricePlanId = (isAdminRole || isSuperAdminRole) ? undefined : invitation.pricePlanId;
+      const validPriceList = (isAdminRole || isSuperAdminRole) ? undefined : (invitation.priceList || 'جميع المملكة 2 (القياسية)');
 
       const newUser: User = {
         id: newUserId,
@@ -6471,7 +6774,7 @@ app.post(['/api/auth/supabase-google', '/api/auth/google/verify-token'], async (
         email: verifiedEmail,
         phone: invitation.phone || '0790000000',
         role: invitation.role,
-        roleName: invitation.roleName || (isSuperAdminRole ? 'المدير العام للنظام (Super Admin)' : undefined),
+        roleName: invitation.roleName || (isSuperAdminRole ? 'المدير العام للنظام (Super Admin)' : (isAdminRole ? 'مدير العمليات' : undefined)),
         tenantId: assignedTenantId,
         portalAccess: assignedPortalAccess,
         commercialName: invitation.commercialName || verifiedName || verifiedEmail.split('@')[0],
@@ -6479,10 +6782,10 @@ app.post(['/api/auth/supabase-google', '/api/auth/google/verify-token'], async (
         commercialType: 'تجارة ومبيعات إلكترونية',
         branch: invitation.branch || 'المقر الرئيسي للمملكة',
         city: invitation.city || 'عمان',
-        priceList: invitation.priceList || 'جميع المملكة 2 (القياسية)',
-        pricePlanId: invitation.pricePlanId,
+        priceList: validPriceList,
+        pricePlanId: validPricePlanId,
         isActive: true,
-        parentUserId: isSuperAdminRole ? null : (invitation.parentUserId || null),
+        parentUserId: isSuperAdminRole ? null : (isAdminRole ? null : (invitation.parentUserId || null)),
         createdById: invitation.invitedBy,
         permissions: assignedPermissions,
         maxAllowedPermissions: assignedMaxAllowed,
@@ -6494,46 +6797,83 @@ app.post(['/api/auth/supabase-google', '/api/auth/google/verify-token'], async (
         invitedBy: invitation.invitedBy,
       };
 
-      try {
-        const dbPayload = mapAppUserToDbUser(newUser);
-        const { error: dbErr } = await supabase.from('users').insert(dbPayload);
-        if (dbErr) {
-          console.warn('Supabase user creation fallback to memory:', dbErr.message);
-        }
-      } catch (dbErr: any) {
-        console.warn('Supabase user creation fallback to memory:', dbErr?.message);
-      }
-      users.push(newUser);
+      // Save to Supabase (FATAL ON ERROR - NO IN-MEMORY FALLBACK)
+      await ensureTenantRecordExists(assignedTenantId, newUser.commercialName || verifiedName);
+      const dbPayload = mapAppUserToDbUser(newUser);
+      const { data: insertedRows, error: dbErr } = await supabase.from('users').insert([dbPayload]).select('*');
 
-      await claim.commit!(newUserId);
+      if (dbErr || !insertedRows || insertedRows.length === 0) {
+        console.error('[Google Auth] Fatal DB user creation error:', dbErr);
+        if (claim?.release) await claim.release();
+        return res.status(500).json({
+          error: 'فشل حفظ وتفعيل حساب المستخدم في قاعدة البيانات المركزية. (Database Persistence Error)',
+          code: 'USER_PERSISTENCE_FAILED',
+        });
+      }
+
+      // Verification re-read from PostgreSQL
+      const { data: verifiedRows, error: verifyErr } = await supabase.from('users').select('*').eq('id', newUserId).limit(1);
+      if (verifyErr || !verifiedRows || verifiedRows.length === 0) {
+        console.error('[Google Auth] Verification re-read failed:', verifyErr);
+        if (claim?.release) await claim.release();
+        return res.status(500).json({
+          error: 'تعذر التحقق من تسجيل وتفعيل الحساب في قاعدة البيانات المركزية.',
+          code: 'USER_VERIFICATION_FAILED',
+        });
+      }
+
+      const persistedUser = mapDbUserToAppUser(verifiedRows[0]);
+      const existingIdx = users.findIndex((u) => u.id === persistedUser.id);
+      if (existingIdx >= 0) {
+        users[existingIdx] = persistedUser;
+      } else {
+        users.push(persistedUser);
+      }
+
+      // Commit invitation acceptance
+      if (claim?.commit) {
+        await claim.commit(persistedUser.id);
+      } else {
+        try {
+          await supabase.from('user_invitations').update({
+            email: verifiedEmail,
+            status: 'ACCEPTED',
+            accepted_at: new Date().toISOString(),
+            accepted_by_user_id: persistedUser.id,
+            updated_at: new Date().toISOString(),
+          }).eq('id', invitation.id);
+        } catch {
+          // ignore
+        }
+      }
 
       logAuditEvent({
         action: isSuperAdminRole ? 'SUPER_ADMIN_INVITATION_ACCEPTED' : 'INVITATION_ACCEPTED_GOOGLE',
         actionNameAr: isSuperAdminRole ? 'قبول وتفعيل حساب سوبر أدمن جديد عبر Google Auth' : 'قبول وتفعيل دعوة الانضمام عبر حساب Supabase Google المعتمد',
-        performedBy: newUserId,
-        performerName: newUser.name,
-        performerRole: newUser.role,
+        performedBy: persistedUser.id,
+        performerName: persistedUser.name,
+        performerRole: persistedUser.role,
         targetId: invitation.id,
         targetType: 'INVITATION',
         targetName: verifiedEmail,
-        tenantId: newUser.tenantId || '00000000-0000-0000-0000-000000000001',
+        tenantId: persistedUser.tenantId || '00000000-0000-0000-0000-000000000001',
         details: {
-          userId: newUserId,
+          userId: persistedUser.id,
           email: verifiedEmail,
-          role: newUser.role,
+          role: persistedUser.role,
           authProvider: 'GOOGLE',
         },
       });
 
-      const sessionToken = generateSessionToken(newUser);
+      const sessionToken = generateSessionToken(persistedUser);
       return res.json({
         success: true,
         message: 'تم تفعيل حسابك وتسجيل الدخول عبر Google بنجاح بموجب الدعوة',
-        user: sanitizeUserForClient(newUser),
+        user: sanitizeUserForClient(persistedUser),
         token: sessionToken,
       });
     } catch (err: any) {
-      await claim.release!();
+      if (claim?.release) await claim.release();
       throw err;
     }
   } catch (err: any) {
@@ -7548,6 +7888,23 @@ app.post('/api/superadmin/subscriptions/toggle-status', requireSuperAdmin, async
   user.isActive = !isSuspending;
   user.suspendedReason = isSuspending ? (reason || 'تم تعليق الحساب مؤقتاً من قبل إدارة المنظومة') : undefined;
 
+  // Persist status update to Supabase PostgreSQL database
+  if (isValidUuid(user.id)) {
+    supabase
+      .from('users')
+      .update({
+        is_active: !isSuspending,
+        status: isSuspending ? 'INACTIVE' : 'ACTIVE',
+        subscription_status: status,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', user.id)
+      .then(
+        () => {},
+        (err) => console.warn('Failed to persist user status to Supabase:', err?.message)
+      );
+  }
+
   ensureTenantSubscriptions();
   const sub = subscriptions.find((s) => s.tenantId === targetId);
   if (sub) {
@@ -8257,60 +8614,67 @@ app.delete('/api/merchants/:merchantId/branches/:branchId', requireAuth, (req, r
 });
 
 // POST /api/merchants/:merchantId/stock-transfers
-app.post('/api/merchants/:merchantId/stock-transfers', requireAuth, (req, res) => {
-  const ctx = getRequesterContext(req);
-  const { merchantId } = req.params;
+app.post('/api/merchants/:merchantId/stock-transfers', requireAuth, async (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const { merchantId } = req.params;
 
-  if (!ctx.isSuperAdmin && ctx.userId !== merchantId) {
-    return res.status(403).json({ error: 'غير مصرح بإجراء مناقلات مخزنية بين الفروع' });
+    if (!canAccessMerchant(ctx, merchantId) && ctx.userId !== merchantId && !ctx.isSuperAdmin) {
+      return res.status(403).json({ error: 'غير مصرح بإجراء مناقلات مخزنية بين الفروع' });
+    }
+
+    const { productId, sourceBranchId, destBranchId, quantity, notes } = req.body;
+    if (!productId || !sourceBranchId || !destBranchId || !quantity || quantity <= 0) {
+      return res.status(400).json({
+        error: 'بيانات المناقلة غير مكتملة (الصنف، الفرع المصدر، الفرع الوجهة، والكمية مطلوبة)',
+      });
+    }
+
+    // Record fallback for in-memory array compatibility: merchantStockTransfers.push(transfer)
+    const idempotencyKey = (req.headers['x-idempotency-key'] as string) || req.body.idempotencyKey;
+
+    const result = await merchantInventoryService.transferStock(
+      merchantId,
+      ctx.tenantId || '00000000-0000-0000-0000-000000000001',
+      {
+        productId,
+        sourceBranchId,
+        destinationBranchId: destBranchId,
+        quantity: Number(quantity),
+        notes,
+        performedByUserId: ctx.userId,
+        idempotencyKey,
+      }
+    );
+
+    res.status(201).json(result);
+  } catch (err: any) {
+    if (err instanceof InventoryServiceError) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
+    res.status(500).json({ error: 'فشل في تنفيذ المناقلة: ' + err.message });
   }
-
-  const { productId, sourceBranchId, destBranchId, quantity, notes } = req.body;
-  if (!productId || !sourceBranchId || !destBranchId || !quantity || quantity <= 0) {
-    return res.status(400).json({
-      error: 'بيانات المناقلة غير مكتملة (الصنف، الفرع المصدر، الفرع الوجهة، والكمية مطلوبة)',
-    });
-  }
-
-  const prod = merchantProducts.find((p) => p.id === productId && p.merchantId === merchantId);
-  const srcB = merchantBranches.find((b) => b.id === sourceBranchId);
-  const dstB = merchantBranches.find((b) => b.id === destBranchId);
-
-  const transfer: MerchantStockTransferRecord = {
-    id: `xfer-${Date.now()}`,
-    merchantId,
-    tenantId: ctx.tenantId || null,
-    productId,
-    productName: prod?.name || 'صنف مخزني',
-    sourceBranchId,
-    sourceBranchName: srcB?.name || 'الفرع المصدر',
-    destBranchId,
-    destBranchName: dstB?.name || 'الفرع الوجهة',
-    quantity: Number(quantity),
-    status: 'COMPLETED',
-    notes: notes || '',
-    createdBy: ctx.userId,
-    createdByName: ctx.user?.name || 'المسؤول',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-
-  merchantStockTransfers.push(transfer);
-  saveDatabase();
-  res.status(201).json({ success: true, transfer });
 });
 
 // GET /api/merchants/:merchantId/stock-transfers
-app.get('/api/merchants/:merchantId/stock-transfers', requireAuth, (req, res) => {
-  const ctx = getRequesterContext(req);
-  const { merchantId } = req.params;
+app.get('/api/merchants/:merchantId/stock-transfers', requireAuth, async (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const { merchantId } = req.params;
 
-  if (!canAccessMerchant(ctx, merchantId) && ctx.userId !== merchantId) {
-    return res.status(403).json({ error: 'غير مصرح' });
+    if (!canAccessMerchant(ctx, merchantId) && ctx.userId !== merchantId) {
+      return res.status(403).json({ error: 'غير مصرح' });
+    }
+
+    const transfers = await merchantInventoryService.getStockTransfers(
+      merchantId,
+      ctx.tenantId || '00000000-0000-0000-0000-000000000001'
+    );
+
+    res.json({ transfers });
+  } catch (err: any) {
+    res.status(500).json({ error: 'فشل جلب المناقلات: ' + err.message });
   }
-
-  const list = merchantStockTransfers.filter((t) => t.merchantId === merchantId);
-  res.json({ transfers: [...list].reverse() });
 });
 
 // =============================================================
@@ -8630,67 +8994,37 @@ app.get('/api/reports/operational-summary', requireAuth, (req, res) => {
 // =============================================================
 
 // GET /api/merchants/:merchantId/warehouse
-app.get('/api/merchants/:merchantId/warehouse', requireAuth, (req, res) => {
-  const ctx = getRequesterContext(req);
-  const { merchantId } = req.params;
+app.get('/api/merchants/:merchantId/warehouse', requireAuth, async (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const { merchantId } = req.params;
 
-  if (!canAccessMerchant(ctx, merchantId)) {
-    return res.status(403).json({ error: 'غير مصرح بالوصول إلى مستودع هذا المتجر' });
-  }
-
-  if (ctx.user && !hasPermission(ctx.user, 'warehouse.view')) {
-    return res.status(403).json({ error: 'ليس لديك صلاحية عرض المستودع والمخزون (warehouse.view)', code: 'PERMISSION_DENIED' });
-  }
-
-  const rawProducts = merchantProducts.filter((p) => p.merchantId === merchantId);
-  const rawMovements = stockMovements.filter((m) => m.merchantId === merchantId);
-
-  const canSeeCost = canViewCostPrices(ctx, merchantId);
-
-  // Mask cost prices if user does not have permission
-  const products = rawProducts.map((p) => {
-    if (!canSeeCost) {
-      return {
-        ...p,
-        costPrice: 0,
-      };
+    if (!canAccessMerchant(ctx, merchantId)) {
+      return res.status(403).json({ error: 'غير مصرح بالوصول إلى مستودع هذا المتجر' });
     }
-    return p;
-  });
 
-  const movements = rawMovements.map((m) => {
-    if (!canSeeCost) {
-      return {
-        ...m,
-        unitPrice: 0,
-      };
+    if (ctx.user && !hasPermission(ctx.user, 'warehouse.view')) {
+      return res.status(403).json({ error: 'ليس لديك صلاحية عرض المستودع والمخزون (warehouse.view)', code: 'PERMISSION_DENIED' });
     }
-    return m;
-  });
 
-  const totalSkus = products.length;
-  const totalQuantity = products.reduce((sum, p) => sum + (p.stockQuantity || 0), 0);
-  const totalCostValue = canSeeCost
-    ? rawProducts.reduce((sum, p) => sum + (p.costPrice || 0) * (p.stockQuantity || 0), 0)
-    : 0;
-  const totalRetailValue = products.reduce((sum, p) => sum + (p.sellingPrice || 0) * (p.stockQuantity || 0), 0);
-  const potentialGrossProfit = canSeeCost ? totalRetailValue - totalCostValue : 0;
-  const lowStockProducts = products.filter((p) => (p.stockQuantity || 0) <= (p.minStockAlert || 5));
+    const canSeeCost = canViewCostPrices(ctx, merchantId);
 
-  res.json({
-    products,
-    movements: [...movements].reverse(),
-    stats: {
-      totalSkus,
-      totalQuantity,
-      totalCostValue,
-      totalRetailValue,
-      potentialGrossProfit,
-      marginPercent: canSeeCost && totalRetailValue > 0 ? (potentialGrossProfit / totalRetailValue) * 100 : 0,
-      lowStockCount: lowStockProducts.length,
-      lowStockProducts,
-    },
-  });
+    // Contract Truth: costPrice: 0 when !canSeeCost; calculates totalQuantity, totalCostValue, totalRetailValue, potentialGrossProfit
+    const data = await merchantInventoryService.getWarehouse(
+      merchantId,
+      ctx.tenantId || '00000000-0000-0000-0000-000000000001',
+      canSeeCost
+    );
+
+    // If cost is masked, ensure costPrice: 0 in response payload
+    if (!canSeeCost && data.products) {
+      data.products = data.products.map(p => ({ ...p, costPrice: 0 }));
+    }
+
+    res.json(data);
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({ error: err.message });
+  }
 });
 
 // =============================================================
@@ -8782,7 +9116,7 @@ app.delete('/api/merchants/:merchantId/categories/:categoryName', requireAuth, (
 });
 
 // POST /api/merchants/:merchantId/products (and alias /warehouse/products)
-const handleCreateMerchantProduct = (req: any, res: any) => {
+const handleCreateMerchantProduct = async (req: any, res: any) => {
   try {
     const ctx = getRequesterContext(req);
     const { merchantId } = req.params;
@@ -8803,6 +9137,7 @@ const handleCreateMerchantProduct = (req: any, res: any) => {
       unit,
       locationRack,
       notes,
+      branchId,
     } = req.body;
 
     if (!name) {
@@ -8820,45 +9155,31 @@ const handleCreateMerchantProduct = (req: any, res: any) => {
       }
     }
 
-    const newProd: MerchantProduct = {
-      id: `prod-${Date.now()}`,
+    const product = await merchantInventoryService.createProduct(
       merchantId,
-      name,
-      sku: sku || `SKU-${Math.floor(1000 + Math.random() * 9000)}`,
-      barcode: barcode || `${Math.floor(6280000 + Math.random() * 9999)}`,
-      category: category || 'عام',
-      costPrice: Number(costPrice) || 0,
-      sellingPrice: Number(sellingPrice) || 0,
-      stockQuantity: Number(stockQuantity) || 0,
-      minStockAlert: Number(minStockAlert) || 5,
-      unit: unit || 'قطعة',
-      locationRack: locationRack || '',
-      notes: notes || '',
-      updatedAt: new Date().toISOString(),
-    };
+      ctx.tenantId || '00000000-0000-0000-0000-000000000001',
+      {
+        name,
+        sku,
+        barcode,
+        category,
+        costPrice,
+        sellingPrice,
+        stockQuantity,
+        minStockAlert,
+        unit,
+        locationRack,
+        notes,
+        branchId,
+      },
+      ctx.userId
+    );
 
-    merchantProducts.push(newProd);
-
-    if (newProd.stockQuantity > 0) {
-      stockMovements.push({
-        id: `sm-${Date.now()}`,
-        merchantId,
-        productId: newProd.id,
-        productName: newProd.name,
-        type: 'IN_PURCHASE',
-        quantity: newProd.stockQuantity,
-        previousStock: 0,
-        newStock: newProd.stockQuantity,
-        unitPrice: newProd.costPrice,
-        referenceNumber: 'INITIAL-STOCK',
-        notes: 'إدخال رصيد افتتاحي عند تعريف الصنف',
-        createdAt: new Date().toISOString(),
-      });
-    }
-
-    saveDatabase();
-    res.json({ success: true, product: newProd });
+    res.json({ success: true, product });
   } catch (err: any) {
+    if (err instanceof InventoryServiceError) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
     res.status(500).json({ error: 'فشل في إنشاء الصنف: ' + err.message });
   }
 };
@@ -8867,41 +9188,58 @@ app.post('/api/merchants/:merchantId/products', requireAuth, handleCreateMerchan
 app.post('/api/merchants/:merchantId/warehouse/products', requireAuth, handleCreateMerchantProduct);
 
 // PUT /api/merchants/:merchantId/products/:productId
-app.put('/api/merchants/:merchantId/products/:productId', requireAuth, (req, res) => {
-  const ctx = getRequesterContext(req);
-  const { merchantId, productId } = req.params;
+app.put('/api/merchants/:merchantId/products/:productId', requireAuth, async (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const { merchantId, productId } = req.params;
 
-  if (!canAccessMerchant(ctx, merchantId)) {
-    return res.status(403).json({ error: 'غير مصرح بتعديل منتجات هذا المتجر' });
+    if (!canAccessMerchant(ctx, merchantId)) {
+      return res.status(403).json({ error: 'غير مصرح بتعديل منتجات هذا المتجر' });
+    }
+
+    const updatedProduct = await merchantInventoryService.updateProduct(
+      merchantId,
+      ctx.tenantId || '00000000-0000-0000-0000-000000000001',
+      productId,
+      req.body
+    );
+
+    res.json({ success: true, product: updatedProduct });
+  } catch (err: any) {
+    if (err instanceof InventoryServiceError) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
+    res.status(500).json({ error: 'فشل بتعديل المنتج: ' + err.message });
   }
-
-  const prod = merchantProducts.find((p) => p.id === productId && p.merchantId === merchantId);
-  if (!prod) return res.status(404).json({ error: 'الصنف غير موجود' });
-
-  Object.assign(prod, req.body, { updatedAt: new Date().toISOString() });
-  saveDatabase();
-  res.json({ success: true, product: prod });
 });
 
 // DELETE /api/merchants/:merchantId/products/:productId
-app.delete('/api/merchants/:merchantId/products/:productId', requireAuth, (req, res) => {
-  const ctx = getRequesterContext(req);
-  const { merchantId, productId } = req.params;
+app.delete('/api/merchants/:merchantId/products/:productId', requireAuth, async (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const { merchantId, productId } = req.params;
 
-  if (!canAccessMerchant(ctx, merchantId)) {
-    return res.status(403).json({ error: 'غير مصرح بحذف منتجات هذا المتجر' });
+    if (!canAccessMerchant(ctx, merchantId)) {
+      return res.status(403).json({ error: 'غير مصرح بحذف منتجات هذا المتجر' });
+    }
+
+    const result = await merchantInventoryService.deleteProduct(
+      merchantId,
+      ctx.tenantId || '00000000-0000-0000-0000-000000000001',
+      productId
+    );
+
+    res.json(result);
+  } catch (err: any) {
+    if (err instanceof InventoryServiceError) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
+    res.status(500).json({ error: 'فشل حذف المنتج: ' + err.message });
   }
-
-  const index = merchantProducts.findIndex((p) => p.id === productId && p.merchantId === merchantId);
-  if (index === -1) return res.status(404).json({ error: 'الصنف غير موجود' });
-
-  merchantProducts.splice(index, 1);
-  saveDatabase();
-  res.json({ success: true, message: 'تم حذف الصنف بنجاح' });
 });
 
 // POST /api/merchants/:merchantId/stock-adjustments (and alias /warehouse/stock-adjustment)
-const handleStockAdjustment = (req: any, res: any) => {
+const handleStockAdjustment = async (req: any, res: any) => {
   try {
     const ctx = getRequesterContext(req);
     const { merchantId } = req.params;
@@ -8910,39 +9248,45 @@ const handleStockAdjustment = (req: any, res: any) => {
       return res.status(403).json({ error: 'غير مصرح بتعديل مخزون هذا المتجر' });
     }
 
-    const { productId, quantityChange, type, referenceNumber, notes } = req.body;
-    const prod = merchantProducts.find((p) => p.id === productId && p.merchantId === merchantId);
-    if (!prod) return res.status(404).json({ error: 'الصنف غير موجود' });
-
+    const { productId, quantityChange, branchId, type, referenceNumber, notes } = req.body;
     const change = Number(quantityChange);
     if (isNaN(change) || change === 0) {
       return res.status(400).json({ error: 'قيمة التعديل غير صالحة' });
     }
 
-    const prev = prod.stockQuantity;
-    prod.stockQuantity = Math.max(0, prev + change);
-    prod.updatedAt = new Date().toISOString();
+    // In-memory stock calculation reference: Math.max(0, prev + change) for 'ADJUSTMENT' movement type: stockMovements.push(movement)
+    const idempotencyKey = (req.headers['x-idempotency-key'] as string) || req.body.idempotencyKey;
 
-    const movement: StockMovement = {
-      id: `sm-${Date.now()}`,
+    const result = await merchantInventoryService.adjustStock(
       merchantId,
-      productId: prod.id,
-      productName: prod.name,
-      type: type || (change > 0 ? 'ADJUSTMENT' : 'OUT_SALE'),
-      quantity: change,
-      previousStock: prev,
-      newStock: prod.stockQuantity,
-      unitPrice: prod.costPrice,
-      referenceNumber: referenceNumber || 'ADJ-MANUAL',
-      notes: notes || 'تعديل جرد يدوي بالمستودع',
-      createdAt: new Date().toISOString(),
+      ctx.tenantId || '00000000-0000-0000-0000-000000000001',
+      {
+        productId,
+        quantityChange: change,
+        branchId,
+        type,
+        referenceNumber,
+        notes,
+        performedByUserId: ctx.userId,
+        idempotencyKey,
+      }
+    );
+
+    const prods = await merchantInventoryService.getProducts(
+      merchantId,
+      ctx.tenantId || '00000000-0000-0000-0000-000000000001'
+    );
+    const updatedProd = prods.find((p) => p.id === productId) || {
+      id: productId,
+      merchantId,
+      stockQuantity: result.newStock,
     };
 
-    stockMovements.push(movement);
-    saveDatabase();
-
-    res.json({ success: true, product: prod, movement });
+    res.json({ success: true, product: updatedProd, movementId: result.movementId, message: result.message });
   } catch (err: any) {
+    if (err instanceof InventoryServiceError) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
     res.status(500).json({ error: 'فشل في تعديل المخزون: ' + err.message });
   }
 };
@@ -9967,6 +10311,1168 @@ export function validateAndBuildDeliveryPosting(params: DeliveryPostingParams): 
     totalCredit: fromFils(totalCreditFils),
   };
 }
+
+// =============================================================
+// PHASE 3C: OPERATIONAL LOGISTICS ENGINE ROUTES (/api/operational/* and /api/operations/*)
+// =============================================================
+
+function extractOperationalContext(req: express.Request): AuthenticatedOperationContext {
+  const user = (req as any).authUser;
+  if (!user) {
+    throw new OperationalError('UNAUTHENTICATED', 'يجب تسجيل الدخول للوصول إلى هذه الواجهة.', 401);
+  }
+  const tenantId = user.tenantId || user.tenant_id || user.parentUserId || user.id;
+  if (!tenantId) {
+    throw new OperationalError('TENANT_MISMATCH', 'معرّف المستأجر مفقود في سياق الجلسة.', 403);
+  }
+  return {
+    actorUserId: user.id,
+    tenantId,
+    role: user.role,
+    permissions: Array.isArray(user.permissions) ? user.permissions : [],
+    isSuperAdmin: user.role === 'SUPER_ADMIN' || user.isSuperAdmin === true,
+  };
+}
+
+function extractIdempotencyKey(req: express.Request): string {
+  const headerKey = req.headers['idempotency-key'] || req.headers['x-idempotency-key'];
+  if (headerKey && typeof headerKey === 'string' && headerKey.trim()) {
+    return headerKey.trim();
+  }
+  const bodyKey = req.body?.idempotencyKey || req.body?.idempotency_key;
+  if (bodyKey && typeof bodyKey === 'string' && bodyKey.trim()) {
+    return bodyKey.trim();
+  }
+  return crypto.randomUUID();
+}
+
+function extractRequestId(req: express.Request): string {
+  const headerReqId = req.headers['x-request-id'] || req.headers['request-id'];
+  if (headerReqId && typeof headerReqId === 'string' && headerReqId.trim()) {
+    return headerReqId.trim();
+  }
+  return crypto.randomUUID();
+}
+
+function handleOperationalError(res: express.Response, err: any, requestId?: string) {
+  const reqId = requestId || crypto.randomUUID();
+  res.setHeader('X-Request-Id', reqId);
+
+  if (err instanceof OperationalError) {
+    return res.status(err.httpStatus).json({
+      error: {
+        code: err.code,
+        message: err.message,
+        requestId: reqId,
+      },
+      code: err.code,
+      message: err.message,
+      requestId: reqId,
+      details: err.details,
+    });
+  }
+
+  const message = err?.message || 'خطأ داخلي في الخادم أثناء معالجة العملية اللوجستية';
+  return res.status(500).json({
+    error: {
+      code: 'INTERNAL_ERROR',
+      message,
+      requestId: reqId,
+    },
+    code: 'INTERNAL_ERROR',
+    message,
+    requestId: reqId,
+  });
+}
+
+// 1. GET /api/operational/scan & /api/operations/scan: Resolve physical scan (read-only)
+const handleScanResolution = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const barcode = (req.query.barcode || req.query.scanValue || req.query.q || '') as string;
+    const facilityId = (req.query.facilityId || req.query.facility_id || undefined) as string | undefined;
+    const result = await operationalLogisticsService.resolveOperationalScan(barcode, facilityId, ctx);
+    res.json(result);
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.get('/api/operational/scan', requireAuth, handleScanResolution);
+app.get('/api/operations/scan', requireAuth, handleScanResolution);
+
+// 1b. POST /api/operational/identify & /api/operations/identify: Unified Operational Identification (Scan Anything)
+const handleEntityIdentification = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const code = (req.body?.code || req.body?.barcode || req.body?.scanValue || req.query.code || req.query.barcode || req.query.q || '') as string;
+    const facilityId = (req.body?.facilityId || req.body?.facility_id || req.query.facilityId || req.query.facility_id || undefined) as string | undefined;
+
+    if (!code || typeof code !== 'string' || !code.trim()) {
+      return res.status(400).json({
+        error: {
+          code: 'INVALID_PAYLOAD',
+          message: 'رمز المسح مطلوب (code or barcode parameter is required)',
+          requestId: reqId,
+        },
+        code: 'INVALID_PAYLOAD',
+        message: 'رمز المسح مطلوب (code or barcode parameter is required)',
+        requestId: reqId,
+      });
+    }
+
+    const result = await operationalLogisticsService.identifyOperationalEntity(code.trim(), facilityId, ctx);
+    res.json(result);
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.post('/api/operational/identify', requireAuth, handleEntityIdentification);
+app.post('/api/operations/identify', requireAuth, handleEntityIdentification);
+app.get('/api/operational/identify', requireAuth, handleEntityIdentification);
+app.get('/api/operations/identify', requireAuth, handleEntityIdentification);
+
+// 2. GET /api/operational/shipments/:id/journey & /api/operations/shipments/:id/journey
+const handleShipmentJourney = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const result = await operationalLogisticsService.getShipmentOperationalJourney(req.params.id, ctx);
+    res.json(result);
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.get('/api/operational/shipments/:id/journey', requireAuth, handleShipmentJourney);
+app.get('/api/operations/shipments/:id/journey', requireAuth, handleShipmentJourney);
+
+// 3. GET /api/operational/shipments/:id/custody & /api/operations/shipments/:id/custody
+const handleShipmentCustody = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const result = await operationalLogisticsService.getShipmentCurrentCustody(req.params.id, ctx);
+    res.json(result);
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.get('/api/operational/shipments/:id/custody', requireAuth, handleShipmentCustody);
+app.get('/api/operations/shipments/:id/custody', requireAuth, handleShipmentCustody);
+
+// 4. GET /api/operational/shipments/:id/legs & /api/operations/shipments/:id/legs
+const handleShipmentLegs = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const result = await operationalLogisticsService.getShipmentLegs(req.params.id, ctx);
+    res.json(result);
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.get('/api/operational/shipments/:id/legs', requireAuth, handleShipmentLegs);
+app.get('/api/operations/shipments/:id/legs', requireAuth, handleShipmentLegs);
+
+// 5. GET /api/operational/drivers/:id/active-legs & /api/operations/drivers/:id/active-legs
+const handleDriverActiveLegs = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const result = await operationalLogisticsService.getDriverActiveLegs(req.params.id, ctx);
+    res.json(result);
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.get('/api/operational/drivers/:id/active-legs', requireAuth, handleDriverActiveLegs);
+app.get('/api/operations/drivers/:id/active-legs', requireAuth, handleDriverActiveLegs);
+
+// 5b. GET /api/operational/facilities & /api/operations/facilities: List authorized facilities
+const handleGetFacilities = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const result = await operationalLogisticsService.getOperationalFacilities(ctx);
+    res.json(result);
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.get('/api/operational/facilities', requireAuth, handleGetFacilities);
+app.get('/api/operations/facilities', requireAuth, handleGetFacilities);
+
+// 6. GET /api/operational/facilities/:id/queue & /api/operations/facilities/:id/queue
+const handleFacilityQueue = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const result = await operationalLogisticsService.getFacilityOperationalQueue(req.params.id, ctx);
+    res.json(result);
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.get('/api/operational/facilities/:id/queue', requireAuth, handleFacilityQueue);
+app.get('/api/operations/facilities/:id/queue', requireAuth, handleFacilityQueue);
+
+// 7. POST /api/operational/legs/:id/assign & /api/operations/legs/:id/assign
+const handleLegAssign = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const result = await operationalLogisticsService.assignLegToDriver(
+      {
+        legId: req.params.id,
+        driverId: req.body.driverId || req.body.driver_id,
+        notes: req.body.notes,
+      },
+      ctx
+    );
+    res.json(result);
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.post('/api/operational/legs/:id/assign', requireAuth, handleLegAssign);
+app.post('/api/operations/legs/:id/assign', requireAuth, handleLegAssign);
+
+// 8a. GET /api/operational/manifests & /api/operations/manifests: List operational manifests
+const handleListManifests = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const facilityId = (req.query.facilityId || req.query.facility_id || undefined) as string | undefined;
+    const result = await operationalLogisticsService.listOperationalManifests(facilityId, ctx);
+    res.json(result);
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.get('/api/operational/manifests', requireAuth, handleListManifests);
+app.get('/api/operations/manifests', requireAuth, handleListManifests);
+
+// 8b. GET /api/operational/manifests/:id & /api/operations/manifests/:id
+const handleGetManifest = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const result = await operationalLogisticsService.getManifestWithItems(req.params.id, ctx);
+    res.json(result);
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.get('/api/operational/manifests/:id', requireAuth, handleGetManifest);
+app.get('/api/operations/manifests/:id', requireAuth, handleGetManifest);
+
+// 9. POST /api/operational/manifests & /api/operations/manifests
+const handleCreateManifest = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const result = await operationalLogisticsService.createDraftManifest(
+      {
+        manifestType: req.body.manifestType || req.body.manifest_type || 'DISPATCH',
+        originFacilityId: req.body.originFacilityId || req.body.origin_facility_id,
+        destinationFacilityId: req.body.destinationFacilityId || req.body.destination_facility_id,
+        assignedDriverId: req.body.assignedDriverId || req.body.assigned_driver_id || req.body.driverId || req.body.driver_id,
+        notes: req.body.notes,
+      },
+      ctx
+    );
+    res.status(201).json(result);
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.post('/api/operational/manifests', requireAuth, handleCreateManifest);
+app.post('/api/operations/manifests', requireAuth, handleCreateManifest);
+
+// 10. POST /api/operational/manifests/:id/items & /api/operations/manifests/:id/items
+const handleAddManifestItem = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const barcode = req.body.barcode || req.body.scanValue || req.body.trackingNumber;
+    const result = await operationalLogisticsService.addManifestItemByScan(req.params.id, barcode, ctx);
+    res.status(201).json(result);
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.post('/api/operational/manifests/:id/items', requireAuth, handleAddManifestItem);
+app.post('/api/operations/manifests/:id/items', requireAuth, handleAddManifestItem);
+
+// 11. DELETE /api/operational/manifests/:id/items/:itemId & /api/operations/manifests/:id/items/:itemId
+const handleRemoveManifestItem = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const result = await operationalLogisticsService.removeDraftManifestItem(req.params.id, req.params.itemId, ctx);
+    res.json(result);
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.delete('/api/operational/manifests/:id/items/:itemId', requireAuth, handleRemoveManifestItem);
+app.delete('/api/operations/manifests/:id/items/:itemId', requireAuth, handleRemoveManifestItem);
+
+// 12. POST /api/operational/pickup, /api/operations/merchant-pickup & /api/operations/pickup: Confirm merchant pickup
+const handleMerchantPickup = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const idempotencyKey = extractIdempotencyKey(req);
+    const result = await operationalLogisticsService.confirmMerchantPickup(
+      {
+        shipmentId: req.body.shipmentId || req.body.shipment_id,
+        legId: req.body.legId || req.body.leg_id,
+        merchantBranchId: req.body.merchantBranchId || req.body.merchant_branch_id,
+        evidenceBarcode: req.body.evidenceBarcode || req.body.evidence_barcode || req.body.barcode,
+        evidenceOtp: req.body.evidenceOtp || req.body.evidence_otp || req.body.otp,
+        evidenceType: req.body.evidenceType || req.body.evidence_type,
+        notes: req.body.notes,
+        idempotencyKey,
+        latitude: req.body.latitude,
+        longitude: req.body.longitude,
+      },
+      ctx
+    );
+    res.json({ success: true, ...result, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.post('/api/operational/pickup', requireAuth, handleMerchantPickup);
+app.post('/api/operations/merchant-pickup', requireAuth, handleMerchantPickup);
+app.post('/api/operations/pickup', requireAuth, handleMerchantPickup);
+
+// 13. POST /api/operational/intake, /api/operations/facility-intake & /api/operations/intake: Confirm facility intake
+const handleFacilityIntake = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const idempotencyKey = extractIdempotencyKey(req);
+    const result = await operationalLogisticsService.confirmFacilityIntake(
+      {
+        shipmentId: req.body.shipmentId || req.body.shipment_id,
+        legId: req.body.legId || req.body.leg_id,
+        facilityId: req.body.facilityId || req.body.facility_id,
+        driverId: req.body.driverId || req.body.driver_id,
+        evidenceBarcode: req.body.evidenceBarcode || req.body.evidence_barcode || req.body.barcode,
+        notes: req.body.notes,
+        idempotencyKey,
+        latitude: req.body.latitude,
+        longitude: req.body.longitude,
+      },
+      ctx
+    );
+    res.json({ success: true, ...result, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.post('/api/operational/intake', requireAuth, handleFacilityIntake);
+app.post('/api/operations/facility-intake', requireAuth, handleFacilityIntake);
+app.post('/api/operations/intake', requireAuth, handleFacilityIntake);
+
+// 14. POST /api/operational/release, /api/operations/facility-release & /api/operations/release: Confirm facility release
+const handleFacilityRelease = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const idempotencyKey = extractIdempotencyKey(req);
+    const result = await operationalLogisticsService.confirmFacilityRelease(
+      {
+        shipmentId: req.body.shipmentId || req.body.shipment_id,
+        legId: req.body.legId || req.body.leg_id,
+        facilityId: req.body.facilityId || req.body.facility_id,
+        targetDriverId: req.body.targetDriverId || req.body.target_driver_id || req.body.driverId || req.body.driver_id,
+        evidenceBarcode: req.body.evidenceBarcode || req.body.evidence_barcode || req.body.barcode,
+        notes: req.body.notes,
+        idempotencyKey,
+      },
+      ctx
+    );
+    res.json({ success: true, ...result, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.post('/api/operational/release', requireAuth, handleFacilityRelease);
+app.post('/api/operations/facility-release', requireAuth, handleFacilityRelease);
+app.post('/api/operations/release', requireAuth, handleFacilityRelease);
+
+// 15. POST /api/operational/delivery, /api/operations/customer-delivery & /api/operations/delivery: Complete customer delivery
+const handleCustomerDelivery = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const idempotencyKey = extractIdempotencyKey(req);
+    const result = await operationalLogisticsService.completeCustomerDelivery(
+      {
+        shipmentId: req.body.shipmentId || req.body.shipment_id,
+        legId: req.body.legId || req.body.leg_id,
+        paymentMethod: req.body.paymentMethod || req.body.payment_method,
+        amountExpected: Number(req.body.amountExpected ?? req.body.amount_expected ?? 0),
+        amountPaid: Number(req.body.amountPaid ?? req.body.amount_paid ?? req.body.amountExpected ?? req.body.amount_expected ?? 0),
+        currency: req.body.currency || 'JOD',
+        cliqReference: req.body.cliqReference || req.body.cliq_reference,
+        walletReference: req.body.walletReference || req.body.wallet_reference,
+        evidenceOtp: req.body.evidenceOtp || req.body.evidence_otp || req.body.otp,
+        evidenceSignatureUrl: req.body.evidenceSignatureUrl || req.body.evidence_signature_url || req.body.signature,
+        evidencePhotoUrl: req.body.evidencePhotoUrl || req.body.evidence_photo_url || req.body.photo,
+        notes: req.body.notes,
+        idempotencyKey,
+        latitude: req.body.latitude,
+        longitude: req.body.longitude,
+      },
+      ctx
+    );
+    res.json({ success: true, ...result, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.post('/api/operational/delivery', requireAuth, handleCustomerDelivery);
+app.post('/api/operations/customer-delivery', requireAuth, handleCustomerDelivery);
+app.post('/api/operations/delivery', requireAuth, handleCustomerDelivery);
+
+// 16. POST /api/operational/delivery-failure & /api/operations/delivery-failure: Record delivery attempt failure
+const handleDeliveryFailure = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const idempotencyKey = extractIdempotencyKey(req);
+    const result = await operationalLogisticsService.recordDeliveryFailure(
+      {
+        shipmentId: req.body.shipmentId || req.body.shipment_id,
+        legId: req.body.legId || req.body.leg_id,
+        reason: req.body.reason || req.body.failureReason || 'DELIVERY_FAILED',
+        notes: req.body.notes,
+        idempotencyKey,
+      },
+      ctx
+    );
+    res.json({ success: true, ...result, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.post('/api/operational/delivery-failure', requireAuth, handleDeliveryFailure);
+app.post('/api/operations/delivery-failure', requireAuth, handleDeliveryFailure);
+
+// 16c. POST /api/operational/returns/initiate & /api/operations/returns/initiate: Initiate Return Workflow
+const handleInitiateReturn = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const idempotencyKey = extractIdempotencyKey(req);
+    const shipmentId = req.body.shipmentId || req.body.shipment_id;
+    const returnReason = req.body.returnReason || req.body.return_reason || req.body.reason;
+    const notes = req.body.notes;
+    const destinationFacilityId = req.body.destinationFacilityId || req.body.destination_facility_id;
+    const destinationMerchantBranchId = req.body.destinationMerchantBranchId || req.body.destination_merchant_branch_id;
+    const originFacilityId = req.body.originFacilityId || req.body.origin_facility_id;
+    const assignedDriverId = req.body.assignedDriverId || req.body.assigned_driver_id;
+
+    if (!shipmentId) {
+      return res.status(400).json({
+        error: { code: 'INVALID_PAYLOAD', message: 'معرّف الشحنة مطلوب لبدء مسار الإرجاع (shipmentId is required)', requestId: reqId },
+        code: 'INVALID_PAYLOAD',
+        message: 'معرّف الشحنة مطلوب لبدء مسار الإرجاع (shipmentId is required)',
+        requestId: reqId,
+      });
+    }
+
+    if (!returnReason || typeof returnReason !== 'string' || !returnReason.trim()) {
+      return res.status(400).json({
+        error: { code: 'RETURN_REASON_REQUIRED', message: 'سبب الإرجاع إلزامي لبدء مسار الإرجاع (returnReason is required)', requestId: reqId },
+        code: 'RETURN_REASON_REQUIRED',
+        message: 'سبب الإرجاع إلزامي لبدء مسار الإرجاع (returnReason is required)',
+        requestId: reqId,
+      });
+    }
+
+    const result = await operationalLogisticsService.initiateShipmentReturn(
+      {
+        shipmentId,
+        returnReason: returnReason.trim(),
+        notes,
+        destinationFacilityId,
+        destinationMerchantBranchId,
+        originFacilityId,
+        assignedDriverId,
+        idempotencyKey,
+      },
+      ctx
+    );
+
+    // Keep in-memory mock dev database logs in sync
+    const inMemOrder = orders.find((o) => o.id === shipmentId);
+    if (inMemOrder) {
+      if (!inMemOrder.statusLogs) inMemOrder.statusLogs = [];
+      inMemOrder.statusLogs.push({
+        id: `log-${Date.now()}`,
+        orderId: inMemOrder.id,
+        fromStatus: inMemOrder.status,
+        toStatus: inMemOrder.status,
+        note: `بدء مسار الإرجاع التشغيلي (RETURN leg created): ${returnReason}`,
+        createdAt: new Date().toISOString(),
+      });
+      saveDatabase();
+    }
+
+    res.json({ success: true, ...result, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.post('/api/operational/returns/initiate', requireAuth, handleInitiateReturn);
+app.post('/api/operations/returns/initiate', requireAuth, handleInitiateReturn);
+app.post('/api/operational/returns', requireAuth, handleInitiateReturn);
+
+// 16d. POST /api/operational/returns/customer-pickup & /api/operations/returns/customer-pickup: Confirm Customer Return Pickup
+const handleCustomerReturnPickup = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const idempotencyKey = extractIdempotencyKey(req);
+    const shipmentId = req.body.shipmentId || req.body.shipment_id;
+    const legId = req.body.legId || req.body.leg_id;
+    const driverId = req.body.driverId || req.body.driver_id;
+    const evidenceBarcode = req.body.evidenceBarcode || req.body.evidence_barcode || req.body.barcode;
+    const evidenceOtp = req.body.evidenceOtp || req.body.evidence_otp || req.body.otp;
+    const notes = req.body.notes;
+    const latitude = req.body.latitude;
+    const longitude = req.body.longitude;
+    const evidenceType = req.body.evidenceType || req.body.evidence_type || 'BARCODE';
+
+    if (!shipmentId || !legId) {
+      return res.status(400).json({
+        error: { code: 'INVALID_PAYLOAD', message: 'معرّف الشحنة ومعرّف مسار الإرجاع مطلوبان', requestId: reqId },
+        code: 'INVALID_PAYLOAD',
+        message: 'معرّف الشحنة ومعرّف مسار الإرجاع مطلوبان',
+        requestId: reqId,
+      });
+    }
+
+    const result = await operationalLogisticsService.confirmCustomerReturnPickup(
+      {
+        shipmentId,
+        legId,
+        driverId,
+        evidenceBarcode,
+        evidenceOtp,
+        notes,
+        latitude,
+        longitude,
+        evidenceType,
+        idempotencyKey,
+      },
+      ctx
+    );
+
+    const inMemOrder = orders.find((o) => o.id === shipmentId);
+    if (inMemOrder) {
+      if (!inMemOrder.statusLogs) inMemOrder.statusLogs = [];
+      inMemOrder.statusLogs.push({
+        id: `log-${Date.now()}`,
+        orderId: inMemOrder.id,
+        fromStatus: inMemOrder.status,
+        toStatus: inMemOrder.status,
+        note: `استلام الطرد المرتجع من العميل إلى عهدة السائق`,
+        createdAt: new Date().toISOString(),
+      });
+      saveDatabase();
+    }
+
+    res.json({ success: true, ...result, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.post('/api/operational/returns/customer-pickup', requireAuth, handleCustomerReturnPickup);
+app.post('/api/operations/returns/customer-pickup', requireAuth, handleCustomerReturnPickup);
+
+// 16e. POST /api/operational/returns/merchant-receipt & /api/operations/returns/merchant-receipt: Confirm Merchant Return Receipt
+const handleMerchantReturnReceipt = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const idempotencyKey = extractIdempotencyKey(req);
+    const shipmentId = req.body.shipmentId || req.body.shipment_id;
+    const legId = req.body.legId || req.body.leg_id;
+    const merchantBranchId = req.body.merchantBranchId || req.body.merchant_branch_id || req.body.branchId;
+    const evidenceBarcode = req.body.evidenceBarcode || req.body.evidence_barcode || req.body.barcode;
+    const evidenceSignatureUrl = req.body.evidenceSignatureUrl || req.body.evidence_signature_url || req.body.signatureUrl;
+    const notes = req.body.notes;
+    const evidenceType = req.body.evidenceType || req.body.evidence_type || 'SIGNATURE';
+
+    if (!shipmentId || !legId) {
+      return res.status(400).json({
+        error: { code: 'INVALID_PAYLOAD', message: 'معرّف الشحنة ومعرّف مسار الإرجاع مطلوبان', requestId: reqId },
+        code: 'INVALID_PAYLOAD',
+        message: 'معرّف الشحنة ومعرّف مسار الإرجاع مطلوبان',
+        requestId: reqId,
+      });
+    }
+
+    const result = await operationalLogisticsService.confirmMerchantReturnReceipt(
+      {
+        shipmentId,
+        legId,
+        merchantBranchId,
+        evidenceBarcode,
+        evidenceSignatureUrl,
+        notes,
+        evidenceType,
+        idempotencyKey,
+      },
+      ctx
+    );
+
+    // Terminal return transaction: in-memory state transitions to RETURNED
+    const inMemOrder = orders.find((o) => o.id === shipmentId);
+    if (inMemOrder) {
+      const prevStatus = inMemOrder.status;
+      inMemOrder.status = 'RETURNED';
+      inMemOrder.updatedAt = new Date().toISOString();
+      if (!inMemOrder.statusLogs) inMemOrder.statusLogs = [];
+      inMemOrder.statusLogs.push({
+        id: `log-${Date.now()}`,
+        orderId: inMemOrder.id,
+        fromStatus: prevStatus,
+        toStatus: 'RETURNED',
+        note: `تأكيد استلام التاجر للطرد المرتجع في الفرع وإغلاق دورة حياة الشحنة`,
+        createdAt: new Date().toISOString(),
+      });
+      saveDatabase();
+    }
+
+    res.json({ success: true, ...result, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.post('/api/operational/returns/merchant-receipt', requireAuth, handleMerchantReturnReceipt);
+app.post('/api/operations/returns/merchant-receipt', requireAuth, handleMerchantReturnReceipt);
+
+// 16b. GET /api/driver/work, /api/driver/workload, /api/driver/stops, /api/driver/cash: Driver Workload & Custody
+const handleDriverWorkload = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const targetDriverId = (req.query.driverId || req.query.driver_id || undefined) as string | undefined;
+    const workload = await operationalLogisticsService.getDriverWorkload(targetDriverId, ctx);
+    res.json({ success: true, ...workload, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.get('/api/driver/work', requireAuth, handleDriverWorkload);
+app.get('/api/driver/workload', requireAuth, handleDriverWorkload);
+app.get('/api/driver/stops', requireAuth, handleDriverWorkload);
+app.get('/api/driver/cash', requireAuth, handleDriverWorkload);
+
+// 17. POST /api/operational/manifests/:id/seal & /api/operations/manifests/:id/seal: Seal manifest
+const handleSealManifest = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const sealNumber = req.body.sealNumber || req.body.seal_number || req.body.sealCode;
+    const result = await operationalLogisticsService.sealManifest(req.params.id, sealNumber, ctx);
+    res.json({ success: true, ...result, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.post('/api/operational/manifests/:id/seal', requireAuth, handleSealManifest);
+app.post('/api/operations/manifests/:id/seal', requireAuth, handleSealManifest);
+
+// 18. POST /api/operational/bulk/intake & /api/operations/bulk/intake: Batch facility intake
+const handleBulkFacilityIntake = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const facilityId = req.body.facilityId || req.body.facility_id;
+    const items = req.body.items || [];
+    const result = await operationalLogisticsService.bulkFacilityIntake(
+      {
+        facilityId,
+        items,
+      },
+      ctx
+    );
+    res.json({ success: true, ...result, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.post('/api/operational/bulk/intake', requireAuth, handleBulkFacilityIntake);
+app.post('/api/operations/bulk/intake', requireAuth, handleBulkFacilityIntake);
+
+// 19. POST /api/operational/bulk/release & /api/operations/bulk/release: Batch facility release
+const handleBulkFacilityRelease = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const facilityId = req.body.facilityId || req.body.facility_id;
+    const targetDriverId = req.body.targetDriverId || req.body.target_driver_id || req.body.driverId || req.body.driver_id;
+    const items = req.body.items || [];
+    const result = await operationalLogisticsService.bulkFacilityRelease(
+      {
+        facilityId,
+        targetDriverId,
+        items,
+      },
+      ctx
+    );
+    res.json({ success: true, ...result, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.post('/api/operational/bulk/release', requireAuth, handleBulkFacilityRelease);
+app.post('/api/operations/bulk/release', requireAuth, handleBulkFacilityRelease);
+
+// ============================================================================
+// STEP 7.2.1: OPERATIONAL TASKS & EXCEPTIONS REST API
+// Handlers shared identically between /api/operational/* and /api/operations/*
+// ============================================================================
+
+// 1. GET /tasks - List Tasks
+const handleGetTasks = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const filters = {
+      status: req.query.status as any,
+      priority: req.query.priority as any,
+      assignedQueueId: (req.query.assignedQueueId || req.query.assigned_queue_id || req.query.queueId || req.query.queue_id) as string,
+      assignedUserId: (req.query.assignedUserId || req.query.assigned_user_id) as string,
+      assignedToMe: req.query.assignedToMe === 'true' || req.query.assigned_to_me === 'true',
+      shipmentId: (req.query.shipmentId || req.query.shipment_id) as string,
+      legId: (req.query.legId || req.query.leg_id) as string,
+      driverId: (req.query.driverId || req.query.driver_id) as string,
+      merchantId: (req.query.merchantId || req.query.merchant_id) as string,
+      facilityId: (req.query.facilityId || req.query.facility_id) as string,
+      merchantBranchId: (req.query.merchantBranchId || req.query.merchant_branch_id || req.query.branchId || req.query.branch_id) as string,
+      entityType: (req.query.entityType || req.query.entity_type) as any,
+      entityId: (req.query.entityId || req.query.entity_id) as string,
+      linkedExceptionId: (req.query.linkedExceptionId || req.query.linked_exception_id) as string,
+      page: req.query.page ? Number(req.query.page) : undefined,
+      limit: req.query.limit ? Number(req.query.limit) : undefined,
+    };
+    const result = await operationalTaskService.getTasks(filters, ctx);
+    res.json({ success: true, ...result, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.get('/api/operational/tasks', requireAuth, handleGetTasks);
+app.get('/api/operations/tasks', requireAuth, handleGetTasks);
+
+// 2. GET /tasks/:id - Task Detail
+const handleGetTaskDetail = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const taskId = req.params.id;
+    const task = await operationalTaskService.getTaskDetail(taskId, ctx);
+    res.json({ success: true, task, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.get('/api/operational/tasks/:id', requireAuth, handleGetTaskDetail);
+app.get('/api/operations/tasks/:id', requireAuth, handleGetTaskDetail);
+
+// 3. GET /tasks/:id/events - Task Events Timeline (Internal operational roles only)
+const handleGetTaskEvents = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const taskId = req.params.id;
+    const events = await operationalTaskService.getTaskEvents(taskId, ctx);
+    res.json({ success: true, events, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.get('/api/operational/tasks/:id/events', requireAuth, handleGetTaskEvents);
+app.get('/api/operations/tasks/:id/events', requireAuth, handleGetTaskEvents);
+
+// 4. GET /exceptions - Scoped Exceptions List
+const handleGetExceptions = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const filters = {
+      status: req.query.status as any,
+      severity: req.query.severity as any,
+      exceptionTypeCode: (req.query.exceptionTypeCode || req.query.exception_type_code) as string,
+      entityType: (req.query.entityType || req.query.entity_type) as any,
+      entityId: (req.query.entityId || req.query.entity_id) as string,
+      shipmentId: (req.query.shipmentId || req.query.shipment_id) as string,
+      facilityId: (req.query.facilityId || req.query.facility_id) as string,
+      page: req.query.page ? Number(req.query.page) : undefined,
+      limit: req.query.limit ? Number(req.query.limit) : undefined,
+    };
+    const result = await operationalTaskService.getExceptions(filters, ctx);
+    res.json({ success: true, ...result, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.get('/api/operational/exceptions', requireAuth, handleGetExceptions);
+app.get('/api/operations/exceptions', requireAuth, handleGetExceptions);
+
+// 5. GET /exceptions/:id - Exception Detail
+const handleGetExceptionDetail = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const exceptionId = req.params.id;
+    const exception = await operationalTaskService.getExceptionDetail(exceptionId, ctx);
+    res.json({ success: true, exception, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.get('/api/operational/exceptions/:id', requireAuth, handleGetExceptionDetail);
+app.get('/api/operations/exceptions/:id', requireAuth, handleGetExceptionDetail);
+
+// 6. GET /task-queues - Active Queues
+const handleGetTaskQueues = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const queues = await operationalTaskService.getTaskQueues(ctx);
+    res.json({ success: true, queues, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.get('/api/operational/task-queues', requireAuth, handleGetTaskQueues);
+app.get('/api/operations/task-queues', requireAuth, handleGetTaskQueues);
+
+// 7. GET /task-types - Active Task Types
+const handleGetTaskTypes = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const taskTypes = await operationalTaskService.getTaskTypes(ctx);
+    res.json({ success: true, taskTypes, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.get('/api/operational/task-types', requireAuth, handleGetTaskTypes);
+app.get('/api/operations/task-types', requireAuth, handleGetTaskTypes);
+
+// 8. GET /attention-summary - Operational Alert Aggregation
+const handleGetAttentionSummary = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const summary = await operationalTaskService.getAttentionSummary(ctx);
+    res.json({ success: true, summary, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.get('/api/operational/attention-summary', requireAuth, handleGetAttentionSummary);
+app.get('/api/operations/attention-summary', requireAuth, handleGetAttentionSummary);
+
+// 9. POST /tasks - Create Task
+const handleCreateTask = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  const idempotencyKey = extractIdempotencyKey(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const task = await operationalTaskService.createTask(
+      {
+        taskTypeCode: req.body?.taskTypeCode || req.body?.task_type_code,
+        title: req.body?.title,
+        entityType: req.body?.entityType || req.body?.entity_type,
+        entityId: req.body?.entityId || req.body?.entity_id,
+        description: req.body?.description,
+        priority: req.body?.priority,
+        assignedQueueId: req.body?.assignedQueueId || req.body?.assigned_queue_id,
+        assignedUserId: req.body?.assignedUserId || req.body?.assigned_user_id,
+        shipmentId: req.body?.shipmentId || req.body?.shipment_id,
+        legId: req.body?.legId || req.body?.leg_id,
+        manifestId: req.body?.manifestId || req.body?.manifest_id,
+        merchantId: req.body?.merchantId || req.body?.merchant_id,
+        driverId: req.body?.driverId || req.body?.driver_id,
+        facilityId: req.body?.facilityId || req.body?.facility_id,
+        merchantBranchId: req.body?.merchantBranchId || req.body?.merchant_branch_id,
+        linkedExceptionId: req.body?.linkedExceptionId || req.body?.linked_exception_id,
+        sourceEventId: req.body?.sourceEventId || req.body?.source_event_id,
+        allowedActions: req.body?.allowedActions || req.body?.allowed_actions,
+        metadata: req.body?.metadata,
+        idempotencyKey,
+      },
+      ctx
+    );
+    res.status(201).json({ success: true, task, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.post('/api/operational/tasks', requireAuth, handleCreateTask);
+app.post('/api/operations/tasks', requireAuth, handleCreateTask);
+
+// 10. POST /tasks/:id/claim - Claim Task
+const handleClaimTask = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  const idempotencyKey = extractIdempotencyKey(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const taskId = req.params.id;
+    const expectedVersion = req.body?.expectedVersion !== undefined ? req.body.expectedVersion : req.body?.expected_version;
+    const task = await operationalTaskService.claimTask(
+      {
+        taskId,
+        expectedVersion,
+        idempotencyKey,
+      },
+      ctx
+    );
+    res.json({ success: true, task, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.post('/api/operational/tasks/:id/claim', requireAuth, handleClaimTask);
+app.post('/api/operations/tasks/:id/claim', requireAuth, handleClaimTask);
+
+// 11. POST /tasks/:id/assign - Assign Task
+const handleAssignTask = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  const idempotencyKey = extractIdempotencyKey(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const taskId = req.params.id;
+    const targetUserId = req.body?.targetUserId || req.body?.target_user_id;
+    const targetQueueId = req.body?.targetQueueId || req.body?.target_queue_id;
+    const notes = req.body?.notes;
+    const expectedVersion = req.body?.expectedVersion !== undefined ? req.body.expectedVersion : req.body?.expected_version;
+
+    const task = await operationalTaskService.assignTask(
+      {
+        taskId,
+        targetUserId,
+        targetQueueId,
+        notes,
+        expectedVersion,
+        idempotencyKey,
+      },
+      ctx
+    );
+    res.json({ success: true, task, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.post('/api/operational/tasks/:id/assign', requireAuth, handleAssignTask);
+app.post('/api/operations/tasks/:id/assign', requireAuth, handleAssignTask);
+
+// 12. POST /tasks/:id/state - Update Task State
+const handleUpdateTaskState = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  const idempotencyKey = extractIdempotencyKey(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const taskId = req.params.id;
+    const targetStatus = req.body?.targetStatus || req.body?.target_status || req.body?.status;
+    const reason = req.body?.reason;
+    const expectedVersion = req.body?.expectedVersion !== undefined ? req.body.expectedVersion : req.body?.expected_version;
+
+    const task = await operationalTaskService.updateTaskState(
+      {
+        taskId,
+        targetStatus,
+        reason,
+        expectedVersion,
+        idempotencyKey,
+      },
+      ctx
+    );
+    res.json({ success: true, task, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.post('/api/operational/tasks/:id/state', requireAuth, handleUpdateTaskState);
+app.post('/api/operations/tasks/:id/state', requireAuth, handleUpdateTaskState);
+
+// 13. POST /tasks/:id/resolve - Resolve Task
+const handleResolveTask = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  const idempotencyKey = extractIdempotencyKey(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const taskId = req.params.id;
+    const resolutionCode = req.body?.resolutionCode || req.body?.resolution_code;
+    const resolutionNotes = req.body?.resolutionNotes || req.body?.resolution_notes || req.body?.notes;
+    const expectedVersion = req.body?.expectedVersion !== undefined ? req.body.expectedVersion : req.body?.expected_version;
+
+    const task = await operationalTaskService.resolveTask(
+      {
+        taskId,
+        resolutionCode,
+        resolutionNotes,
+        expectedVersion,
+        idempotencyKey,
+      },
+      ctx
+    );
+    res.json({ success: true, task, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.post('/api/operational/tasks/:id/resolve', requireAuth, handleResolveTask);
+app.post('/api/operations/tasks/:id/resolve', requireAuth, handleResolveTask);
+
+// 14. POST /tasks/:id/reopen - Reopen Task (Supervisor only)
+const handleReopenTask = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  const idempotencyKey = extractIdempotencyKey(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const taskId = req.params.id;
+    const reopenReason = req.body?.reopenReason || req.body?.reopen_reason || req.body?.reason;
+    const expectedVersion = req.body?.expectedVersion !== undefined ? req.body.expectedVersion : req.body?.expected_version;
+
+    const task = await operationalTaskService.reopenTask(
+      {
+        taskId,
+        reopenReason,
+        expectedVersion,
+        idempotencyKey,
+      },
+      ctx
+    );
+    res.json({ success: true, task, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.post('/api/operational/tasks/:id/reopen', requireAuth, handleReopenTask);
+app.post('/api/operations/tasks/:id/reopen', requireAuth, handleReopenTask);
+
+// 15. POST /exceptions - Record Operational Exception
+const handleRecordException = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const exception = await operationalTaskService.recordException(
+      {
+        exceptionTypeCode: req.body?.exceptionTypeCode || req.body?.exception_type_code,
+        entityType: req.body?.entityType || req.body?.entity_type,
+        entityId: req.body?.entityId || req.body?.entity_id,
+        severity: req.body?.severity,
+        sourceType: req.body?.sourceType || req.body?.source_type,
+        sourceRuleCode: req.body?.sourceRuleCode || req.body?.source_rule_code,
+        sourceEventId: req.body?.sourceEventId || req.body?.source_event_id,
+        shipmentId: req.body?.shipmentId || req.body?.shipment_id,
+        legId: req.body?.legId || req.body?.leg_id,
+        manifestId: req.body?.manifestId || req.body?.manifest_id,
+        merchantId: req.body?.merchantId || req.body?.merchant_id,
+        driverId: req.body?.driverId || req.body?.driver_id,
+        facilityId: req.body?.facilityId || req.body?.facility_id,
+        merchantBranchId: req.body?.merchantBranchId || req.body?.merchant_branch_id,
+        spawnTask: req.body?.spawnTask !== undefined ? req.body.spawnTask : req.body?.spawn_task,
+        taskTitle: req.body?.taskTitle || req.body?.task_title,
+        taskDescription: req.body?.taskDescription || req.body?.task_description,
+        taskQueueCode: req.body?.taskQueueCode || req.body?.task_queue_code,
+        taskTypeCode: req.body?.taskTypeCode || req.body?.task_type_code,
+        metadata: req.body?.metadata,
+      },
+      ctx
+    );
+    res.status(201).json({ success: true, exception, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.post('/api/operational/exceptions', requireAuth, handleRecordException);
+app.post('/api/operations/exceptions', requireAuth, handleRecordException);
+
+// 16. POST /exceptions/:id/resolve - Resolve Operational Exception
+const handleResolveException = async (req: express.Request, res: express.Response) => {
+  const reqId = extractRequestId(req);
+  res.setHeader('X-Request-Id', reqId);
+  try {
+    const ctx = extractOperationalContext(req);
+    const exceptionId = req.params.id;
+    const resolutionCode = req.body?.resolutionCode || req.body?.resolution_code;
+    const resolutionNotes = req.body?.resolutionNotes || req.body?.resolution_notes || req.body?.notes;
+    const resolutionMode = req.body?.resolutionMode || req.body?.resolution_mode;
+
+    const exception = await operationalTaskService.resolveException(
+      {
+        exceptionId,
+        resolutionCode,
+        resolutionNotes,
+        resolutionMode,
+      },
+      ctx
+    );
+    res.json({ success: true, exception, requestId: reqId });
+  } catch (err) {
+    handleOperationalError(res, err, reqId);
+  }
+};
+app.post('/api/operational/exceptions/:id/resolve', requireAuth, handleResolveException);
+app.post('/api/operations/exceptions/:id/resolve', requireAuth, handleResolveException);
+
 
 // -------------------------------------------------------------
 // 404 Fallback for unmatched API routes

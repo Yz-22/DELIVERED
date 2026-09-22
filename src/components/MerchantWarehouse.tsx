@@ -24,11 +24,14 @@ import {
   Scan,
   Sparkles,
   Camera,
-  Wand2
+  Wand2,
+  ArrowLeftRight,
+  Building2
 } from 'lucide-react';
 import { MerchantProduct, StockMovement } from '../types/accounting';
-import { User } from '../types/logistics';
+import { User, MerchantBranch, MerchantStockTransfer } from '../types/logistics';
 import { formatCurrency } from '../utils/logisticsHelpers';
+import { getAuthHeaders } from '../lib/auth';
 import { MerchantBarcodeScannerModal } from './MerchantBarcodeScannerModal';
 
 interface MerchantWarehouseProps {
@@ -42,11 +45,13 @@ export const MerchantWarehouse: React.FC<MerchantWarehouseProps> = ({
 }) => {
   const [products, setProducts] = useState<MerchantProduct[]>([]);
   const [movements, setMovements] = useState<StockMovement[]>([]);
+  const [transfers, setTransfers] = useState<MerchantStockTransfer[]>([]);
+  const [branches, setBranches] = useState<MerchantBranch[]>([]);
   const [stats, setStats] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
-  const [activeSubTab, setActiveSubTab] = useState<'inventory' | 'movements' | 'low_stock'>('inventory');
+  const [activeSubTab, setActiveSubTab] = useState<'inventory' | 'movements' | 'low_stock' | 'transfers'>('inventory');
 
   // Barcode Scanner Modal
   const [isBarcodeScannerOpen, setIsBarcodeScannerOpen] = useState(false);
@@ -84,6 +89,16 @@ export const MerchantWarehouse: React.FC<MerchantWarehouseProps> = ({
     notes: '',
   });
 
+  // Branch Transfer Modal
+  const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
+  const [transferForm, setTransferForm] = useState({
+    productId: '',
+    sourceBranchId: '',
+    destBranchId: '',
+    quantity: '1',
+    notes: '',
+  });
+
   // Helpers to generate random barcode & SKU
   const generateRandomBarcode = () => {
     const code = `628${Math.floor(100000000 + Math.random() * 900000000)}`;
@@ -102,7 +117,7 @@ export const MerchantWarehouse: React.FC<MerchantWarehouseProps> = ({
   const applyProfitMargin = (marginPercent: number) => {
     const cost = parseFloat(productForm.costPrice) || 0;
     if (cost > 0) {
-      const calculated = (cost * (1 + marginPercent / 100)).toFixed(2);
+      const calculated = (cost * (1 + marginPercent / 100)).toFixed(3);
       setProductForm((prev) => ({ ...prev, sellingPrice: calculated }));
       showToast(`تم احتساب سعر البيع بهامش ربح ${marginPercent}%: ${calculated} د.أ`);
     } else {
@@ -118,8 +133,8 @@ export const MerchantWarehouse: React.FC<MerchantWarehouseProps> = ({
       sku: `SKU-${Math.floor(1000 + Math.random() * 9000)}`,
       barcode: scannedBarcode,
       category: 'ألبسة نسائية',
-      costPrice: '10',
-      sellingPrice: '18',
+      costPrice: '10.000',
+      sellingPrice: '18.000',
       stockQuantity: '10',
       minStockAlert: '3',
       unit: 'قطعة',
@@ -149,17 +164,19 @@ export const MerchantWarehouse: React.FC<MerchantWarehouseProps> = ({
   const fetchCategories = async () => {
     if (!currentMerchant?.id) return;
     try {
-      const res = await fetch(`/api/merchants/${currentMerchant.id}/categories`);
+      const res = await fetch(`/api/merchants/${currentMerchant.id}/categories`, {
+        headers: getAuthHeaders(currentMerchant),
+      });
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data.categories) && data.categories.length > 0) {
           setSavedCategories(data.categories);
-          localStorage.setItem(`dargo_categories_${currentMerchant.id}`, JSON.stringify(data.categories));
+          localStorage.setItem(`delivere_categories_${currentMerchant.id}`, JSON.stringify(data.categories));
         }
       }
     } catch (err) {
       console.error('Failed to fetch categories:', err);
-      const cached = localStorage.getItem(`dargo_categories_${currentMerchant.id}`);
+      const cached = localStorage.getItem(`delivere_categories_${currentMerchant.id}`);
       if (cached) {
         try {
           setSavedCategories(JSON.parse(cached));
@@ -175,14 +192,17 @@ export const MerchantWarehouse: React.FC<MerchantWarehouseProps> = ({
     try {
       const res = await fetch(`/api/merchants/${currentMerchant.id}/categories`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          ...getAuthHeaders(currentMerchant),
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({ name: clean }),
       });
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data.categories)) {
           setSavedCategories(data.categories);
-          localStorage.setItem(`dargo_categories_${currentMerchant.id}`, JSON.stringify(data.categories));
+          localStorage.setItem(`delivere_categories_${currentMerchant.id}`, JSON.stringify(data.categories));
         }
       } else {
         setSavedCategories((prev) => Array.from(new Set([...prev, clean])));
@@ -204,12 +224,26 @@ export const MerchantWarehouse: React.FC<MerchantWarehouseProps> = ({
     if (!currentMerchant?.id) return;
     setIsLoading(true);
     try {
-      const res = await fetch(`/api/merchants/${currentMerchant.id}/warehouse`);
-      if (res.ok) {
-        const data = await res.json();
+      const authHeaders = getAuthHeaders(currentMerchant);
+      const [whRes, xferRes, branchRes] = await Promise.all([
+        fetch(`/api/merchants/${currentMerchant.id}/warehouse`, { headers: authHeaders }),
+        fetch(`/api/merchants/${currentMerchant.id}/stock-transfers`, { headers: authHeaders }),
+        fetch(`/api/merchants/${currentMerchant.id}/branches`, { headers: authHeaders }),
+      ]);
+
+      if (whRes.ok) {
+        const data = await whRes.json();
         setProducts(data.products || []);
         setMovements(data.movements || []);
         setStats(data.stats || null);
+      }
+      if (xferRes.ok) {
+        const xData = await xferRes.json();
+        setTransfers(xData.transfers || []);
+      }
+      if (branchRes.ok) {
+        const bData = await branchRes.json();
+        setBranches(bData.branches || []);
       }
     } catch (err) {
       console.error('Failed to load warehouse data:', err);
@@ -264,10 +298,14 @@ export const MerchantWarehouse: React.FC<MerchantWarehouseProps> = ({
     };
 
     try {
+      const headers = {
+        ...getAuthHeaders(currentMerchant),
+        'Content-Type': 'application/json',
+      };
       if (editingProduct) {
         const res = await fetch(`/api/merchants/${currentMerchant.id}/products/${editingProduct.id}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body: JSON.stringify(payload),
         });
         if (res.ok) {
@@ -280,7 +318,7 @@ export const MerchantWarehouse: React.FC<MerchantWarehouseProps> = ({
       } else {
         const res = await fetch(`/api/merchants/${currentMerchant.id}/products`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body: JSON.stringify(payload),
         });
         if (res.ok) {
@@ -302,6 +340,7 @@ export const MerchantWarehouse: React.FC<MerchantWarehouseProps> = ({
     try {
       const res = await fetch(`/api/merchants/${currentMerchant.id}/products/${id}`, {
         method: 'DELETE',
+        headers: getAuthHeaders(currentMerchant),
       });
       if (res.ok) {
         showToast('تم حذف الصنف من المستودع');
@@ -325,7 +364,10 @@ export const MerchantWarehouse: React.FC<MerchantWarehouseProps> = ({
     try {
       const res = await fetch(`/api/merchants/${currentMerchant.id}/stock-adjustments`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          ...getAuthHeaders(currentMerchant),
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
           productId: selectedProductToAdjust.id,
           quantityChange: qty,
@@ -341,6 +383,52 @@ export const MerchantWarehouse: React.FC<MerchantWarehouseProps> = ({
         fetchWarehouseData();
       } else {
         showToast('فشل في حفظ تعديل الرصيد', 'error');
+      }
+    } catch (err) {
+      showToast('خطأ في الاتصال بالخادم', 'error');
+    }
+  };
+
+  // Submit Stock Transfer between branches
+  const handleStockTransfer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!transferForm.productId || !transferForm.sourceBranchId || !transferForm.destBranchId) {
+      showToast('يرجى اختيار الصنف والفرع المصدر والفرع الوجهة', 'error');
+      return;
+    }
+    if (transferForm.sourceBranchId === transferForm.destBranchId) {
+      showToast('لا يمكن إجراء مناقلة بين نفس الفرع', 'error');
+      return;
+    }
+    const qty = parseInt(transferForm.quantity, 10);
+    if (isNaN(qty) || qty <= 0) {
+      showToast('يرجى كتابة كمية مناقلة صالحة (أكبر من صفر)', 'error');
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/merchants/${currentMerchant.id}/stock-transfers`, {
+        method: 'POST',
+        headers: {
+          ...getAuthHeaders(currentMerchant),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          productId: transferForm.productId,
+          sourceBranchId: transferForm.sourceBranchId,
+          destBranchId: transferForm.destBranchId,
+          quantity: qty,
+          notes: transferForm.notes || 'مناقلة مخزنية بين الفروع',
+        }),
+      });
+
+      if (res.ok) {
+        showToast('تم تنفيذ المناقلة المخزنية بين الفروع بنجاح');
+        setIsTransferModalOpen(false);
+        fetchWarehouseData();
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        showToast(errData.error || 'فشل في تنفيذ المناقلة', 'error');
       }
     } catch (err) {
       showToast('خطأ في الاتصال بالخادم', 'error');
@@ -474,9 +562,42 @@ export const MerchantWarehouse: React.FC<MerchantWarehouseProps> = ({
             <History className="w-4 h-4" />
             <span>سجل الحركات والتوريدات ({movements.length})</span>
           </button>
+
+          <button
+            onClick={() => setActiveSubTab('transfers')}
+            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+              activeSubTab === 'transfers'
+                ? 'bg-slate-900 text-white shadow-sm'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+            }`}
+          >
+            <ArrowLeftRight className="w-4 h-4 text-blue-400" />
+            <span>مناقلات الفروع ({transfers.length})</span>
+          </button>
         </div>
 
-        <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+        <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap">
+          {branches.length > 1 && (
+            <button
+              type="button"
+              onClick={() => {
+                setTransferForm({
+                  productId: products[0]?.id || '',
+                  sourceBranchId: branches[0]?.id || '',
+                  destBranchId: branches[1]?.id || '',
+                  quantity: '1',
+                  notes: '',
+                });
+                setIsTransferModalOpen(true);
+              }}
+              className="px-3 py-2 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 font-bold text-xs flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer"
+              title="مناقلة مخزنية بين فروع المتجر"
+            >
+              <ArrowLeftRight className="w-4 h-4 text-blue-600" />
+              <span>مناقلة بين الفروع</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => setIsBarcodeScannerOpen(true)}
@@ -484,7 +605,7 @@ export const MerchantWarehouse: React.FC<MerchantWarehouseProps> = ({
             title="مسح الباركود للبحث، توريد البضاعة، أو إضافة صنف غير موجود فوراً"
           >
             <Scan className="w-4 h-4 text-amber-400" />
-            <span>مسح باركود (جرد / إضافة سريعة)</span>
+            <span>مسح باركود (جرد / إضافة)</span>
           </button>
 
           <button
@@ -752,7 +873,7 @@ export const MerchantWarehouse: React.FC<MerchantWarehouseProps> = ({
                               : m.type === 'OUT_SALE'
                               ? 'بيع مباشر POS'
                               : m.type === 'OUT_SHIPPING'
-                              ? 'شحن دارجو'
+                              ? 'شحن DELIVERE'
                               : m.type === 'IN_RETURN'
                               ? 'مرتجع بضاعة'
                               : 'تعديل جرد'}
@@ -772,6 +893,66 @@ export const MerchantWarehouse: React.FC<MerchantWarehouseProps> = ({
                       </tr>
                     );
                   })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Stock Transfers Log View */}
+      {activeSubTab === 'transfers' && (
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="p-3 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
+            <div className="font-bold text-slate-800 text-xs flex items-center gap-2">
+              <ArrowLeftRight className="w-4 h-4 text-blue-500" />
+              <span>سجل مناقلات وتحويلات البضاعة بين الفروع</span>
+            </div>
+            <div className="text-[11px] text-slate-500">
+              إجمالي {transfers.length} مناقلة مسجلة
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-right border-collapse">
+              <thead>
+                <tr className="bg-slate-100/75 border-b border-slate-200 text-[11px] font-black text-slate-600">
+                  <th className="p-3">التاريخ والوقت</th>
+                  <th className="p-3">الصنف</th>
+                  <th className="p-3">الفرع المصدر</th>
+                  <th className="p-3">الفرع الوجهة</th>
+                  <th className="p-3 text-center">الكمية المنقولة</th>
+                  <th className="p-3">الحالة</th>
+                  <th className="p-3">المُنفِّذ</th>
+                  <th className="p-3">الملاحظات</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-xs">
+                {transfers.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="p-8 text-center text-slate-400">
+                      لا توجد مناقلات مخزنية مسجلة بين الفروع بعد
+                    </td>
+                  </tr>
+                ) : (
+                  transfers.map((t) => (
+                    <tr key={t.id} className="hover:bg-slate-50 transition-colors">
+                      <td className="p-3 text-slate-500 font-mono text-[11px]">
+                        {new Date(t.createdAt).toLocaleString('ar-JO')}
+                      </td>
+                      <td className="p-3 font-bold text-slate-900">{t.productName}</td>
+                      <td className="p-3 text-slate-700 font-semibold">{t.sourceBranchName}</td>
+                      <td className="p-3 text-slate-700 font-semibold">{t.destBranchName}</td>
+                      <td className="p-3 text-center font-black text-blue-600">{t.quantity}</td>
+                      <td className="p-3">
+                        <span className="px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                          {t.status === 'COMPLETED' ? 'مكتملة' : t.status}
+                        </span>
+                      </td>
+                      <td className="p-3 text-slate-600">{t.createdBy || 'المسؤول'}</td>
+                      <td className="p-3 text-slate-500">{t.notes || '---'}</td>
+                    </tr>
+                  ))
                 )}
               </tbody>
             </table>
@@ -1184,6 +1365,121 @@ export const MerchantWarehouse: React.FC<MerchantWarehouseProps> = ({
                   className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs shadow-md transition-all cursor-pointer"
                 >
                   تأكيد تعديل الرصيد
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Stock Transfer between Branches */}
+      {isTransferModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl overflow-hidden animate-in fade-in zoom-in-95">
+            <div className="bg-slate-900 text-white p-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <ArrowLeftRight className="w-5 h-5 text-blue-400" />
+                <h3 className="text-sm font-black">مناقلة مخزنية بين الفروع</h3>
+              </div>
+              <button
+                onClick={() => setIsTransferModalOpen(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-all cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleStockTransfer} className="p-5 space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">الصنف المطلوب تحويله *</label>
+                <select
+                  value={transferForm.productId}
+                  onChange={(e) => setTransferForm({ ...transferForm, productId: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs font-bold focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                  required
+                >
+                  <option value="">-- اختر الصنف --</option>
+                  {products.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} ({p.stockQuantity} {p.unit} متوفر)
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">الفرع المصدر *</label>
+                  <select
+                    value={transferForm.sourceBranchId}
+                    onChange={(e) => setTransferForm({ ...transferForm, sourceBranchId: e.target.value })}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs font-bold focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                    required
+                  >
+                    <option value="">-- اختر الفرع المصدر --</option>
+                    {branches.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name} {b.isMain ? '(الرئيسي)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">الفرع الوجهة *</label>
+                  <select
+                    value={transferForm.destBranchId}
+                    onChange={(e) => setTransferForm({ ...transferForm, destBranchId: e.target.value })}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs font-bold focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                    required
+                  >
+                    <option value="">-- اختر الفرع الوجهة --</option>
+                    {branches.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name} {b.isMain ? '(الرئيسي)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">الكمية المنقولة *</label>
+                <input
+                  type="number"
+                  min="1"
+                  required
+                  value={transferForm.quantity}
+                  onChange={(e) => setTransferForm({ ...transferForm, quantity: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm font-mono font-bold focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">ملاحظات المناقلة</label>
+                <input
+                  type="text"
+                  placeholder="سبب التحويل، اسم السائق، أو تفاصيل أخرى..."
+                  value={transferForm.notes}
+                  onChange={(e) => setTransferForm({ ...transferForm, notes: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setIsTransferModalOpen(false)}
+                  className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition-all cursor-pointer"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-black text-xs shadow-md transition-all cursor-pointer flex items-center gap-1.5"
+                >
+                  <ArrowLeftRight className="w-3.5 h-3.5" />
+                  <span>تأكيد المناقلة المخزنية</span>
                 </button>
               </div>
             </form>

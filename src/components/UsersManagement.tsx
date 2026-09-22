@@ -472,6 +472,10 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
 
             {/* Form Fields Body */}
             <form onSubmit={handleSaveUser} className="p-5 space-y-4 overflow-y-auto flex-1">
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900">
+                <strong>تنبيه الأمان والحوكمة:</strong> الحسابات الرئيسية (مدير عام، مدير عمليات، تاجر، كابتن توصيل) يتم إنشاؤها وتفعيلها حصرياً عبر <strong>نظام الدعوات المشفرة (Invitations Manager)</strong> لربط الحساب بالهوية الرسمية والهيكل التنظيمي.
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {/* الصلاحية */}
                 <div>
@@ -486,16 +490,8 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
                         ...formData,
                         role: newRole,
                         roleName:
-                          newRole === 'SUPER_ADMIN'
-                            ? 'المدير العام للنظام (Super Admin)'
-                            : newRole === 'ADMIN'
-                            ? 'مدير العمليات (Admin)'
-                            : newRole === 'OPERATOR'
+                          newRole === 'OPERATOR'
                             ? 'موظف العمليات والمستودع'
-                            : newRole === 'MERCHANT'
-                            ? 'حساب التاجر (Merchant)'
-                            : newRole === 'DRIVER'
-                            ? 'كابتن التوصيل (Driver)'
                             : newRole === 'CASHIER'
                             ? 'موظف الكاشير'
                             : newRole === 'ACCOUNTANT'
@@ -505,13 +501,7 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
                     }}
                     className="w-full text-xs font-bold bg-slate-50 border border-slate-300 rounded-xl p-2.5 text-slate-900 focus:bg-white focus:ring-2 focus:ring-amber-500"
                   >
-                    {isSuperAdmin && (
-                      <option value="SUPER_ADMIN">المدير العام للنظام (Super Admin)</option>
-                    )}
-                    <option value="ADMIN">مدير العمليات (Admin)</option>
                     <option value="OPERATOR">موظف العمليات والمستودع (Operator)</option>
-                    <option value="MERCHANT">حساب التاجر (Merchant)</option>
-                    <option value="DRIVER">كابتن التوصيل (Driver)</option>
                     <option value="CASHIER">موظف الكاشير (Cashier)</option>
                     <option value="ACCOUNTANT">محاسب مالي (Accountant)</option>
                   </select>

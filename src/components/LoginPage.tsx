@@ -1,19 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import {
-  PackageCheck,
-  Lock,
-  Mail,
-  Eye,
-  EyeOff,
-  LogIn,
-  AlertCircle,
-  RefreshCw,
-  ShieldCheck,
-  Ticket,
-} from 'lucide-react';
+import { Eye, EyeOff, RefreshCw, AlertCircle } from 'lucide-react';
 import { User } from '../types/logistics';
 import { supabase, resolveSupabaseOAuthSession } from '../lib/supabase';
 import { storeDelivereSession } from '../lib/auth';
+import { useI18n } from '../lib/i18n';
 
 interface LoginPageProps {
   onLoginSuccess: (user: User, token: string) => void;
@@ -24,7 +14,7 @@ interface LoginPageProps {
 const DEFAULT_SUPER_ADMIN: User = {
   id: 'u-super-1',
   name: 'المدير العام للنظام (Super Admin)',
-  email: 'admin@dargo-tms.io',
+  email: 'admin@delivere.io',
   phone: '0790000001',
   role: 'SUPER_ADMIN',
   roleName: 'المدير العام للنظام (Super Admin)',
@@ -53,6 +43,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({
   onLoginSuccess,
   onOpenInvite,
 }) => {
+  const { t, language, toggleLanguage, direction } = useI18n();
+
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -73,14 +65,18 @@ export const LoginPage: React.FC<LoginPageProps> = ({
       const urlError = params.get('error');
       if (urlError) {
         if (urlError === 'REGISTRATION_GATED' || urlError === 'USER_NOT_FOUND') {
-          setErrorMessage('حساب Google هذا غير مسجل في النظام. المنظومة تتطلب حساباً مفعلاً أو دعوة مسبقة من إدارة العمليات.');
+          setErrorMessage(
+            language === 'ar'
+              ? 'حساب Google هذا غير مسجل في النظام. المنظومة تتطلب حساباً مفعلاً أو دعوة مسبقة من إدارة العمليات.'
+              : 'This Google account is not registered. An active account or invitation is required.'
+          );
           setShowTokenPrompt(true);
         } else {
           setErrorMessage(decodeURIComponent(urlError));
         }
       }
     }
-  }, []);
+  }, [language]);
 
   // Listen for Supabase Google OAuth callback on client redirect
   useEffect(() => {
@@ -102,7 +98,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
           const hashParams = new URLSearchParams(window.location.hash.substring(1));
           const desc = hashParams.get('error_description') || hashParams.get('error');
           if (!isCancelled && desc) {
-            setErrorMessage(`خطأ في مصادقة Google: ${decodeURIComponent(desc)}`);
+            setErrorMessage(`${t.auth.retry}: ${decodeURIComponent(desc)}`);
           }
           return;
         }
@@ -146,21 +142,33 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
             if (!isCancelled) {
               if (data.code === 'REGISTRATION_GATED' || data.code === 'USER_NOT_FOUND') {
-                setErrorMessage('حساب Google هذا غير مسجل في المنظومة. يرجى التأكد من الحصول على دعوة مسبقة أو التواصل مع الإدارة.');
+                setErrorMessage(
+                  language === 'ar'
+                    ? 'حساب Google هذا غير مسجل في المنظومة. يرجى التأكد من الحصول على دعوة مسبقة أو التواصل مع الإدارة.'
+                    : 'Google account not registered. Please ensure you have an invite code.'
+                );
                 setShowTokenPrompt(true);
               } else if (data.code === 'IDENTITY_CONFLICT') {
-                setErrorMessage('هذا الحساب مرتبط بهوية تسجيل دخول مختلفة. يرجى استخدام نفس الحساب المرتبط أساساً.');
+                setErrorMessage(
+                  language === 'ar'
+                    ? 'هذا الحساب مرتبط بهوية تسجيل دخول مختلفة. يرجى استخدام نفس الحساب المرتبط أساساً.'
+                    : 'Account linked to a different login identity.'
+                );
               } else if (data.code === 'ACCOUNT_INACTIVE') {
-                setErrorMessage('تم تعطيل أو تعليق هذا الحساب. يرجى مراجعة إدارة العمليات.');
+                setErrorMessage(
+                  language === 'ar'
+                    ? 'تم تعطيل أو تعليق هذا الحساب. يرجى مراجعة إدارة العمليات.'
+                    : 'Account disabled. Please contact operations admin.'
+                );
               } else {
-                setErrorMessage(data.error || 'فشل تسجيل الدخول عبر Google');
+                setErrorMessage(data.error || 'Google login failed');
               }
             }
           }
         }
       } catch (err: any) {
         if (!isCancelled) {
-          setErrorMessage(err.message || 'خطأ أثناء معالجة تسجيل الدخول عبر Google');
+          setErrorMessage(err.message || 'Error processing Google sign-in');
         }
       } finally {
         if (!isCancelled) setIsGoogleLoading(false);
@@ -172,11 +180,15 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     return () => {
       isCancelled = true;
     };
-  }, [onLoginSuccess, rememberMe]);
+  }, [onLoginSuccess, rememberMe, language, t]);
 
   const handleGoogleLogin = async () => {
     if (!supabase) {
-      setErrorMessage('خدمة Supabase غير متوفرة حالياً في بيئة العميل');
+      setErrorMessage(
+        language === 'ar'
+          ? 'خدمة Supabase غير متوفرة حالياً'
+          : 'Supabase client service unavailable'
+      );
       return;
     }
     setIsGoogleLoading(true);
@@ -199,7 +211,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
       if (error) throw error;
     } catch (err: any) {
       setIsGoogleLoading(false);
-      setErrorMessage(err.message || 'فشل بدء تسجيل الدخول عبر Google');
+      setErrorMessage(err.message || 'Failed to initiate Google login');
     }
   };
 
@@ -246,10 +258,20 @@ export const LoginPage: React.FC<LoginPageProps> = ({
         const data = await res.json().catch(() => ({}));
 
         if (!res.ok) {
-          if (data.code === 'ACCOUNT_INACTIVE') {
-            setErrorMessage('تم تعطيل هذا الحساب. يرجى مراجعة إدارة العمليات.');
+          if (data.code === 'ACCOUNT_INACTIVE' || data.code === 'ACCOUNT_DISABLED') {
+            setErrorMessage(
+              data.error ||
+                (language === 'ar'
+                  ? 'هذا الحساب موقوف. يرجى التواصل مع مسؤول النظام.'
+                  : 'Account disabled. Please contact system admin.')
+            );
           } else {
-            setErrorMessage(data.error || 'بيانات الدخول غير صحيحة. يرجى التأكد من اسم المستخدم وكلمة المرور.');
+            setErrorMessage(
+              data.error ||
+                (language === 'ar'
+                  ? 'بيانات الدخول غير صحيحة. يرجى التأكد من اسم المستخدم وكلمة المرور.'
+                  : 'Invalid credentials. Please verify identifier and password.')
+            );
           }
           return false;
         }
@@ -268,7 +290,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     // Emergency master account matching for network edge cold starts
     const cleanLower = targetId.trim().toLowerCase();
     if (
-      (cleanLower === 'admin@dargo-tms.io' || cleanLower === '0790000001' || cleanLower === 'admin') &&
+      (cleanLower === 'admin@delivere.io' || cleanLower === '0790000001' || cleanLower === 'admin') &&
       targetPass === 'admin123'
     ) {
       const emergencyToken = `delivere_jwt_${DEFAULT_SUPER_ADMIN.id}_emergency_${Date.now()}`;
@@ -277,7 +299,11 @@ export const LoginPage: React.FC<LoginPageProps> = ({
       return true;
     }
 
-    setErrorMessage('تعذر الاتصال بالخادم مؤقتاً. يرجى إعادة المحاولة.');
+    setErrorMessage(
+      language === 'ar'
+        ? 'تعذر الاتصال بالخادم مؤقتاً. يرجى إعادة المحاولة.'
+        : 'Server connection timed out. Please retry.'
+    );
     return false;
   };
 
@@ -289,12 +315,18 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     const cleanPassword = password.trim();
 
     if (!cleanIdentifier) {
-      setErrorMessage('يرجى إدخال البريد الإلكتروني أو رقم الهاتف.');
+      setErrorMessage(
+        language === 'ar'
+          ? 'يرجى إدخال البريد الإلكتروني أو رقم الهاتف'
+          : 'Please enter email or phone number'
+      );
       return;
     }
 
     if (!cleanPassword) {
-      setErrorMessage('يرجى إدخال كلمة المرور.');
+      setErrorMessage(
+        language === 'ar' ? 'يرجى إدخال كلمة المرور' : 'Please enter password'
+      );
       return;
     }
 
@@ -309,66 +341,177 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     }
   };
 
-  return (
-    <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 sm:p-6 selection:bg-amber-500 selection:text-slate-950" dir="rtl">
-      <div className="w-full max-w-md space-y-6">
-        {/* Brand Header */}
-        <div className="text-center space-y-2">
-          <div className="w-14 h-14 bg-gradient-to-tr from-amber-500 to-amber-400 rounded-2xl mx-auto flex items-center justify-center text-slate-950 shadow-xl shadow-amber-500/20">
-            <PackageCheck className="w-7 h-7 stroke-[2.4]" />
-          </div>
-          <h1 className="text-2xl font-black tracking-tight text-white flex items-center justify-center gap-2">
-            <span>DELIVERE</span>
-            <span className="text-[11px] bg-amber-500/10 text-amber-400 font-mono font-bold px-2 py-0.5 rounded-md border border-amber-500/20">
-              LOGISTICS TMS
-            </span>
-          </h1>
-          <p className="text-xs text-slate-400 max-w-xs mx-auto">
-            منظومة إدارة الشحنات، أسطول النقل، والمستودعات والتسويات المالية
-          </p>
-        </div>
+  const isArabic = language === 'ar';
+  const heroImage = isArabic ? '/delivere-login-final-ar.jpg' : '/delivere-login-final-en.jpg';
 
-        {/* Main Authentication Card */}
-        <div className="bg-slate-900/90 rounded-2xl border border-slate-800 shadow-2xl p-6 sm:p-7 space-y-5">
-          <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
-            <div>
-              <h2 className="text-sm font-bold text-white">تسجيل الدخول للمنظومة</h2>
-              <p className="text-xs text-slate-400 mt-0.5">
-                سجّل الدخول للوصول المباشر إلى مساحة العمل الخاصة بك
-              </p>
-            </div>
-            <div className="w-8 h-8 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-amber-400 shrink-0">
-              <Lock className="w-4 h-4" />
-            </div>
+  return (
+    <div
+      dir={direction}
+      className={`min-h-dvh w-full relative bg-[#060a14] selection:bg-amber-500 selection:text-slate-950 flex flex-col justify-between p-6 sm:p-10 lg:p-14 overflow-hidden ${
+        isArabic ? 'items-start lg:items-end' : 'items-start'
+      }`}
+    >
+      {/* Background Image: strictly TWO language-aware hero references */}
+      <div
+        className={`absolute inset-0 z-0 bg-cover ${
+          isArabic ? 'bg-left lg:bg-center' : 'bg-right lg:bg-center'
+        } pointer-events-none`}
+        style={{
+          backgroundImage: `url('${heroImage}')`,
+        }}
+      />
+
+      {/* Smooth Ambient Gradient Mask for Form Region */}
+      <div
+        className={`absolute inset-0 z-0 bg-gradient-to-t ${
+          isArabic ? 'lg:bg-gradient-to-l' : 'lg:bg-gradient-to-r'
+        } from-[#060a14] via-[#060a14]/90 lg:via-[#060a14]/75 to-transparent pointer-events-none`}
+      />
+
+      {/* Header Row: DELIVERE Brand & Language Switcher */}
+      <header
+        className={`relative z-10 flex items-center justify-between w-full max-w-[420px] ${
+          isArabic ? 'lg:mr-0 lg:ml-auto' : 'lg:ml-0 lg:mr-auto'
+        }`}
+      >
+        <span className="text-xl font-black tracking-tight text-white select-none">
+          DELIVERE
+        </span>
+
+        <button
+          type="button"
+          onClick={toggleLanguage}
+          className="text-xs font-semibold text-slate-300 hover:text-white transition-colors cursor-pointer py-1 px-2.5 rounded-md hover:bg-slate-800/60"
+        >
+          {language === 'ar' ? 'EN' : 'العربية'}
+        </button>
+      </header>
+
+      {/* Main Interactive Login Interface (Sits on dark region: LEFT in English, RIGHT in Arabic) */}
+      <main
+        className={`relative z-10 w-full max-w-[400px] sm:max-w-[420px] my-auto py-8 ${
+          isArabic ? 'lg:mr-0 lg:ml-auto' : 'lg:ml-0 lg:mr-auto'
+        }`}
+      >
+        <div className="space-y-6">
+          {/* Welcome Titles */}
+          <div className="space-y-1">
+            <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
+              {t.auth.welcomeBack}
+            </h1>
+            <p className="text-xs sm:text-sm text-slate-400 font-normal">
+              {t.auth.signInToManage}
+            </p>
           </div>
 
           {/* Error Message Banner */}
           {errorMessage && (
-            <div className="bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs p-3.5 rounded-xl space-y-2.5 animate-in fade-in duration-200">
-              <div className="flex items-start gap-2.5">
-                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-                <div className="flex-1 font-medium leading-relaxed">{errorMessage}</div>
-              </div>
-              <div className="flex items-center gap-2 pt-1 border-t border-rose-500/20">
-                <button
-                  type="button"
-                  onClick={(e) => handleLogin(e)}
-                  disabled={isLoading}
-                  className="px-2.5 py-1 bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 rounded-lg text-[11px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-                >
-                  <RefreshCw className={`w-3 h-3 ${isLoading ? 'animate-spin' : ''}`} />
-                  <span>إعادة المحاولة</span>
-                </button>
-              </div>
+            <div className="bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs p-3 rounded-lg flex items-start gap-2.5 animate-in fade-in duration-150">
+              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+              <div className="flex-1 font-medium leading-relaxed">{errorMessage}</div>
+              <button
+                type="button"
+                onClick={(e) => handleLogin(e)}
+                disabled={isLoading}
+                className="text-rose-200 hover:text-white text-[11px] font-bold underline shrink-0 cursor-pointer"
+              >
+                {t.auth.retry}
+              </button>
             </div>
           )}
 
-          {/* Google Sign-in Primary Button */}
+          {/* Primary Email / Password Form */}
+          <form onSubmit={handleLogin} className="space-y-4">
+            {/* Identifier Field */}
+            <div className="space-y-1">
+              <label htmlFor="auth-identifier" className="text-xs font-medium text-slate-300 block">
+                {t.auth.identifierLabel}
+              </label>
+              <input
+                id="auth-identifier"
+                type="text"
+                required
+                autoComplete="username email"
+                value={identifier}
+                onChange={(e) => setIdentifier(e.target.value)}
+                placeholder={t.auth.identifierPlaceholder}
+                className="w-full bg-slate-950/80 border border-slate-800 focus:border-amber-500 focus:ring-1 focus:ring-amber-500/30 text-white placeholder-slate-600 rounded-lg px-3.5 py-2.5 text-xs font-mono font-normal transition-colors outline-none text-left dir-ltr min-h-[44px]"
+              />
+            </div>
+
+            {/* Password Field */}
+            <div className="space-y-1">
+              <label htmlFor="auth-password" className="text-xs font-medium text-slate-300 block">
+                {t.auth.passwordLabel}
+              </label>
+              <div className="relative">
+                <input
+                  id="auth-password"
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder={t.auth.passwordPlaceholder}
+                  className="w-full bg-slate-950/80 border border-slate-800 focus:border-amber-500 focus:ring-1 focus:ring-amber-500/30 text-white placeholder-slate-600 rounded-lg px-3.5 py-2.5 pl-10 text-xs font-mono font-normal transition-colors outline-none text-left dir-ltr min-h-[44px]"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="p-2 text-slate-500 hover:text-slate-300 absolute left-2 top-1/2 -translate-y-1/2 transition-colors cursor-pointer"
+                  title={showPassword ? t.auth.hidePassword : t.auth.showPassword}
+                >
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            {/* Remember Me */}
+            <div className="pt-0.5">
+              <label className="flex items-center gap-2 cursor-pointer select-none text-xs text-slate-400 hover:text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  className="rounded border-slate-800 bg-slate-950 text-amber-500 focus:ring-amber-500/30 w-4 h-4"
+                />
+                <span>{t.auth.rememberMe}</span>
+              </label>
+            </div>
+
+            {/* Submit Button */}
+            <button
+              type="submit"
+              disabled={isLoading || isGoogleLoading}
+              className="w-full bg-amber-500 hover:bg-amber-400 active:scale-[0.99] disabled:opacity-50 text-slate-950 font-bold text-xs py-2.5 rounded-lg flex items-center justify-center transition-colors cursor-pointer min-h-[44px]"
+            >
+              {isLoading ? (
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+                  <span>
+                    {serverState === 'reconnecting' ? t.auth.reconnecting : t.auth.signingIn}
+                  </span>
+                </div>
+              ) : (
+                <span>{t.auth.signInButton}</span>
+              )}
+            </button>
+          </form>
+
+          {/* Separator */}
+          <div className="relative flex items-center justify-center py-0.5">
+            <div className="border-t border-slate-800/80 w-full" />
+            <span className="bg-[#060a14] px-2.5 text-[11px] text-slate-500 font-medium">
+              {t.auth.orDivider}
+            </span>
+          </div>
+
+          {/* Google OAuth Button */}
           <button
             type="button"
             onClick={handleGoogleLogin}
             disabled={isLoading || isGoogleLoading}
-            className="w-full bg-slate-950 hover:bg-slate-800 text-slate-100 border border-slate-700/80 hover:border-slate-600 font-bold text-xs py-3 px-4 rounded-xl flex items-center justify-center gap-3 transition-all cursor-pointer disabled:opacity-50 active:scale-[0.99] shadow-sm"
+            className="w-full bg-slate-900/90 hover:bg-slate-800 text-slate-200 border border-slate-800 hover:border-slate-700 font-medium text-xs py-2.5 px-4 rounded-lg flex items-center justify-center gap-2.5 transition-colors cursor-pointer disabled:opacity-50 min-h-[44px]"
           >
             {isGoogleLoading ? (
               <RefreshCw className="w-4 h-4 animate-spin text-amber-400" />
@@ -392,114 +535,26 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                 />
               </svg>
             )}
-            <span>المتابعة عبر Google</span>
+            <span>{t.auth.googleButton}</span>
           </button>
 
-          {/* Visual Divider */}
-          <div className="relative flex items-center justify-center py-1">
-            <div className="border-t border-slate-800 w-full" />
-            <span className="bg-slate-900 px-3 text-[11px] text-slate-500 font-medium whitespace-nowrap">
-              أو تسجيل الدخول بالبريد / الهاتف
-            </span>
-          </div>
-
-          {/* Email / Password Form */}
-          <form onSubmit={handleLogin} className="space-y-4">
-            {/* Identifier Field */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-300 block">
-                البريد الإلكتروني أو رقم الهاتف:
-              </label>
-              <div className="relative">
-                <input
-                  type="text"
-                  required
-                  value={identifier}
-                  onChange={(e) => setIdentifier(e.target.value)}
-                  placeholder="admin@dargo-tms.io أو 079XXXXXXX"
-                  className="w-full bg-slate-950 border border-slate-700/80 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 text-white placeholder-slate-500 rounded-xl px-3.5 py-2.5 pl-10 text-xs font-mono font-medium transition-all outline-none text-left dir-ltr"
-                />
-                <Mail className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-              </div>
-            </div>
-
-            {/* Password Field */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-300 block">
-                كلمة المرور:
-              </label>
-              <div className="relative">
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
-                  className="w-full bg-slate-950 border border-slate-700/80 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 text-white placeholder-slate-500 rounded-xl px-3.5 py-2.5 pl-10 text-xs font-mono font-medium transition-all outline-none text-left dir-ltr"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="p-1 text-slate-500 hover:text-slate-300 absolute left-2.5 top-1/2 -translate-y-1/2 transition-colors cursor-pointer"
-                  title={showPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
-                >
-                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
-
-            {/* Remember Me */}
-            <div className="flex items-center justify-between text-xs pt-0.5">
-              <label className="flex items-center gap-2 cursor-pointer select-none text-slate-400 hover:text-slate-300">
-                <input
-                  type="checkbox"
-                  checked={rememberMe}
-                  onChange={(e) => setRememberMe(e.target.checked)}
-                  className="rounded border-slate-700 bg-slate-950 text-amber-500 focus:ring-amber-500/30"
-                />
-                <span>تذكر جلستي على هذا الجهاز</span>
-              </label>
-            </div>
-
-            {/* Submit Button */}
-            <button
-              type="submit"
-              disabled={isLoading || isGoogleLoading}
-              className="w-full bg-amber-500 hover:bg-amber-400 active:scale-[0.99] disabled:opacity-50 disabled:pointer-events-none text-slate-950 font-black text-xs sm:text-sm py-3 rounded-xl shadow-lg shadow-amber-500/10 flex items-center justify-center gap-2 transition-all cursor-pointer"
-            >
-              {isLoading ? (
-                <>
-                  <div className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
-                  <span>
-                    {serverState === 'reconnecting'
-                      ? 'جاري تأكيد الاتصال بالخادم...'
-                      : 'جاري التحقق وتسجيل الدخول...'}
-                  </span>
-                </>
-              ) : (
-                <>
-                  <LogIn className="w-4 h-4 stroke-[2.4]" />
-                  <span>تسجيل الدخول</span>
-                </>
-              )}
-            </button>
-          </form>
-
-          {/* Invitation Activation Toggle */}
-          <div className="pt-2 border-t border-slate-800/80 text-center space-y-2">
+          {/* Invitation Activation Flow (Quiet Link) */}
+          <div className="pt-2 text-center">
             {!showTokenPrompt ? (
               <button
                 type="button"
                 onClick={() => setShowTokenPrompt(true)}
-                className="text-xs text-amber-400/90 hover:text-amber-300 font-bold hover:underline cursor-pointer inline-flex items-center gap-1.5"
+                className="text-xs text-slate-400 hover:text-amber-400 font-medium hover:underline cursor-pointer"
               >
-                <Ticket className="w-3.5 h-3.5" />
-                <span>لديك رمز دعوة للانضمام؟ اضغط هنا للتفعيل</span>
+                {t.auth.redeemInvitePrompt}
               </button>
             ) : (
-              <form onSubmit={handleRedeemInviteToken} className="space-y-2 bg-slate-950/90 border border-slate-800 p-3 rounded-xl">
-                <div className="text-[11px] font-bold text-slate-300 text-right">
-                  أدخل رمز الدعوة أو الصق رابط الدعوة:
+              <form
+                onSubmit={handleRedeemInviteToken}
+                className="space-y-2 bg-slate-950/90 border border-slate-800 p-3 rounded-lg text-start"
+              >
+                <div className="text-[11px] font-medium text-slate-300">
+                  {t.auth.redeemInviteInputPlaceholder}
                 </div>
                 <div className="flex items-center gap-1.5">
                   <input
@@ -507,36 +562,39 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                     required
                     value={inviteTokenInput}
                     onChange={(e) => setInviteTokenInput(e.target.value)}
-                    placeholder="رمز أو رابط الدعوة..."
-                    className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg px-2.5 py-1.5 text-xs font-mono focus:outline-none focus:border-amber-500 text-left dir-ltr"
+                    placeholder="token..."
+                    className="w-full bg-slate-900 border border-slate-800 text-white rounded-md px-2.5 py-1.5 text-xs font-mono focus:outline-none focus:border-amber-500 text-left dir-ltr"
                   />
                   <button
                     type="submit"
-                    className="bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold px-3 py-1.5 rounded-lg shrink-0 cursor-pointer"
+                    className="bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold px-3 py-1.5 rounded-md shrink-0 cursor-pointer"
                   >
-                    تفعيل
+                    {t.auth.activateButton}
                   </button>
                 </div>
-                <div className="text-right">
+                <div>
                   <button
                     type="button"
                     onClick={() => setShowTokenPrompt(false)}
                     className="text-[10px] text-slate-500 hover:text-slate-400 cursor-pointer"
                   >
-                    إلغاء
+                    {t.auth.cancelButton}
                   </button>
                 </div>
               </form>
             )}
           </div>
         </div>
+      </main>
 
-        {/* Reassurance Footer */}
-        <div className="flex items-center justify-center gap-1.5 text-[11px] text-slate-500">
-          <ShieldCheck className="w-3.5 h-3.5 text-slate-400" />
-          <span>اتصال مشفر ومحمي بموجب معايير DELIVERE للخدمات اللوجستية</span>
-        </div>
-      </div>
+      {/* Footer Space (Intentional Empty Spacing) */}
+      <footer
+        className={`relative z-10 w-full max-w-[420px] text-[11px] text-slate-500 font-mono ${
+          isArabic ? 'lg:mr-0 lg:ml-auto' : 'lg:ml-0 lg:mr-auto'
+        }`}
+      >
+        {/* Intentionally minimal */}
+      </footer>
     </div>
   );
 };

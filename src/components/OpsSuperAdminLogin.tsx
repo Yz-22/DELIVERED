@@ -75,8 +75,8 @@ export const OpsSuperAdminLogin: React.FC<OpsSuperAdminLoginProps> = ({
         return;
       }
 
-      if (data?.error) {
-        setErrorMessage(data.error);
+      if (!res.ok || data?.error) {
+        setErrorMessage(data?.error || 'بيانات الدخول غير صحيحة أو الحساب موقوف.');
         setIsLoading(false);
         return;
       }

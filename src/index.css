@@ -24,6 +24,7 @@
     /* Brand & Accent Tokens */
     --color-brand-primary: #f59e0b;
     --color-brand-hover: #fbbf24;
+    --color-brand-active: #d97706;
     --color-brand-subtle: rgba(245, 158, 11, 0.12);
 
     /* Semantic Status Tokens */
@@ -32,6 +33,9 @@
     --color-status-danger: #ef4444;
     --color-status-info: #0ea5e9;
     --color-status-purple: #8b5cf6;
+
+    /* Accessible Focus Token */
+    --color-focus-ring: rgba(245, 158, 11, 0.5);
   }
 
   body {
@@ -46,6 +50,27 @@
   /* Monospace numbers for monetary and barcode precision */
   .font-tabular {
     font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Accessible Focus Ring Utility */
+.focus-ring {
+  outline: none;
+}
+.focus-ring:focus-visible {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: 2px;
+}
+
+/* Reduced Motion Safety */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 

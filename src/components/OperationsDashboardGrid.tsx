@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Banknote,
   ListOrdered,
@@ -14,9 +14,14 @@ import {
   ChevronDown,
   ArrowRight,
   TrendingUp,
+  AlertOctagon,
+  UserX,
+  Layers,
 } from 'lucide-react';
 import { Order, OrderStatus } from '../types/logistics';
 import { formatCurrency } from '../utils/logisticsHelpers';
+import { AttentionSummaryDTO } from '../types/operationalTasks';
+import { operationalApiClient } from '../services/operationalApiClient';
 
 interface OperationsDashboardGridProps {
   orders: Order[];
@@ -30,6 +35,14 @@ export const OperationsDashboardGrid: React.FC<OperationsDashboardGridProps> = (
   onNavigateToSection,
 }) => {
   const [dateFilter, setDateFilter] = useState<'today' | 'this_week' | 'this_month' | 'all'>('this_month');
+  const [attentionSummary, setAttentionSummary] = useState<AttentionSummaryDTO | null>(null);
+
+  useEffect(() => {
+    operationalApiClient
+      .getAttentionSummary()
+      .then((data) => setAttentionSummary(data))
+      .catch((err) => console.error('Failed to load attention summary in grid:', err));
+  }, []);
 
   // Compute live counts from orders
   const totalOrders = orders.length;
@@ -283,6 +296,30 @@ export const OperationsDashboardGrid: React.FC<OperationsDashboardGridProps> = (
           <div className="text-xl font-black font-mono">{postponedOrders + cancelledOrders}</div>
         </div>
       </div>
+
+      {/* Authoritative Operational Attention Summary Ribbon (Phase 3C) */}
+      {attentionSummary && (
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-3.5 shadow-md flex flex-wrap items-center justify-between gap-3 text-white">
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse" />
+            <span className="text-xs font-black">غرفة المهام والاستثناءات التشغيلية الحية:</span>
+            <span className="text-xs text-slate-400">
+              {attentionSummary.activeExceptionsCount} استثناء مفتوح • {attentionSummary.unassignedTasksCount} مهمة غير مسندة
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onNavigateToSection && onNavigateToSection('operations')}
+              className="bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 cursor-pointer font-bold"
+            >
+              <span>فتح صندوق المهام والاستثناءات</span>
+              <ArrowRight className="w-3.5 h-3.5 rtl:rotate-180" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Fourth Row: Manifests & Statements Overview (Matching Green/Blue blocks in image 3 & 4) */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

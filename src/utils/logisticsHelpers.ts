@@ -176,7 +176,7 @@ export function buildMerchantWhatsAppMessage(
 }
 
 export function formatCurrency(amount: number): string {
-  return `${amount.toFixed(2)} د.أ`;
+  return `${Number(amount || 0).toFixed(3)} د.أ`;
 }
 
 export function formatDate(dateString: string): string {
