@@ -3,6 +3,11 @@ import { X, Plus, Package, MapPin, Phone, DollarSign, UserCheck, Shield, Store, 
 import { User } from '../types/logistics';
 import { GOVERNORATES } from '../utils/logisticsHelpers';
 
+import {
+  validateAndNormalizeJordanPhone,
+  validateAndNormalizeSecondaryJordanPhone,
+} from '../utils/jordanPhone';
+
 interface CreateOrderModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -164,14 +169,37 @@ export const CreateOrderModal: React.FC<CreateOrderModalProps> = ({
     });
   };
 
+  const [formError, setFormError] = useState<string | null>(null);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    setFormError(null);
+
     if (!formData.recipientName || !formData.recipientPhone || !formData.area) {
-      alert('يرجى ملء اسم المستلم، رقم الهاتف، والمنطقة');
+      setFormError('يرجى ملء اسم المستلم، رقم الهاتف، والمنطقة');
       return;
     }
+
+    const phoneVal = validateAndNormalizeJordanPhone(formData.recipientPhone, 'رقم هاتف المستلم');
+    if (!phoneVal.isValid || !phoneVal.canonicalPhone) {
+      setFormError(phoneVal.error || 'رقم الهاتف يجب أن يكون رقمًا أردنيًا صحيحًا من 10 أرقام مثل 0791234567، أو بصيغة +962 بدون الصفر الأول.');
+      return;
+    }
+
+    let canonicalPhoneAlt = '';
+    if (formData.recipientPhoneAlt && formData.recipientPhoneAlt.trim() !== '') {
+      const altVal = validateAndNormalizeSecondaryJordanPhone(formData.recipientPhoneAlt);
+      if (!altVal.isValid) {
+        setFormError(altVal.error || 'رقم الهاتف الإضافي غير صالح');
+        return;
+      }
+      canonicalPhoneAlt = altVal.canonicalPhone || '';
+    }
+
     onSubmit({
       ...formData,
+      recipientPhone: phoneVal.canonicalPhone,
+      recipientPhoneAlt: canonicalPhoneAlt,
       merchantCollection: parseFloat(formData.merchantCollection) || 0,
       deliveryFee: parseFloat(formData.deliveryFee) || 0,
       totalCollection: parseFloat(formData.totalCollection) || 0,
@@ -206,6 +234,13 @@ export const CreateOrderModal: React.FC<CreateOrderModalProps> = ({
 
         {/* Form Body */}
         <form onSubmit={handleSubmit} className="p-6 space-y-5 max-h-[80vh] overflow-y-auto">
+          {formError && (
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 flex items-center gap-2 font-medium">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>{formError}</span>
+            </div>
+          )}
+
           {/* Section 1: Merchant & Reference */}
           <div className="space-y-3">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

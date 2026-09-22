@@ -29,6 +29,12 @@ import {
   PermissionCategory,
 } from '../types/logistics';
 import { getSupabaseConfig } from '../lib/supabase';
+import {
+  classifyManagedUser,
+  isOperationsAdmin,
+  isSuperAdminUser,
+  isStaffOrPosUser,
+} from '../utils/userClassification';
 
 interface PermissionsManagerProps {
   users: User[];
@@ -52,7 +58,7 @@ export const PermissionsManager: React.FC<PermissionsManagerProps> = ({
   // Category tabs
   const [selectedCategory, setSelectedCategory] = useState<PermissionCategory | 'ALL'>('ALL');
   const [selectedUser, setSelectedUser] = useState<User | null>(
-    users.find((u) => u.role === 'OPERATOR' || u.role === 'ADMIN') || users[0] || null
+    users.find((u) => isOperationsAdmin(u) || isSuperAdminUser(u)) || users[0] || null
   );
   const [isCopiedSql, setIsCopiedSql] = useState(false);
   const [activeTab, setActiveTab] = useState<'HIERARCHY' | 'MATRIX' | 'SUPABASE_SQL'>('HIERARCHY');
@@ -73,15 +79,12 @@ export const PermissionsManager: React.FC<PermissionsManagerProps> = ({
   const isSuperAdmin = currentUser?.role === 'SUPER_ADMIN';
 
   // Defense-in-depth: Non-superadmins must NEVER see SUPER_ADMIN users
-  const safeUsers = users.filter((u) => isSuperAdmin || u.role !== 'SUPER_ADMIN');
+  const safeUsers = users.filter((u) => isSuperAdmin || !isSuperAdminUser(u));
 
-  // Strictly separate Roles
-  const superAdmins = safeUsers.filter((u) => u.role === 'SUPER_ADMIN');
-  const orgAdmins = safeUsers.filter((u) => u.role === 'ADMIN');
-  const operationsAdmins = safeUsers.filter((u) => u.role === 'OPERATOR');
-  const staffAndSubUsers = safeUsers.filter(
-    (u) => u.role !== 'SUPER_ADMIN' && u.role !== 'ADMIN' && u.role !== 'OPERATOR'
-  );
+  // Strictly separate Roles using canonical classification single source of truth
+  const superAdmins = safeUsers.filter((u) => classifyManagedUser(u) === 'SUPER_ADMIN');
+  const operationsAdmins = safeUsers.filter((u) => classifyManagedUser(u) === 'OPERATIONS_ADMIN');
+  const staffAndSubUsers = safeUsers.filter((u) => classifyManagedUser(u) === 'STAFF_POS');
 
   // Group permissions by category
   const categories: { key: PermissionCategory; label: string }[] = [
@@ -174,7 +177,7 @@ CREATE INDEX IF NOT EXISTS idx_pos_sales_merchant_date ON public.pos_sales(merch
       }
     }
     // If user is Operations Admin, check their maxAllowedPermissions ceiling
-    if (user.role === 'OPERATOR' && user.maxAllowedPermissions && user.maxAllowedPermissions.length > 0) {
+    if (isOperationsAdmin(user) && user.maxAllowedPermissions && user.maxAllowedPermissions.length > 0) {
       return !user.maxAllowedPermissions.includes(permKey);
     }
     return false;
@@ -343,15 +346,17 @@ CREATE INDEX IF NOT EXISTS idx_pos_sales_merchant_date ON public.pos_sales(merch
                   </div>
                 </div>
                 <span className="text-xs bg-amber-50 text-amber-800 font-bold px-2 py-0.5 rounded-lg border border-amber-200">
-                  {orgAdmins.length}
+                  {operationsAdmins.length}
                 </span>
               </div>
 
-              <div className="space-y-2">
-                {orgAdmins.length === 0 ? (
-                  <p className="text-xs text-slate-400 p-3">لا يوجد حسابات مدراء آخرين</p>
+              <div className="space-y-2 max-h-[420px] overflow-y-auto scrollbar-thin">
+                {operationsAdmins.length === 0 ? (
+                  <div className="p-4 text-center text-xs text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                    لا يوجد حسابات مدراء مؤسسة
+                  </div>
                 ) : (
-                  orgAdmins.map((u) => (
+                  operationsAdmins.map((u) => (
                     <div
                       key={u.id}
                       onClick={() => setSelectedUser(u)}
@@ -392,35 +397,41 @@ CREATE INDEX IF NOT EXISTS idx_pos_sales_merchant_date ON public.pos_sales(merch
               </span>
             </div>
 
-            <div className="space-y-2">
-              {operationsAdmins.map((u) => {
-                const subStaffCount = users.filter((sub) => sub.parentUserId === u.id).length;
-                return (
-                  <div
-                    key={u.id}
-                    onClick={() => setSelectedUser(u)}
-                    className={`p-3.5 rounded-2xl border transition-all cursor-pointer ${
-                      selectedUser?.id === u.id
-                        ? 'bg-indigo-50/80 border-indigo-300 ring-2 ring-indigo-400/20 shadow-xs'
-                        : 'bg-slate-50 border-slate-200 hover:bg-slate-100/80'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-black text-slate-900">{u.name}</span>
-                      <span className="text-[10px] bg-indigo-600 text-white font-bold px-2 py-0.5 rounded-md">
-                        أدمن عمليات
-                      </span>
+            <div className="space-y-2 max-h-[420px] overflow-y-auto scrollbar-thin">
+              {operationsAdmins.length === 0 ? (
+                <div className="p-4 text-center text-xs text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                  لا يوجد حسابات أدمن عمليات مسجلة
+                </div>
+              ) : (
+                operationsAdmins.map((u) => {
+                  const subStaffCount = users.filter((sub) => sub.parentUserId === u.id).length;
+                  return (
+                    <div
+                      key={u.id}
+                      onClick={() => setSelectedUser(u)}
+                      className={`p-3.5 rounded-2xl border transition-all cursor-pointer ${
+                        selectedUser?.id === u.id
+                          ? 'bg-indigo-50/80 border-indigo-300 ring-2 ring-indigo-400/20 shadow-xs'
+                          : 'bg-slate-50 border-slate-200 hover:bg-slate-100/80'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-black text-slate-900">{u.name}</span>
+                        <span className="text-[10px] bg-indigo-600 text-white font-bold px-2 py-0.5 rounded-md">
+                          أدمن عمليات
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-500 mt-1">{u.email} | {u.branch || 'المركز الرئيسي'}</div>
+                      <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-200/60 text-[11px]">
+                        <span className="text-slate-600 font-bold">فريق العمل التابع له:</span>
+                        <span className="bg-white px-2 py-0.5 rounded-md font-black text-indigo-700 border border-slate-200">
+                          {subStaffCount} موظفين
+                        </span>
+                      </div>
                     </div>
-                    <div className="text-[11px] text-slate-500 mt-1">{u.email} | {u.branch || 'فرع رئيسي'}</div>
-                    <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-200/60 text-[11px]">
-                      <span className="text-slate-600 font-bold">فريق العمل التابع له:</span>
-                      <span className="bg-white px-2 py-0.5 rounded-md font-black text-indigo-700 border border-slate-200">
-                        {subStaffCount} موظفين
-                      </span>
-                    </div>
-                  </div>
-                );
-              })}
+                  );
+                })
+              )}
             </div>
           </div>
 
@@ -436,44 +447,65 @@ CREATE INDEX IF NOT EXISTS idx_pos_sales_merchant_date ON public.pos_sales(merch
                   <p className="text-[11px] text-slate-500">كاشير، مستودع، محاسبة، مناديب</p>
                 </div>
               </div>
-              <button
-                onClick={() => setIsCreateSubUserModal(true)}
-                className="text-[11px] bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold px-2.5 py-1 rounded-xl flex items-center gap-1 cursor-pointer shadow-2xs"
-              >
-                <Plus className="w-3 h-3" />
-                <span>+ إضافة موظف</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <span className="text-xs bg-amber-50 text-amber-800 font-bold px-2 py-0.5 rounded-lg border border-amber-200">
+                  {staffAndSubUsers.length}
+                </span>
+                <button
+                  onClick={() => setIsCreateSubUserModal(true)}
+                  className="text-[11px] bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold px-2.5 py-1 rounded-xl flex items-center gap-1 cursor-pointer shadow-2xs"
+                >
+                  <Plus className="w-3 h-3" />
+                  <span>+ إضافة موظف</span>
+                </button>
+              </div>
             </div>
 
             <div className="space-y-2 max-h-[420px] overflow-y-auto scrollbar-thin">
-              {staffAndSubUsers.map((u) => {
-                const parent = users.find((p) => p.id === u.parentUserId);
-                return (
-                  <div
-                    key={u.id}
-                    onClick={() => setSelectedUser(u)}
-                    className={`p-3 rounded-2xl border transition-all cursor-pointer ${
-                      selectedUser?.id === u.id
-                        ? 'bg-amber-50/80 border-amber-300 ring-2 ring-amber-400/20 shadow-xs'
-                        : 'bg-slate-50 border-slate-200 hover:bg-slate-100/80'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-black text-slate-900">{u.name}</span>
-                      <span className="text-[10px] bg-slate-900 text-amber-300 font-bold px-2 py-0.5 rounded-md">
-                        {u.role === 'CASHIER' ? 'كاشير POS' : u.role === 'ACCOUNTANT' ? 'محاسب' : u.role === 'DRIVER' ? 'مندوب' : 'تاجر / موظف'}
-                      </span>
-                    </div>
-                    <div className="text-[11px] text-slate-500 mt-0.5">{u.email || u.phone}</div>
-                    {parent && (
-                      <div className="text-[10px] text-slate-600 font-bold mt-1.5 flex items-center gap-1">
-                        <span className="text-slate-400">تابع لمسؤول العمليات:</span>
-                        <span className="text-indigo-700">{parent.name}</span>
+              {staffAndSubUsers.length === 0 ? (
+                <div className="p-4 text-center text-xs text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                  لا يوجد موظفون تنفيذيون مسجلون
+                </div>
+              ) : (
+                staffAndSubUsers.map((u) => {
+                  const parent = users.find((p) => p.id === u.parentUserId);
+                  return (
+                    <div
+                      key={u.id}
+                      onClick={() => setSelectedUser(u)}
+                      className={`p-3 rounded-2xl border transition-all cursor-pointer ${
+                        selectedUser?.id === u.id
+                          ? 'bg-amber-50/80 border-amber-300 ring-2 ring-amber-400/20 shadow-xs'
+                          : 'bg-slate-50 border-slate-200 hover:bg-slate-100/80'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-black text-slate-900">{u.name}</span>
+                        <span className="text-[10px] bg-slate-900 text-amber-300 font-bold px-2 py-0.5 rounded-md">
+                          {u.role === 'CASHIER'
+                            ? 'كاشير POS'
+                            : u.role === 'ACCOUNTANT'
+                            ? 'محاسب'
+                            : u.role === 'DRIVER'
+                            ? 'مندوب'
+                            : u.role === 'OPERATOR'
+                            ? 'موظف فرز وعمليات'
+                            : u.role === 'STAFF'
+                            ? 'موظف مستودع'
+                            : 'تاجر / موظف'}
+                        </span>
                       </div>
-                    )}
-                  </div>
-                );
-              })}
+                      <div className="text-[11px] text-slate-500 mt-0.5">{u.email || u.phone || '—'}</div>
+                      {parent && (
+                        <div className="text-[10px] text-slate-600 font-bold mt-1.5 flex items-center gap-1">
+                          <span className="text-slate-400">تابع لمسؤول العمليات:</span>
+                          <span className="text-indigo-700">{parent.name}</span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
         </div>
@@ -584,7 +616,7 @@ CREATE INDEX IF NOT EXISTS idx_pos_sales_merchant_date ON public.pos_sales(merch
                   </div>
 
                   {/* Super Admin Ceiling Toggle for Operations Admin */}
-                  {selectedUser.role === 'OPERATOR' && (
+                  {isOperationsAdmin(selectedUser) && (
                     <div className="mt-3 pt-2.5 border-t border-slate-200/60 flex items-center justify-between text-[10px]">
                       <span className="text-slate-500 font-bold">سقف السماح للموظفين:</span>
                       <button

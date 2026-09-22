@@ -37,6 +37,10 @@ import {
 } from 'lucide-react';
 import { User as UserType, Order } from '../types/logistics';
 import { GOVERNORATES, JORDAN_AREAS_MAP, STANDARD_DELIVERY_FEES, formatCurrency } from '../utils/logisticsHelpers';
+import {
+  validateAndNormalizeJordanPhone,
+  validateAndNormalizeSecondaryJordanPhone,
+} from '../utils/jordanPhone';
 import { PosReceiptModal, PosSale, PosSaleItem } from './PosReceiptModal';
 import { CameraBarcodeScanner } from './CameraBarcodeScanner';
 
@@ -445,10 +449,29 @@ export const MerchantPos: React.FC<MerchantPosProps> = ({
       return;
     }
 
+    let canonicalDeliveryPhone = '';
+    let canonicalDeliveryPhoneAlt: string | undefined = undefined;
+
     if (saleMode === 'ONLINE_DELIVERY') {
       if (!deliveryRecipientName.trim() || !deliveryRecipientPhone.trim() || !deliveryFullAddress.trim()) {
         showToast('يرجى إدخال اسم المستلم، رقم الهاتف، والعنوان التفصيلي للطلبية الأونلاين', 'error');
         return;
+      }
+
+      const phoneVal = validateAndNormalizeJordanPhone(deliveryRecipientPhone, 'رقم هاتف المستلم');
+      if (!phoneVal.isValid || !phoneVal.canonicalPhone) {
+        showToast(phoneVal.error || 'رقم الهاتف يجب أن يكون رقمًا أردنيًا صحيحًا من 10 أرقام مثل 0791234567، أو بصيغة +962 بدون الصفر الأول.', 'error');
+        return;
+      }
+      canonicalDeliveryPhone = phoneVal.canonicalPhone;
+
+      if (deliveryRecipientPhoneAlt && deliveryRecipientPhoneAlt.trim() !== '') {
+        const altVal = validateAndNormalizeSecondaryJordanPhone(deliveryRecipientPhoneAlt);
+        if (!altVal.isValid) {
+          showToast(altVal.error || 'رقم الهاتف الإضافي غير صالح', 'error');
+          return;
+        }
+        canonicalDeliveryPhoneAlt = altVal.canonicalPhone || undefined;
       }
     }
 
@@ -466,8 +489,8 @@ export const MerchantPos: React.FC<MerchantPosProps> = ({
         const orderPayload = {
           merchantId: currentMerchant.id,
           recipientName: deliveryRecipientName.trim(),
-          recipientPhone: deliveryRecipientPhone.trim(),
-          recipientPhoneAlt: deliveryRecipientPhoneAlt.trim() || undefined,
+          recipientPhone: canonicalDeliveryPhone,
+          recipientPhoneAlt: canonicalDeliveryPhoneAlt,
           governorate: deliveryGovernorate,
           area: deliveryArea,
           fullAddress: deliveryFullAddress.trim(),
@@ -499,7 +522,7 @@ export const MerchantPos: React.FC<MerchantPosProps> = ({
             paymentType: isPrepaidDelivery ? 'PREPAID' : 'COD',
             merchantId: currentMerchant.id,
             recipientName: deliveryRecipientName.trim(),
-            recipientPhone: deliveryRecipientPhone.trim(),
+            recipientPhone: canonicalDeliveryPhone,
             governorate: deliveryGovernorate,
             area: deliveryArea,
             fullAddress: deliveryFullAddress.trim(),

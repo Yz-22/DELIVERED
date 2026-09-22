@@ -25,6 +25,11 @@ import {
 import { User, Role } from '../types/logistics';
 import { PermissionsManager } from './PermissionsManager';
 import { InvitationsManager } from './InvitationsManager';
+import {
+  classifyManagedUser,
+  isOperationsAdmin,
+  isStaffOrPosUser,
+} from '../utils/userClassification';
 
 interface UsersManagementProps {
   users: User[];
@@ -67,8 +72,12 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
     isActive: true,
   });
 
+  const isStaffRole = (role: string) => {
+    return role === 'ADMIN' || role === 'OPERATOR' || role === 'ACCOUNTANT' || role === 'CASHIER' || role === 'DISPATCHER' || role === 'STAFF';
+  };
+
   const filteredUsers = safeUsers.filter((u) => {
-    if (activeTab === 'STAFF' && u.role !== 'ADMIN' && u.role !== 'OPERATOR') return false;
+    if (activeTab === 'STAFF' && !isStaffRole(u.role)) return false;
     if (activeTab === 'MERCHANT' && u.role !== 'MERCHANT') return false;
     if (activeTab === 'DRIVER' && u.role !== 'DRIVER') return false;
 
@@ -208,7 +217,7 @@ export const UsersManagement: React.FC<UsersManagementProps> = ({
             }`}
           >
             <Briefcase className="w-3.5 h-3.5" />
-            <span>الموظفون والعمليات ({safeUsers.filter((u) => u.role === 'ADMIN' || u.role === 'OPERATOR').length})</span>
+            <span>الموظفون والعمليات ({safeUsers.filter((u) => isStaffRole(u.role)).length})</span>
           </button>
 
           <button

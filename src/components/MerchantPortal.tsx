@@ -45,6 +45,11 @@ import { MerchantDeliveriesView } from './merchant/MerchantDeliveriesView';
 import { MerchantReturnsView } from './merchant/MerchantReturnsView';
 import { MerchantCustomersView } from './merchant/MerchantCustomersView';
 
+import {
+  validateAndNormalizeJordanPhone,
+  validateAndNormalizeSecondaryJordanPhone,
+} from '../utils/jordanPhone';
+
 interface MerchantPortalProps {
   merchants: User[];
   currentUser?: User | null;
@@ -169,13 +174,29 @@ export const MerchantPortal: React.FC<MerchantPortalProps> = ({
       return;
     }
 
+    const phoneVal = validateAndNormalizeJordanPhone(newOrder.recipientPhone, 'رقم هاتف المستلم');
+    if (!phoneVal.isValid || !phoneVal.canonicalPhone) {
+      showToast(phoneVal.error || 'رقم الهاتف يجب أن يكون رقمًا أردنيًا صحيحًا من 10 أرقام مثل 0791234567، أو بصيغة +962 بدون الصفر الأول.', 'error');
+      return;
+    }
+
+    let canonicalPhoneAlt: string | undefined = undefined;
+    if (newOrder.recipientPhoneAlt && newOrder.recipientPhoneAlt.trim() !== '') {
+      const altVal = validateAndNormalizeSecondaryJordanPhone(newOrder.recipientPhoneAlt);
+      if (!altVal.isValid) {
+        showToast(altVal.error || 'رقم الهاتف الإضافي غير صالح', 'error');
+        return;
+      }
+      canonicalPhoneAlt = altVal.canonicalPhone || undefined;
+    }
+
     setIsSubmitting(true);
     try {
       const payload = {
         merchantId: selectedMerchantId,
-        recipientName: newOrder.recipientName,
-        recipientPhone: newOrder.recipientPhone,
-        recipientPhoneAlt: newOrder.recipientPhoneAlt || undefined,
+        recipientName: newOrder.recipientName.trim(),
+        recipientPhone: phoneVal.canonicalPhone,
+        recipientPhoneAlt: canonicalPhoneAlt,
         governorate: newOrder.governorate,
         area: newOrder.area,
         fullAddress: newOrder.fullAddress,

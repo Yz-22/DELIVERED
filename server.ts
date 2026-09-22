@@ -6,6 +6,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type {
   Order,
   OrderStatus,
+  PaymentType,
   User,
   ApiKey,
   NotificationLog,
@@ -47,6 +48,13 @@ import {
 } from './src/services/operationalLogisticsService.ts';
 import { OperationalTaskService } from './src/services/operationalTaskService.ts';
 import { MerchantInventoryService, InventoryServiceError } from './src/services/merchantInventoryService.ts';
+import {
+  OrderPersistenceService,
+  OrderPersistenceError,
+  computeCanonicalPayloadHash,
+  mapShipmentRowToOrder,
+  type CanonicalOrderPayload,
+} from './src/services/orderPersistenceService.ts';
 
 const app = express();
 const PORT = 3000;
@@ -146,6 +154,7 @@ export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_KEY,
 export const operationalLogisticsService = new OperationalLogisticsService(supabase);
 export const operationalTaskService = new OperationalTaskService(supabase);
 export const merchantInventoryService = new MerchantInventoryService(supabase);
+export const orderPersistenceService = new OrderPersistenceService(supabase);
 
 // Data mappers between Supabase database columns and application types
 export async function ensureTenantRecordExists(tenantId: string | null | undefined, tenantName?: string): Promise<boolean> {
@@ -2607,140 +2616,65 @@ app.post('/api/price-plans/calculate', requireAuth, (req, res) => {
 // API Endpoints
 // -------------------------------------------------------------
 
-// 1. GET /api/orders: Fetch orders with multi-tenant isolation, pagination, search & filters
-app.get('/api/orders', requireAuth, (req, res) => {
+// 1. GET /api/orders: Fetch orders from canonical Supabase shipments with multi-tenant isolation, pagination, search & filters
+app.get('/api/orders', requireAuth, async (req, res) => {
   try {
     const ctx = getRequesterContext(req);
     const page = Math.max(1, parseInt(req.query.page as string) || 1);
     const limit = Math.max(1, parseInt(req.query.limit as string) || 10);
-    const search = (req.query.search as string || '').trim().toLowerCase();
+    const search = ((req.query.search as string) || '').trim();
     const status = req.query.status as string;
     const governorate = req.query.governorate as string;
-    const merchantId = req.query.merchantId as string;
-    const driverId = req.query.driverId as string;
+    let merchantId = req.query.merchantId as string;
+    let driverId = req.query.driverId as string;
+    let branchId = req.query.branchId as string;
     const sortBy = (req.query.sortBy as string) || 'createdAt';
-    const sortDir = (req.query.sortDir as string) || 'desc';
+    const sortDir = (req.query.sortDir as 'asc' | 'desc') || 'desc';
     const reqTenantId = (req.query.tenantId as string) || (ctx.isAdmin ? ctx.tenantId : undefined);
 
-    const safeOrders = Array.isArray(orders) ? orders : [];
-    let tenantOrders = [...safeOrders];
+    let effectiveTenantId: string | undefined = undefined;
 
     // Multi-tenant & Branch data isolation:
     if (!ctx.isSuperAdmin && ctx.user) {
       if (ctx.isCashier) {
         // Cashier is strictly isolated to their parent merchant AND their assigned branch
-        if (req.query.branchId && req.query.branchId !== ctx.branchId) {
+        if (branchId && branchId !== ctx.branchId) {
           return res.status(403).json({ error: 'غير مصرح باستعراض شحنات فرع آخر' });
         }
-        const cashierMerchantId = ctx.user?.parentUserId || ctx.tenantId;
-        tenantOrders = tenantOrders.filter(
-          (o) => o && o.merchantId === cashierMerchantId && (!ctx.branchId || o.branchId === ctx.branchId)
-        );
+        merchantId = ctx.user?.parentUserId || ctx.tenantId;
+        branchId = ctx.branchId;
       } else if (ctx.isAdmin && ctx.tenantId) {
-        // Admin sees orders belonging to their merchants or themselves or drivers under them
-        const adminMerchantIds = users.filter((u) => u && (u.parentUserId === ctx.tenantId || u.id === ctx.tenantId)).map((u) => u.id);
-        tenantOrders = tenantOrders.filter((o) => {
-          if (!o) return false;
-          if (o.tenantId && o.tenantId === ctx.tenantId) return true;
-          if (adminMerchantIds.includes(o.merchantId)) return true;
-          return false;
-        });
+        effectiveTenantId = ctx.tenantId;
       } else if (ctx.isMerchant) {
-        tenantOrders = tenantOrders.filter((o) => o && o.merchantId === ctx.user?.id);
+        merchantId = ctx.user?.id;
       } else if (ctx.isDriver) {
-        tenantOrders = tenantOrders.filter((o) => o && o.driverId === ctx.user?.id);
+        driverId = ctx.user?.id;
       } else if (ctx.tenantId) {
-        // Staff/Operator/Accountant in this tenant
-        const adminMerchantIds = users.filter((u) => u && (u.parentUserId === ctx.tenantId || u.id === ctx.tenantId)).map((u) => u.id);
-        tenantOrders = tenantOrders.filter((o) => {
-          if (!o) return false;
-          if (o.tenantId && o.tenantId === ctx.tenantId) return true;
-          if (adminMerchantIds.includes(o.merchantId)) return true;
-          return false;
-        });
+        effectiveTenantId = ctx.tenantId;
       }
     } else if (ctx.isSuperAdmin && reqTenantId && reqTenantId !== 'ALL') {
-      const adminMerchantIds = users.filter((u) => u && (u.parentUserId === reqTenantId || u.id === reqTenantId)).map((u) => u.id);
-      tenantOrders = tenantOrders.filter((o) => {
-        if (!o) return false;
-        if (o.tenantId && o.tenantId === reqTenantId) return true;
-        if (adminMerchantIds.includes(o.merchantId)) return true;
-        return false;
-      });
+      effectiveTenantId = reqTenantId;
     }
 
-    let filtered = [...tenantOrders];
-
-    // Search by Sequence, Reference, Recipient Phone, Recipient Name, or Area
-    if (search) {
-      filtered = filtered.filter((o) => {
-        if (!o) return false;
-        return (
-          (o.sequence && o.sequence.toLowerCase().includes(search)) ||
-          (o.referenceNumber && o.referenceNumber.toLowerCase().includes(search)) ||
-          (o.recipientPhone && o.recipientPhone.toString().includes(search)) ||
-          (o.recipientName && o.recipientName.toLowerCase().includes(search)) ||
-          (o.area && o.area.toLowerCase().includes(search)) ||
-          (o.governorate && o.governorate.toLowerCase().includes(search))
-        );
-      });
-    }
-
-    // Filter by Status
-    if (status && status !== 'ALL') {
-      filtered = filtered.filter((o) => o && o.status === status);
-    }
-
-    // Filter by Governorate
-    if (governorate && governorate !== 'ALL') {
-      filtered = filtered.filter((o) => o && o.governorate === governorate);
-    }
-
-    // Filter by Merchant
-    if (merchantId && merchantId !== 'ALL') {
-      filtered = filtered.filter((o) => o && o.merchantId === merchantId);
-    }
-
-    // Filter by Driver
-    if (driverId) {
-      if (driverId === 'UNASSIGNED') {
-        filtered = filtered.filter((o) => o && !o.driverId);
-      } else if (driverId !== 'ALL') {
-        filtered = filtered.filter((o) => o && o.driverId === driverId);
-      }
-    }
-
-    // Sort
-    filtered.sort((a: any, b: any) => {
-      let aVal = a?.[sortBy] ?? '';
-      let bVal = b?.[sortBy] ?? '';
-      if (typeof aVal === 'string') {
-        return sortDir === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
-      }
-      return sortDir === 'asc' ? aVal - bVal : bVal - aVal;
+    const { shipments, total, stats } = await orderPersistenceService.getShipments({
+      tenantId: effectiveTenantId,
+      merchantId,
+      driverId,
+      branchId,
+      status,
+      governorate,
+      search,
+      sortBy,
+      sortDir,
+      page,
+      limit,
     });
 
-    // Calculate Scoped Stats from All Orders in this Workspace
-    const stats = {
-      total: tenantOrders.length,
-      pending: tenantOrders.filter((o) => o?.status === 'PENDING').length,
-      picking: tenantOrders.filter((o) => o?.status === 'PICKING').length,
-      out_for_delivery: tenantOrders.filter((o) => o?.status === 'OUT_FOR_DELIVERY').length,
-      delivered: tenantOrders.filter((o) => o?.status === 'DELIVERED').length,
-      cancelled: tenantOrders.filter((o) => o?.status === 'CANCELLED').length,
-      postponed: tenantOrders.filter((o) => o?.status === 'POSTPONED').length,
-      totalCOD: tenantOrders.reduce((sum, o) => sum + (o?.totalCollection || 0), 0),
-      totalDeliveryFees: ctx.isDriver ? 0 : tenantOrders.reduce((sum, o) => sum + (o?.deliveryFee || 0), 0),
-    };
-
-    // Pagination Slice
-    const total = filtered.length;
+    const mappedOrders = shipments.map((s) => sanitizeOrderForRole(mapShipmentRowToOrder(s, users), ctx));
     const totalPages = Math.ceil(total / limit) || 1;
-    const startIndex = (page - 1) * limit;
-    const paginatedOrders = filtered.slice(startIndex, startIndex + limit).map((o) => sanitizeOrderForRole(o, ctx));
 
     res.json({
-      orders: paginatedOrders,
+      orders: mappedOrders,
       pagination: {
         total,
         page,
@@ -2755,23 +2689,33 @@ app.get('/api/orders', requireAuth, (req, res) => {
   }
 });
 
-// 2. GET /api/orders/:id: Get single order details with status logs
-app.get('/api/orders/:id', requireAuth, (req, res) => {
+// 2. GET /api/orders/:id: Get single order details with status logs directly from canonical database
+app.get('/api/orders/:id', requireAuth, async (req, res) => {
   const ctx = getRequesterContext(req);
-  const order = orders.find((o) => o.id === req.params.id);
-  if (!order) {
-    return res.status(404).json({ error: 'الطلبية غير موجودة' });
-  }
+  try {
+    const dbShipment = await orderPersistenceService.getShipmentById(
+      req.params.id,
+      ctx.isSuperAdmin ? undefined : ctx.tenantId
+    );
 
-  if (!canAccessOrder(ctx, order)) {
-    return res.status(403).json({ error: 'غير مصرح بالوصول إلى هذه الشحنة' });
-  }
+    if (!dbShipment) {
+      return res.status(404).json({ error: 'الطلبية غير موجودة' });
+    }
 
-  res.json(sanitizeOrderForRole(order, ctx));
+    const order = mapShipmentRowToOrder(dbShipment, users);
+
+    if (!canAccessOrder(ctx, order)) {
+      return res.status(403).json({ error: 'غير مصرح بالوصول إلى هذه الشحنة' });
+    }
+
+    res.json(sanitizeOrderForRole(order, ctx));
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'خطأ في جلب بيانات الشحنة' });
+  }
 });
 
-// 3. POST /api/orders: Create new order (Full form)
-app.post('/api/orders', requireAuth, (req, res) => {
+// 3. POST /api/orders: Create new order (Full form) - Canonical DB Authority + Idempotency
+app.post('/api/orders', requireAuth, async (req, res) => {
   try {
     const ctx = getRequesterContext(req);
     const {
@@ -2790,6 +2734,9 @@ app.post('/api/orders', requireAuth, (req, res) => {
       totalCollection,
       packageType = 'طرد عادي',
       piecesCount = 1,
+      paymentType = 'COD',
+      paymentMethod,
+      cliqReference,
       notes,
     } = req.body;
 
@@ -2838,57 +2785,77 @@ app.post('/api/orders', requireAuth, (req, res) => {
       }
     }
 
-    const newOrder: Order = {
-      id: `ord-${Date.now()}`,
-      sequence: `ORD-2026-${nextSequenceNumber++}`,
-      referenceNumber: referenceNumber || `REF-${Math.floor(1000 + Math.random() * 9000)}`,
-      status: driverId ? 'OUT_FOR_DELIVERY' : 'PENDING',
-      paymentType: 'COD',
+    // Resolve tenant ID safely
+    const targetTenantId = ctx.tenantId || (ctx.isSuperAdmin ? '00000000-0000-0000-0000-000000000001' : merchantId);
+    await ensureTenantRecordExists(targetTenantId);
+
+    // Extract client idempotency key if passed in headers or body
+    const idempotencyKey = (
+      req.headers['idempotency-key'] ||
+      req.headers['x-idempotency-key'] ||
+      req.body.idempotencyKey ||
+      ''
+    ).toString().trim() || null;
+
+    const canonicalPayload: CanonicalOrderPayload = {
       merchantId,
-      branchId: orderBranchId,
-      branchName: orderBranchName,
-      driverId: driverId || null,
-      recipientName,
-      recipientPhone,
-      recipientPhoneAlt: recipientPhoneAlt || '',
-      governorate,
-      area,
-      subArea: subArea || '',
-      fullAddress: fullAddress || `${governorate} - ${area}`,
-      merchantCollection: mColl,
-      deliveryFee: finalDeliveryFee,
-      driverFee: calcDriverFee,
-      totalCollection: tot,
-      isSettledWithMerchant: false,
-      isSettledWithDriver: false,
-      packageType,
+      merchantBranchId: orderBranchId || null,
+      recipientName: String(recipientName).trim(),
+      recipientPhone: String(recipientPhone).trim(),
+      recipientPhoneAlt: recipientPhoneAlt ? String(recipientPhoneAlt).trim() : null,
+      governorate: String(governorate).trim(),
+      area: String(area).trim(),
+      subArea: subArea ? String(subArea).trim() : null,
+      streetAddress: fullAddress || `${governorate} - ${area}`,
+      packageType: packageType || 'طرد عادي',
+      packageWeightKg: 1.0,
       piecesCount: parseInt(piecesCount) || 1,
-      deliveryAttempts: 0,
-      notes: notes || '',
-      deliveryOtp: Math.floor(1000 + Math.random() * 9000).toString(),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      statusLogs: [
-        {
-          id: `log-${Date.now()}`,
-          orderId: `ord-${Date.now()}`,
-          fromStatus: null,
-          toStatus: driverId ? 'OUT_FOR_DELIVERY' : 'PENDING',
-          note: 'تم تسجيل الشحنة في النظام',
-          createdAt: new Date().toISOString(),
-        },
-      ],
+      paymentType: paymentType as PaymentType,
+      paymentMethod: paymentMethod || (paymentType === 'CLIQ' ? 'CLIQ' : 'CASH'),
+      cliqReference: cliqReference || null,
+      totalCollectionInput: tot,
+      merchantCollectionInput: mColl,
+      referenceNumber: referenceNumber || null,
+      notes: notes || null,
     };
 
-    orders.unshift(newOrder);
-    res.status(201).json(populateOrder(newOrder));
+    let resultOrder: Order;
+
+    try {
+      // Authoritative Supabase DB Order Creation via RPC
+      const { shipment, isReplay } = await orderPersistenceService.createOrderIdempotent({
+        tenantId: targetTenantId,
+        merchantId,
+        branchId: orderBranchId || null,
+        idempotencyKey,
+        canonicalPayload,
+        deliveryFee: finalDeliveryFee,
+        merchantCollection: mColl,
+        totalCollection: tot,
+        driverId: driverId || null,
+        driverFee: calcDriverFee,
+        actorId: ctx.userId || null,
+        actorName: ctx.user?.name || null,
+        actorRole: ctx.user?.role || null,
+      });
+
+      resultOrder = mapShipmentRowToOrder(shipment, users);
+      resultOrder.branchName = orderBranchName;
+    } catch (dbErr: any) {
+      if (dbErr instanceof OrderPersistenceError) {
+        return res.status(dbErr.statusCode).json({ error: dbErr.message, code: dbErr.code });
+      }
+      return res.status(500).json({ error: dbErr.message || 'فشل تسجيل الشحنة في قاعدة البيانات' });
+    }
+
+    res.status(201).json(populateOrder(resultOrder));
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // 4. POST /api/orders/quick: Rapid single order creation
-app.post('/api/orders/quick', requireAuth, (req, res) => {
+app.post('/api/orders/quick', requireAuth, async (req, res) => {
   try {
     const ctx = getRequesterContext(req);
     const {
@@ -2918,52 +2885,65 @@ app.post('/api/orders/quick', requireAuth, (req, res) => {
     const tot = parseFloat(totalCollection) || 0;
     const mColl = Math.max(0, tot - fee);
 
-    const newOrder: Order = {
-      id: `ord-${Date.now()}`,
-      sequence: `ORD-2026-${nextSequenceNumber++}`,
-      referenceNumber: `Q-${Math.floor(1000 + Math.random() * 9000)}`,
-      status: 'PENDING',
-      paymentType: 'COD',
+    const targetTenantId = ctx.tenantId || (ctx.isSuperAdmin ? '00000000-0000-0000-0000-000000000001' : merchantId);
+    await ensureTenantRecordExists(targetTenantId);
+
+    const idempotencyKey = (
+      req.headers['idempotency-key'] ||
+      req.headers['x-idempotency-key'] ||
+      req.body.idempotencyKey ||
+      ''
+    ).toString().trim() || null;
+
+    const canonicalPayload: CanonicalOrderPayload = {
       merchantId,
-      driverId: null,
-      recipientName,
-      recipientPhone,
-      governorate,
-      area,
-      fullAddress: fullAddress || `${governorate}، ${area}`,
-      merchantCollection: mColl,
-      deliveryFee: fee,
-      totalCollection: tot,
-      isSettledWithMerchant: false,
-      isSettledWithDriver: false,
+      recipientName: String(recipientName).trim(),
+      recipientPhone: String(recipientPhone).trim(),
+      governorate: String(governorate).trim(),
+      area: String(area).trim(),
+      streetAddress: fullAddress || `${governorate}، ${area}`,
       packageType: 'طرد سريع',
       piecesCount: 1,
-      deliveryAttempts: 0,
+      paymentType: 'COD',
+      paymentMethod: 'CASH',
+      totalCollectionInput: tot,
+      merchantCollectionInput: mColl,
       notes: notes || 'طلبية سريعة',
-      deliveryOtp: Math.floor(1000 + Math.random() * 9000).toString(),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      statusLogs: [
-        {
-          id: `log-${Date.now()}`,
-          orderId: `ord-${Date.now()}`,
-          fromStatus: null,
-          toStatus: 'PENDING',
-          note: 'تم إنشاء الطلبية السريعة بنجاح',
-          createdAt: new Date().toISOString(),
-        },
-      ],
     };
 
-    orders.unshift(newOrder);
-    res.status(201).json(populateOrder(newOrder));
+    let resultOrder: Order;
+
+    try {
+      const { shipment } = await orderPersistenceService.createOrderIdempotent({
+        tenantId: targetTenantId,
+        merchantId,
+        idempotencyKey,
+        requestType: 'ORDER_QUICK_CREATE',
+        canonicalPayload,
+        deliveryFee: fee,
+        merchantCollection: mColl,
+        totalCollection: tot,
+        actorId: ctx.userId || null,
+        actorName: ctx.user?.name || null,
+        actorRole: ctx.user?.role || null,
+      });
+
+      resultOrder = mapShipmentRowToOrder(shipment, users);
+    } catch (dbErr: any) {
+      if (dbErr instanceof OrderPersistenceError) {
+        return res.status(dbErr.statusCode).json({ error: dbErr.message, code: dbErr.code });
+      }
+      return res.status(500).json({ error: dbErr.message || 'فشل تسجيل الطلبية السريعة في قاعدة البيانات' });
+    }
+
+    res.status(201).json(populateOrder(resultOrder));
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// 5. POST /api/orders/batch: Bulk Batch Import
-app.post('/api/orders/batch', requireAuth, (req, res) => {
+// 5. POST /api/orders/batch: Bulk Batch Import via Canonical Database
+app.post('/api/orders/batch', requireAuth, async (req, res) => {
   try {
     const ctx = getRequesterContext(req);
     const { orders: batchItems } = req.body;
@@ -2972,660 +2952,481 @@ app.post('/api/orders/batch', requireAuth, (req, res) => {
     }
 
     const created: Order[] = [];
-    for (const item of batchItems) {
+    const errors: { index: number; referenceNumber?: string; error: string }[] = [];
+
+    for (let i = 0; i < batchItems.length; i++) {
+      const item = batchItems[i];
       const targetMerchantId = item.merchantId || (ctx.isMerchant ? ctx.userId : users.find((u) => u.role === 'MERCHANT')?.id || '');
       if (!canAccessMerchant(ctx, targetMerchantId)) {
+        errors.push({ index: i, referenceNumber: item.referenceNumber, error: 'غير مصرح للتاجر المحدد' });
         continue;
       }
 
+      const gov = item.governorate || 'عمان';
+      const area = item.area || 'غير محدد';
       const tot = parseFloat(item.totalCollection) || 25;
-      const fee = parseFloat(item.deliveryFee) || 3.0;
+      const fee =
+        item.deliveryFee !== undefined && item.deliveryFee !== null && item.deliveryFee !== ''
+          ? parseFloat(item.deliveryFee)
+          : getMerchantDeliveryFee(targetMerchantId, gov);
       const mColl = Math.max(0, tot - fee);
 
-      const newOrder: Order = {
-        id: `ord-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
-        sequence: `ORD-2026-${nextSequenceNumber++}`,
-        referenceNumber: item.referenceNumber || `BATCH-${Math.floor(1000 + Math.random() * 9000)}`,
-        status: item.driverId ? 'OUT_FOR_DELIVERY' : 'PENDING',
-        paymentType: 'COD',
+      const targetMerchantObj = users.find((u) => u.id === targetMerchantId);
+      const targetTenantId = targetMerchantObj?.parentUserId || ctx.tenantId || 't-default';
+
+      const refNum = item.referenceNumber || `BATCH-${Date.now()}-${i + 1}`;
+      const itemKey = item.idempotencyKey || `batch-${targetTenantId}-${targetMerchantId}-${refNum}`;
+
+      const canonicalPayload: CanonicalOrderPayload = {
         merchantId: targetMerchantId,
-        driverId: item.driverId || null,
+        merchantBranchId: item.branchId || null,
         recipientName: item.recipientName || 'عميل محترم',
         recipientPhone: item.recipientPhone || '0790000000',
-        governorate: item.governorate || 'عمان',
-        area: item.area || 'غير محدد',
-        fullAddress: item.fullAddress || `${item.governorate || 'عمان'} - ${item.area || ''}`,
-        merchantCollection: mColl,
-        deliveryFee: fee,
-        totalCollection: tot,
-        isSettledWithMerchant: false,
-        isSettledWithDriver: false,
+        recipientPhoneAlt: item.recipientPhoneAlt || null,
+        governorate: gov,
+        area: area,
+        subArea: item.subArea || null,
+        streetAddress: item.fullAddress || `${gov} - ${area}`,
+        referenceNumber: refNum,
+        paymentType: 'COD',
+        paymentMethod: 'COD',
         packageType: item.packageType || 'دفعة طرود',
-        piecesCount: 1,
-        deliveryAttempts: 0,
+        packageWeightKg: item.packageWeightKg ? Number(item.packageWeightKg) : 1.0,
+        piecesCount: item.piecesCount ? parseInt(item.piecesCount) : 1,
         notes: item.notes || 'استيراد دفعة جماعية',
-        deliveryOtp: Math.floor(1000 + Math.random() * 9000).toString(),
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        totalCollectionInput: tot,
+        merchantCollectionInput: mColl,
       };
-      orders.unshift(newOrder);
-      created.push(populateOrder(newOrder));
+
+      try {
+        const { shipment } = await orderPersistenceService.createOrderIdempotent({
+          tenantId: targetTenantId,
+          merchantId: targetMerchantId,
+          branchId: item.branchId || null,
+          idempotencyKey: itemKey,
+          canonicalPayload,
+          deliveryFee: fee,
+          merchantCollection: mColl,
+          totalCollection: tot,
+          driverId: item.driverId || null,
+          actorId: ctx.userId || null,
+          actorName: ctx.user?.name || null,
+          actorRole: ctx.user?.role || null,
+        });
+
+        const mapped = mapShipmentRowToOrder(shipment, users);
+        created.push(populateOrder(mapped));
+      } catch (itemErr: any) {
+        errors.push({
+          index: i,
+          referenceNumber: refNum,
+          error: itemErr.message || 'فشل تسجيل الطلبية في قاعدة البيانات',
+        });
+      }
     }
 
     res.status(201).json({
       message: `تم إنشاء ${created.length} طلبية بنجاح`,
       orders: created,
+      errors: errors.length > 0 ? errors : undefined,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// 6. PATCH /api/orders/:id/status: Update Order Status
-// [LEGACY COMPATIBILITY ONLY - UNSAFE FOR PHASE 3C MULTI-LEG CUSTODY]
-// Phase 3C operational state transitions MUST use /api/operational/* domain contracts.
+// 6. PATCH /api/orders/:id/status: Reject legacy physical status update bypass
 app.patch('/api/orders/:id/status', requireAuth, (req, res) => {
-  const ctx = getRequesterContext(req);
-  const { status, note, cancellationReason } = req.body;
-  const order = orders.find((o) => o.id === req.params.id);
-  if (!order) {
-    return res.status(404).json({ error: 'الطلبية غير موجودة' });
-  }
-
-  if (!canAccessOrder(ctx, order)) {
-    return res.status(403).json({ error: 'غير مصرح بتعديل حالة هذه الشحنة' });
-  }
-
-  // Phase 3C Guard: Direct mutation to RETURNED is forbidden
-  if (status === 'RETURNED') {
-    return res.status(400).json({
-      error: 'لا يمكن تحويل الشحنة إلى مرتجع (RETURNED) مباشرة. يجب بدء مسار الإرجاع وتأكيد استلام التاجر عبر مسارات /api/operational/returns/*',
-      code: 'INVALID_STATUS_TRANSITION',
-    });
-  }
-
-  const oldStatus = order.status;
-  order.status = status as OrderStatus;
-  order.updatedAt = new Date().toISOString();
-
-  if (status === 'DELIVERED') {
-    order.deliveredAt = new Date().toISOString();
-  }
-
-  // Snapshot return fee at the exact time the shipment transitions to RETURNED
-  if (status === 'RETURNED' && (order.returnFee === undefined || order.returnFee === null)) {
-    const plan =
-      pricePlans.find((p) => p.type === 'MERCHANT' && p.merchantId === order.merchantId) ||
-      pricePlans.find((p) => p.type === 'MERCHANT' && p.isDefault) ||
-      pricePlans.find((p) => p.type === 'MERCHANT');
-    const applicableReturnFee =
-      plan?.returnFee !== undefined ? plan.returnFee : Number((order.deliveryFee * 0.5 || 1.5).toFixed(3));
-    order.returnFee = applicableReturnFee;
-  }
-
-  if (cancellationReason) {
-    order.cancellationReason = cancellationReason;
-  }
-
-  if (!order.statusLogs) {
-    order.statusLogs = [];
-  }
-  order.statusLogs.push({
-    id: `log-${Date.now()}`,
-    orderId: order.id,
-    fromStatus: oldStatus,
-    toStatus: status,
-    note: note || `تعديل الحالة من ${oldStatus} إلى ${status}`,
-    createdAt: new Date().toISOString(),
+  return res.status(400).json({
+    error: 'تعديل الحالة الفيزيائية للشحنة مباشرة متوقف. يجب تنفيذ العمليات التشغيلية (الفرز، التسليم للكابتن، التسليم النهائي، الإرجاع) عبر مسارات Operational Core المعتمدة.',
+    code: 'LEGACY_PHYSICAL_STATUS_BYPASS_FORBIDDEN',
   });
-
-  saveDatabase();
-  res.json(sanitizeOrderForRole(order, ctx));
 });
 
-// 7. PATCH /api/orders/:id/assign: Assign driver to single order
-// [LEGACY COMPATIBILITY ONLY - UNSAFE FOR PHASE 3C MULTI-LEG CUSTODY]
-// Does not record shipment_leg_assignments or validate multi-leg sequencing. Use /api/operational/legs/:id/assign instead.
+// 7. PATCH /api/orders/:id/assign: Reject legacy driver assignment bypass
 app.patch('/api/orders/:id/assign', requireAuth, (req, res) => {
-  const ctx = getRequesterContext(req);
-  const { driverId } = req.body;
-  const order = orders.find((o) => o.id === req.params.id);
-  if (!order) {
-    return res.status(404).json({ error: 'الطلبية غير موجودة' });
-  }
-
-  if (!canAccessOrder(ctx, order)) {
-    return res.status(403).json({ error: 'غير مصرح بتعيين هذه الشحنة' });
-  }
-
-  if (driverId && !canAccessDriver(ctx, driverId)) {
-    return res.status(403).json({ error: 'غير مصرح بتعيين سائق خارج نطاق شركتك' });
-  }
-
-  order.driverId = driverId || null;
-  if (driverId) {
-    // Snapshot driver fee at assignment time from the currently active pricing plan
-    order.driverFee = getDriverCompensationFee(driverId, order.governorate);
-    if (order.status === 'PENDING') {
-      order.status = 'OUT_FOR_DELIVERY';
-    }
-  }
-  order.updatedAt = new Date().toISOString();
-
-  saveDatabase();
-  res.json(sanitizeOrderForRole(order, ctx));
+  return res.status(400).json({
+    error: 'تعيين السائقين المباشر للشحنات متوقف. يجب تعيين السائق عبر مراحل الشحن التشغيلية (Shipment Legs) عبر مسار /api/operational/legs/:id/assign',
+    code: 'LEGACY_ASSIGNMENT_BYPASS_FORBIDDEN',
+  });
 });
 
-// 8. POST /api/orders/bulk-status: Bulk Status Update
+// 8. POST /api/orders/bulk-status: Reject legacy bulk status update bypass
 app.post('/api/orders/bulk-status', requireAuth, (req, res) => {
-  const ctx = getRequesterContext(req);
-  const { ids, status, note } = req.body;
-  if (!Array.isArray(ids) || ids.length === 0) {
-    return res.status(400).json({ error: 'لم يتم تحديد أي طلبيات' });
-  }
-
-  // Phase 3C Guard: Direct bulk mutation to RETURNED is forbidden
-  if (status === 'RETURNED') {
-    return res.status(400).json({
-      error: 'لا يمكن تحويل الشحنات إلى مرتجع (RETURNED) عبر التعديل الجماعي المباشر. يجب استخدام مسارات الإرجاع التشغيلية /api/operational/returns/*',
-      code: 'INVALID_STATUS_TRANSITION',
-    });
-  }
-
-  let updatedCount = 0;
-  orders = orders.map((o) => {
-    if (ids.includes(o.id) && canAccessOrder(ctx, o)) {
-      updatedCount++;
-      const old = o.status;
-      let snapshottedReturnFee = o.returnFee;
-      if (status === 'RETURNED' && (snapshottedReturnFee === undefined || snapshottedReturnFee === null)) {
-        const plan =
-          pricePlans.find((p) => p.type === 'MERCHANT' && p.merchantId === o.merchantId) ||
-          pricePlans.find((p) => p.type === 'MERCHANT' && p.isDefault) ||
-          pricePlans.find((p) => p.type === 'MERCHANT');
-        snapshottedReturnFee =
-          plan?.returnFee !== undefined ? plan.returnFee : Number((o.deliveryFee * 0.5 || 1.5).toFixed(3));
-      }
-
-      return {
-        ...o,
-        status,
-        returnFee: snapshottedReturnFee,
-        deliveredAt: status === 'DELIVERED' ? new Date().toISOString() : o.deliveredAt,
-        updatedAt: new Date().toISOString(),
-        statusLogs: [
-          ...(o.statusLogs || []),
-          {
-            id: `log-${Date.now()}-${Math.random()}`,
-            orderId: o.id,
-            fromStatus: old,
-            toStatus: status,
-            note: note || `تحديث جماعي للحالة إلى ${status}`,
-            createdAt: new Date().toISOString(),
-          },
-        ],
-      };
-    }
-    return o;
+  return res.status(400).json({
+    error: 'التعديل الجماعي المباشر لحالات الشحنات متوقف. يجب استخدام مسارات الإرجاع أو التسليم أو الفرز التشغيلية المعتمدة.',
+    code: 'LEGACY_PHYSICAL_STATUS_BYPASS_FORBIDDEN',
   });
-
-  saveDatabase();
-  res.json({ message: `تم تحديث ${updatedCount} طلبية بنجاح` });
 });
 
-// 9. POST /api/orders/bulk-assign: Bulk Assign Driver
+// 9. POST /api/orders/bulk-assign: Reject legacy bulk assign bypass
 app.post('/api/orders/bulk-assign', requireAuth, (req, res) => {
-  const ctx = getRequesterContext(req);
-  const { ids, driverId } = req.body;
-  if (!Array.isArray(ids) || ids.length === 0) {
-    return res.status(400).json({ error: 'لم يتم تحديد أي طلبيات' });
-  }
-
-  if (driverId && !canAccessDriver(ctx, driverId)) {
-    return res.status(403).json({ error: 'غير مصرح بتعيين سائق خارج نطاق شركتك' });
-  }
-
-  let assignedCount = 0;
-  orders = orders.map((o) => {
-    if (ids.includes(o.id) && canAccessOrder(ctx, o)) {
-      assignedCount++;
-      const calcDriverFee = driverId ? getDriverCompensationFee(driverId, o.governorate) : o.driverFee;
-      return {
-        ...o,
-        driverId: driverId || null,
-        driverFee: calcDriverFee,
-        status: driverId && o.status === 'PENDING' ? 'OUT_FOR_DELIVERY' : o.status,
-        updatedAt: new Date().toISOString(),
-      };
-    }
-    return o;
+  return res.status(400).json({
+    error: 'التعيين الجماعي المباشر للسائقين متوقف. يجب تعيين السائقين عبر مسارات Operational Core ومراحل الشحن المعتمدة.',
+    code: 'LEGACY_ASSIGNMENT_BYPASS_FORBIDDEN',
   });
-
-  saveDatabase();
-  res.json({ message: `تم تعيين السائق لـ ${assignedCount} طلبية بنجاح` });
 });
 
-// 10. DELETE /api/orders/:id: Delete single order
+// 10. DELETE /api/orders/:id: Hard delete forbidden to preserve audit/financial records
 app.delete('/api/orders/:id', requireAuth, (req, res) => {
-  const ctx = getRequesterContext(req);
-  const idx = orders.findIndex((o) => o.id === req.params.id);
-  if (idx === -1) {
-    return res.status(404).json({ error: 'الطلبية غير موجودة' });
-  }
-
-  const order = orders[idx];
-  if (!canAccessOrder(ctx, order)) {
-    return res.status(403).json({ error: 'غير مصرح بحذف هذه الشحنة' });
-  }
-
-  orders.splice(idx, 1);
-  res.json({ success: true, message: 'تم حذف الطلبية' });
-});
-
-// 12. GET /api/stats: Top-level Dashboard Metrics
-app.get('/api/stats', requireAuth, (req, res) => {
-  const ctx = getRequesterContext(req);
-  let scopedOrders = [...orders];
-
-  if (!ctx.isSuperAdmin && ctx.user) {
-    if (ctx.isAdmin && ctx.tenantId) {
-      const adminMerchantIds = users.filter((u) => u && (u.parentUserId === ctx.tenantId || u.id === ctx.tenantId)).map((u) => u.id);
-      scopedOrders = scopedOrders.filter((o) => o && (o.tenantId === ctx.tenantId || adminMerchantIds.includes(o.merchantId)));
-    } else if (ctx.isMerchant) {
-      scopedOrders = scopedOrders.filter((o) => o && o.merchantId === ctx.user?.id);
-    } else if (ctx.isDriver) {
-      scopedOrders = scopedOrders.filter((o) => o && o.driverId === ctx.user?.id);
-    }
-  }
-
-  const total = scopedOrders.length;
-  const delivered = scopedOrders.filter((o) => o.status === 'DELIVERED').length;
-  const active = scopedOrders.filter((o) => ['PENDING', 'PICKING', 'OUT_FOR_DELIVERY'].includes(o.status)).length;
-  const totalCOD = scopedOrders.reduce((sum, o) => sum + (o.totalCollection || 0), 0);
-  const totalFees = scopedOrders.reduce((sum, o) => sum + (o.deliveryFee || 0), 0);
-  const successRate = total > 0 ? Math.round((delivered / total) * 100) : 0;
-
-  res.json({
-    total,
-    delivered,
-    active,
-    totalCOD,
-    totalFees,
-    successRate,
+  return res.status(405).json({
+    error: 'الحذف المباشر للشحنات غير مصرح به للحفاظ على السجلات المالية والتشغيلية وسلسلة الحيازة القانونية. يمكنك إلغاء الطلبية عبر مسارات الإلغاء المعتمدة.',
+    code: 'HARD_DELETE_FORBIDDEN',
   });
 });
 
-// 13. GET /api/orders/track/:query: Public/Customer tracking lookup
-app.get('/api/orders/track/:query', (req, res) => {
-  const query = (req.params.query || '').trim().toLowerCase();
+// 12. GET /api/stats: Database-backed Top-level Dashboard Metrics
+app.get('/api/stats', requireAuth, async (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    let effectiveTenantId: string | undefined = undefined;
+    let merchantId: string | undefined = undefined;
+    let driverId: string | undefined = undefined;
+
+    if (!ctx.isSuperAdmin && ctx.user) {
+      if (ctx.isAdmin && ctx.tenantId) {
+        effectiveTenantId = ctx.tenantId;
+      } else if (ctx.isMerchant) {
+        merchantId = ctx.user?.id;
+      } else if (ctx.isDriver) {
+        driverId = ctx.user?.id;
+      } else if (ctx.tenantId) {
+        effectiveTenantId = ctx.tenantId;
+      }
+    }
+
+    const { stats } = await orderPersistenceService.getShipments({
+      tenantId: effectiveTenantId,
+      merchantId,
+      driverId,
+      limit: 1,
+    });
+
+    const successRate = stats.total > 0 ? Math.round((stats.delivered / stats.total) * 100) : 0;
+
+    res.json({
+      total: stats.total,
+      delivered: stats.delivered,
+      active: stats.pending + stats.picking + stats.out_for_delivery,
+      totalCOD: stats.totalCOD,
+      totalFees: stats.totalDeliveryFees,
+      successRate,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'فشل جلب إحصائيات لوحة التحكم' });
+  }
+});
+
+// 13. GET /api/orders/track/:query: Public/Customer tracking lookup backed by Supabase
+app.get('/api/orders/track/:query', async (req, res) => {
+  const query = (req.params.query || '').trim();
   if (!query) {
     return res.status(400).json({ error: 'يرجى إدخال رقم البوليصة أو رقم الهاتف' });
   }
 
-  const order = orders.find(
-    (o) =>
-      o.sequence.toLowerCase() === query ||
-      (o.referenceNumber && o.referenceNumber.toLowerCase() === query) ||
-      o.recipientPhone.replace(/[\s-]/g, '') === query.replace(/[\s-]/g, '') ||
-      o.id === query
-  );
-
-  if (!order) {
-    return res.status(404).json({ error: 'لم يتم العثور على أي شحنة مطابقة لهذا الرقم' });
-  }
-
-  const merchant = users.find((u) => u.id === order.merchantId);
-  const driver = users.find((u) => u.id === order.driverId);
-
-  res.json({
-    ...order,
-    merchantName: merchant?.commercialName || merchant?.name || 'التاجر',
-    driverName: driver?.name || 'لم يُحدد بعد',
-    driverPhone: driver?.phone || null,
-  });
-});
-
-// 14. POST /api/orders/scan: Warehouse Barcode Scanner Dispatch Action
-// [LEGACY COMPATIBILITY ONLY - UNSAFE FOR PHASE 3C MULTI-LEG CUSTODY]
-// Mutates status without custody verification or facility access checks. Use GET /api/operational/scan + domain mutation routes instead.
-app.post('/api/orders/scan', requireAuth, (req, res) => {
-  const ctx = getRequesterContext(req);
-  const { barcode, action, driverId, note } = req.body;
-  if (!barcode) {
-    return res.status(400).json({ error: 'رمز الباركود مطلوب' });
-  }
-
-  const cleanCode = barcode.trim().toUpperCase();
-  const orderIdx = orders.findIndex(
-    (o) =>
-      o.sequence.toUpperCase() === cleanCode ||
-      (o.referenceNumber && o.referenceNumber.toUpperCase() === cleanCode) ||
-      o.id === barcode.trim()
-  );
-
-  if (orderIdx === -1) {
-    return res.status(404).json({ error: `الباركود [${cleanCode}] غير مسجل في النظام` });
-  }
-
-  const order = orders[orderIdx];
-  if (!canAccessOrder(ctx, order)) {
-    return res.status(403).json({ error: 'غير مصرح بالوصول إلى هذه الشحنة' });
-  }
-
-  if (driverId && !canAccessDriver(ctx, driverId)) {
-    return res.status(403).json({ error: 'غير مصرح بتعيين سائق خارج نطاق شركتك' });
-  }
-
-  const oldStatus = order.status;
-  let newStatus: OrderStatus = oldStatus;
-  let logNote = note || '';
-
-  if (action === 'RECEIVE') {
-    newStatus = 'RECEIVED_AT_HUB';
-    logNote = logNote || 'تم مسح الباركود واستلام الطرد في مستودع الفرز الرئيسي';
-  } else if (action === 'ASSIGN') {
-    newStatus = 'OUT_FOR_DELIVERY';
-    if (driverId) {
-      order.driverId = driverId;
+  try {
+    const dbShipment = await orderPersistenceService.getShipmentByTracking(query);
+    if (!dbShipment) {
+      return res.status(404).json({ error: 'لم يتم العثور على أي شحنة مطابقة لهذا الرقم' });
     }
-    const driver = users.find((u) => u.id === (driverId || order.driverId));
-    logNote = logNote || `تم فرز الطرد وتسليمه للكابتن: ${driver?.name || 'سائق التوصيل'}`;
-  } else if (action === 'DELIVER') {
-    newStatus = 'DELIVERED';
-    order.deliveredAt = new Date().toISOString();
-    logNote = logNote || 'تم تأكيد تسليم الطرد عبر الماسح';
-  } else if (action === 'RETURN') {
-    return res.status(400).json({
-      error: 'لا يمكن تحويل الشحنة إلى مرتجع مباشرة. يرجى استخدام الماسح التشغيلي الموحد ومسارات الإرجاع /api/operational/returns/*',
-      code: 'INVALID_STATUS_TRANSITION',
+
+    const order = mapShipmentRowToOrder(dbShipment, users);
+    const merchant = users.find((u) => u.id === order.merchantId);
+    const driver = users.find((u) => u.id === order.driverId);
+
+    // Public safe contract strictly omitting internal tenant, delivery fee, merchant collection, driver fee, deliveryOtp, notes
+    res.json({
+      id: order.id,
+      sequence: order.sequence,
+      status: order.status,
+      recipientName: order.recipientName,
+      governorate: order.governorate,
+      area: order.area,
+      fullAddress: order.fullAddress,
+      packageType: order.packageType,
+      totalCollection: order.totalCollection,
+      paymentType: order.paymentType,
+      createdAt: order.createdAt,
+      updatedAt: order.updatedAt,
+      merchantName: merchant?.commercialName || merchant?.name || 'التاجر',
+      driverName: driver?.name || 'لم يُحدد بعد',
+      driverPhone: driver?.phone || null,
     });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'فشل تتبع الشحنة' });
   }
+});
 
-  order.status = newStatus;
-  order.updatedAt = new Date().toISOString();
-  order.statusLogs = [
-    ...(order.statusLogs || []),
-    {
-      id: `log-${Date.now()}`,
-      orderId: order.id,
-      fromStatus: oldStatus,
-      toStatus: newStatus,
-      note: logNote,
-      createdAt: new Date().toISOString(),
-    },
-  ];
-
-  res.json({
-    success: true,
-    message: `تم تحديث الشحنة (${order.sequence}) بنجاح إلى: ${newStatus}`,
-    order: sanitizeOrderForRole(order, ctx),
+// 14. POST /api/orders/scan: Reject legacy scan mutation bypass
+app.post('/api/orders/scan', requireAuth, (req, res) => {
+  return res.status(400).json({
+    error: 'ماسح الباركود القديم متوقف لمنع تجاوز سلسلة الحيازة. يرجى استخدام الماسح التشغيلي الموحد عبر /api/operational/scan و /api/operational/hub-scans',
+    code: 'LEGACY_SCAN_BYPASS_FORBIDDEN',
   });
 });
 
-// 15. GET /api/settlements: Detailed Financial Accounting Overview
-app.get('/api/settlements', requireAuth, (req, res) => {
-  const ctx = getRequesterContext(req);
-  let merchantUsers = users.filter((u) => u.role === 'MERCHANT');
-  let driverUsers = users.filter((u) => u.role === 'DRIVER');
+// 15. GET /api/settlements: Detailed Financial Accounting Overview backed by Supabase
+app.get('/api/settlements', requireAuth, async (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    let merchantUsers = users.filter((u) => u.role === 'MERCHANT');
+    let driverUsers = users.filter((u) => u.role === 'DRIVER');
 
-  if (!ctx.isSuperAdmin && ctx.user) {
-    if (ctx.isAdmin && ctx.tenantId) {
-      merchantUsers = merchantUsers.filter((u) => u.parentUserId === ctx.tenantId || u.id === ctx.tenantId);
-      driverUsers = driverUsers.filter((u) => u.parentUserId === ctx.tenantId || u.id === ctx.tenantId);
-    } else if (ctx.isMerchant) {
-      merchantUsers = merchantUsers.filter((u) => u.id === ctx.user?.id);
-      driverUsers = [];
-    } else if (ctx.isDriver) {
-      merchantUsers = [];
-      driverUsers = driverUsers.filter((u) => u.id === ctx.user?.id);
+    if (!ctx.isSuperAdmin && ctx.user) {
+      if (ctx.isAdmin && ctx.tenantId) {
+        merchantUsers = merchantUsers.filter((u) => u.parentUserId === ctx.tenantId || u.id === ctx.tenantId);
+        driverUsers = driverUsers.filter((u) => u.parentUserId === ctx.tenantId || u.id === ctx.tenantId);
+      } else if (ctx.isMerchant) {
+        merchantUsers = merchantUsers.filter((u) => u.id === ctx.user?.id);
+        driverUsers = [];
+      } else if (ctx.isDriver) {
+        merchantUsers = [];
+        driverUsers = driverUsers.filter((u) => u.id === ctx.user?.id);
+      }
     }
+
+    const tenantFilter = (!ctx.isSuperAdmin && ctx.tenantId) ? ctx.tenantId : undefined;
+    const dbShipments = await orderPersistenceService.getSettlementShipments({
+      tenantId: tenantFilter,
+    });
+    const mappedOrders = dbShipments.map((s) => mapShipmentRowToOrder(s, users));
+
+    const merchantSettlements = merchantUsers.map((m) => {
+      const merchantOrders = mappedOrders.filter((o) => o.merchantId === m.id);
+      const deliveredOrders = merchantOrders.filter((o) => o.status === 'DELIVERED');
+      const pendingSettlement = deliveredOrders.filter((o) => !o.isSettledWithMerchant);
+      const settledOrders = deliveredOrders.filter((o) => o.isSettledWithMerchant);
+
+      const pendingGoods = pendingSettlement.reduce((sum, o) => sum + (o.totalCollection || 0), 0);
+      const pendingFees = pendingSettlement.reduce((sum, o) => sum + (o.deliveryFee || 0), 0);
+      // Net payable to merchant: merchantCollection (which already equals totalCollection - deliveryFee)
+      const netPayable = pendingSettlement.reduce((sum, o) => sum + (o.merchantCollection || 0), 0);
+
+      const alreadySettledAmount = settledOrders.reduce(
+        (sum, o) => sum + (o.merchantCollection || 0),
+        0
+      );
+
+      return {
+        merchant: m,
+        totalOrders: merchantOrders.length,
+        deliveredCount: deliveredOrders.length,
+        pendingCount: pendingSettlement.length,
+        pendingGoods,
+        pendingFees,
+        netPayable,
+        settledCount: settledOrders.length,
+        alreadySettledAmount,
+        pendingOrdersList: pendingSettlement,
+      };
+    });
+
+    const driverSettlements = driverUsers.map((d) => {
+      const driverOrders = mappedOrders.filter((o) => o.driverId === d.id);
+      const deliveredOrders = driverOrders.filter((o) => o.status === 'DELIVERED');
+      const pendingCashOrders = deliveredOrders.filter((o) => !o.isSettledWithDriver);
+      const settledOrders = deliveredOrders.filter((o) => o.isSettledWithDriver);
+
+      const pendingCashInHand = pendingCashOrders.reduce((sum, o) => sum + (o.totalCollection || 0), 0);
+      const totalCollectedHistorical = settledOrders.reduce((sum, o) => sum + (o.totalCollection || 0), 0);
+
+      return {
+        driver: d,
+        assignedCount: driverOrders.length,
+        deliveredCount: deliveredOrders.length,
+        pendingCount: pendingCashOrders.length,
+        pendingCashInHand,
+        totalCollectedHistorical,
+        pendingOrdersList: pendingCashOrders,
+      };
+    });
+
+    res.json({
+      merchants: merchantSettlements,
+      drivers: driverSettlements,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'فشل جلب بيانات التسويات' });
   }
-
-  const merchantSettlements = merchantUsers.map((m) => {
-    const merchantOrders = orders.filter((o) => o.merchantId === m.id);
-    const deliveredOrders = merchantOrders.filter((o) => o.status === 'DELIVERED');
-    const pendingSettlement = deliveredOrders.filter((o) => !o.isSettledWithMerchant);
-    const settledOrders = deliveredOrders.filter((o) => o.isSettledWithMerchant);
-
-    const pendingGoods = pendingSettlement.reduce((sum, o) => sum + (o.merchantCollection || 0), 0);
-    const pendingFees = pendingSettlement.reduce((sum, o) => sum + (o.deliveryFee || 0), 0);
-    const netPayable = pendingGoods - pendingFees;
-
-    const alreadySettledAmount = settledOrders.reduce(
-      (sum, o) => sum + ((o.merchantCollection || 0) - (o.deliveryFee || 0)),
-      0
-    );
-
-    return {
-      merchant: m,
-      totalOrders: merchantOrders.length,
-      deliveredCount: deliveredOrders.length,
-      pendingCount: pendingSettlement.length,
-      pendingGoods,
-      pendingFees,
-      netPayable,
-      settledCount: settledOrders.length,
-      alreadySettledAmount,
-      pendingOrdersList: pendingSettlement,
-    };
-  });
-
-  const driverSettlements = driverUsers.map((d) => {
-    const driverOrders = orders.filter((o) => o.driverId === d.id);
-    const deliveredOrders = driverOrders.filter((o) => o.status === 'DELIVERED');
-    const pendingCashOrders = deliveredOrders.filter((o) => !o.isSettledWithDriver);
-    const settledOrders = deliveredOrders.filter((o) => o.isSettledWithDriver);
-
-    const pendingCashInHand = pendingCashOrders.reduce((sum, o) => sum + (o.totalCollection || 0), 0);
-    const totalCollectedHistorical = settledOrders.reduce((sum, o) => sum + (o.totalCollection || 0), 0);
-
-    return {
-      driver: d,
-      assignedCount: driverOrders.length,
-      deliveredCount: deliveredOrders.length,
-      pendingCount: pendingCashOrders.length,
-      pendingCashInHand,
-      totalCollectedHistorical,
-      pendingOrdersList: pendingCashOrders,
-    };
-  });
-
-  res.json({
-    merchants: merchantSettlements,
-    drivers: driverSettlements,
-  });
 });
 
 // 16. POST /api/settlements/merchants/:merchantId/settle: Settle Merchant Balance
-app.post('/api/settlements/merchants/:merchantId/settle', requireAuth, (req, res) => {
-  const ctx = getRequesterContext(req);
-  const { merchantId } = req.params;
-  const { paymentMethod = 'CLIQ', reference = '', notes = '' } = req.body;
+app.post('/api/settlements/merchants/:merchantId/settle', requireAuth, async (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const { merchantId } = req.params;
+    const { paymentMethod = 'CLIQ', reference = '', notes = '' } = req.body;
 
-  if (!canAccessMerchant(ctx, merchantId)) {
-    return res.status(403).json({ error: 'غير مصرح بتسوية حسابات هذا المتجر' });
-  }
-
-  const merchant = users.find((u) => u.id === merchantId);
-  const merchantName = merchant ? merchant.storeName || merchant.name : 'متجر';
-
-  let count = 0;
-  let settledAmount = 0;
-
-  orders = orders.map((o) => {
-    if (o.merchantId === merchantId && o.status === 'DELIVERED' && !o.isSettledWithMerchant) {
-      count++;
-      settledAmount += (o.merchantCollection || 0) - (o.deliveryFee || 0);
-      return {
-        ...o,
-        isSettledWithMerchant: true,
-        settlementStatus: 'SETTLED',
-        updatedAt: new Date().toISOString(),
-      };
+    if (!canAccessMerchant(ctx, merchantId)) {
+      return res.status(403).json({ error: 'غير مصرح بتسوية حسابات هذا المتجر' });
     }
-    return o;
-  });
 
-  if (settledAmount > 0) {
-    const vNumber = `V-PAY-2026-${String(vouchers.filter((v) => v.type === 'PAYMENT').length + 1).padStart(4, '0')}`;
-    const newVoucher: Voucher = {
-      id: `v-${Date.now()}`,
-      voucherNumber: vNumber,
-      type: 'PAYMENT',
-      date: new Date().toISOString().split('T')[0],
-      amount: settledAmount,
-      beneficiaryOrPayer: merchantName,
-      paymentMethod: (paymentMethod.toUpperCase() as any) || 'CLIQ',
-      referenceNumber: reference || 'CLIQ-TX',
-      accountId: 'acc-2010', // أمانات تحصيل التجار COD
-      contraAccountId: paymentMethod === 'CASH' ? 'acc-1010' : 'acc-1030', // الصندوق أو حساب كليك
-      notes: `تسوية مستحقات ${count} شحنة لـ (${merchantName})${notes ? ' - ' + notes : ''}`,
-      status: 'POSTED',
-      createdAt: new Date().toISOString(),
-    };
-    vouchers.push(newVoucher);
+    const merchant = users.find((u) => u.id === merchantId);
+    const merchantName = merchant ? merchant.storeName || merchant.name : 'متجر';
 
-    const codAcc = accounts.find((a) => a.id === 'acc-2010');
-    const payAcc = accounts.find((a) => a.id === (paymentMethod === 'CASH' ? 'acc-1010' : 'acc-1030'));
-    if (codAcc) codAcc.balance -= settledAmount;
-    if (payAcc) payAcc.balance -= settledAmount;
-
-    journalEntries.push({
-      id: `je-${Date.now()}`,
-      entryNumber: `JE-2026-${String(journalEntries.length + 1).padStart(4, '0')}`,
-      date: new Date().toISOString(),
-      description: `قيد صرف تسوية مستحقات التاجر [${merchantName}] - سند صرف ${vNumber}`,
-      referenceType: 'SETTLEMENT',
-      referenceId: newVoucher.id,
-      lines: [
-        {
-          accountId: 'acc-2010',
-          accountCode: '2010',
-          accountName: 'أمانات تحصيل التجار COD',
-          debit: settledAmount,
-          credit: 0,
-          note: `تسوية ${count} طلبية`,
-        },
-        {
-          accountId: payAcc?.id || 'acc-1030',
-          accountCode: payAcc?.code || '1030',
-          accountName: payAcc?.name || 'حساب كليك البنكي (CliQ)',
-          debit: 0,
-          credit: settledAmount,
-          note: `تحويل بنكي / كليك مرجع: ${reference || 'CliQ'}`,
-        },
-      ],
-      totalDebit: settledAmount,
-      totalCredit: settledAmount,
-      createdByName: 'نظام دارجو المحاسبي',
-      createdAt: new Date().toISOString(),
+    const tenantFilter = (!ctx.isSuperAdmin && ctx.tenantId) ? ctx.tenantId : undefined;
+    const { settledCount, settledAmount } = await orderPersistenceService.settleMerchantShipments({
+      merchantId,
+      tenantId: tenantFilter,
     });
 
-    saveDatabase();
-  }
+    if (settledAmount > 0) {
+      const vNumber = `V-PAY-2026-${String(vouchers.filter((v) => v.type === 'PAYMENT').length + 1).padStart(4, '0')}`;
+      const newVoucher: Voucher = {
+        id: `v-${Date.now()}`,
+        voucherNumber: vNumber,
+        type: 'PAYMENT',
+        date: new Date().toISOString().split('T')[0],
+        amount: settledAmount,
+        beneficiaryOrPayer: merchantName,
+        paymentMethod: (paymentMethod.toUpperCase() as any) || 'CLIQ',
+        referenceNumber: reference || 'CLIQ-TX',
+        accountId: 'acc-2010', // أمانات تحصيل التجار COD
+        contraAccountId: paymentMethod === 'CASH' ? 'acc-1010' : 'acc-1030', // الصندوق أو حساب كليك
+        notes: `تسوية مستحقات ${settledCount} شحنة لـ (${merchantName})${notes ? ' - ' + notes : ''}`,
+        status: 'POSTED',
+        createdAt: new Date().toISOString(),
+      };
+      vouchers.push(newVoucher);
 
-  res.json({
-    success: true,
-    message: `تم تسوية مستحقات المتجر لـ ${count} طرد بإجمالي صافي ${settledAmount.toFixed(2)} د.أ بواسطة (${paymentMethod})`,
-    settledCount: count,
-    settledAmount,
-    reference,
-  });
+      const codAcc = accounts.find((a) => a.id === 'acc-2010');
+      const payAcc = accounts.find((a) => a.id === (paymentMethod === 'CASH' ? 'acc-1010' : 'acc-1030'));
+      if (codAcc) codAcc.balance -= settledAmount;
+      if (payAcc) payAcc.balance -= settledAmount;
+
+      journalEntries.push({
+        id: `je-${Date.now()}`,
+        entryNumber: `JE-2026-${String(journalEntries.length + 1).padStart(4, '0')}`,
+        date: new Date().toISOString(),
+        description: `قيد صرف تسوية مستحقات التاجر [${merchantName}] - سند صرف ${vNumber}`,
+        referenceType: 'SETTLEMENT',
+        referenceId: newVoucher.id,
+        lines: [
+          {
+            accountId: 'acc-2010',
+            accountCode: '2010',
+            accountName: 'أمانات تحصيل التجار COD',
+            debit: settledAmount,
+            credit: 0,
+            note: `تسوية ${settledCount} طلبية`,
+          },
+          {
+            accountId: payAcc?.id || 'acc-1030',
+            accountCode: payAcc?.code || '1030',
+            accountName: payAcc?.name || 'حساب كليك البنكي (CliQ)',
+            debit: 0,
+            credit: settledAmount,
+            note: `تحويل بنكي / كليك مرجع: ${reference || 'CliQ'}`,
+          },
+        ],
+        totalDebit: settledAmount,
+        totalCredit: settledAmount,
+        createdByName: 'نظام دارجو المحاسبي',
+        createdAt: new Date().toISOString(),
+      });
+
+      saveDatabase();
+    }
+
+    res.json({
+      success: true,
+      message: `تم تسوية مستحقات المتجر لـ ${settledCount} طرد بإجمالي صافي ${settledAmount.toFixed(2)} د.أ بواسطة (${paymentMethod})`,
+      settledCount,
+      settledAmount,
+      reference,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'فشل تسوية مستحقات المتجر' });
+  }
 });
 
 // 17. POST /api/settlements/drivers/:driverId/close-cash: Close Driver Cash Custody
-app.post('/api/settlements/drivers/:driverId/close-cash', requireAuth, (req, res) => {
-  const ctx = getRequesterContext(req);
-  const { driverId } = req.params;
-  const { notes = '' } = req.body;
+app.post('/api/settlements/drivers/:driverId/close-cash', requireAuth, async (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    const { driverId } = req.params;
+    const { notes = '' } = req.body;
 
-  if (!canAccessDriver(ctx, driverId)) {
-    return res.status(403).json({ error: 'غير مصرح بإغلاق عهدة هذا السائق' });
-  }
-
-  const driver = users.find((u) => u.id === driverId);
-  const driverName = driver ? driver.name : 'كابتن';
-
-  let count = 0;
-  let cashClosed = 0;
-
-  orders = orders.map((o) => {
-    if (o.driverId === driverId && o.status === 'DELIVERED' && !o.isSettledWithDriver) {
-      count++;
-      cashClosed += o.totalCollection || 0;
-      return {
-        ...o,
-        isSettledWithDriver: true,
-        updatedAt: new Date().toISOString(),
-      };
+    if (!canAccessDriver(ctx, driverId)) {
+      return res.status(403).json({ error: 'غير مصرح بإغلاق عهدة هذا السائق' });
     }
-    return o;
-  });
 
-  if (cashClosed > 0) {
-    const vNumber = `V-REC-2026-${String(vouchers.filter((v) => v.type === 'RECEIPT').length + 1).padStart(4, '0')}`;
-    const newVoucher: Voucher = {
-      id: `v-${Date.now()}`,
-      voucherNumber: vNumber,
-      type: 'RECEIPT',
-      date: new Date().toISOString().split('T')[0],
-      amount: cashClosed,
-      beneficiaryOrPayer: `الكابتن ${driverName}`,
-      paymentMethod: 'CASH',
-      referenceNumber: 'CASH-CLOSE',
-      accountId: 'acc-1010', // الصندوق الرئيسي
-      contraAccountId: 'acc-1040', // عهد ومحافظ الكباتن
-      notes: `إغلاق وتوريد عهدة نقدية عن ${count} طرد من الكابتن ${driverName}${notes ? ' - ' + notes : ''}`,
-      status: 'POSTED',
-      createdAt: new Date().toISOString(),
-    };
-    vouchers.push(newVoucher);
+    const driver = users.find((u) => u.id === driverId);
+    const driverName = driver ? driver.name : 'كابتن';
 
-    const mainCash = accounts.find((a) => a.id === 'acc-1010');
-    const driverCustody = accounts.find((a) => a.id === 'acc-1040');
-    if (mainCash) mainCash.balance += cashClosed;
-    if (driverCustody) driverCustody.balance -= cashClosed;
-
-    journalEntries.push({
-      id: `je-${Date.now()}`,
-      entryNumber: `JE-2026-${String(journalEntries.length + 1).padStart(4, '0')}`,
-      date: new Date().toISOString(),
-      description: `قيد قبض وتوريد عهدة الكابتن [${driverName}] - سند قبض ${vNumber}`,
-      referenceType: 'VOUCHER',
-      referenceId: newVoucher.id,
-      lines: [
-        {
-          accountId: 'acc-1010',
-          accountCode: '1010',
-          accountName: 'الصندوق النقدي الرئيسي (خزينة دارجو)',
-          debit: cashClosed,
-          credit: 0,
-          note: `استلام نقدي بالصندوق`,
-        },
-        {
-          accountId: 'acc-1040',
-          accountCode: '1040',
-          accountName: 'عهد ومحافظ الكباتن المعلقة',
-          debit: 0,
-          credit: cashClosed,
-          note: `إغلاق عهدة الكابتن ${driverName}`,
-        },
-      ],
-      totalDebit: cashClosed,
-      totalCredit: cashClosed,
-      createdByName: 'نظام دارجو المحاسبي',
-      createdAt: new Date().toISOString(),
+    const tenantFilter = (!ctx.isSuperAdmin && ctx.tenantId) ? ctx.tenantId : undefined;
+    const { settledCount, cashCollected } = await orderPersistenceService.settleDriverShipments({
+      driverId,
+      tenantId: tenantFilter,
     });
 
-    saveDatabase();
-  }
+    if (cashCollected > 0) {
+      const vNumber = `V-REC-2026-${String(vouchers.filter((v) => v.type === 'RECEIPT').length + 1).padStart(4, '0')}`;
+      const newVoucher: Voucher = {
+        id: `v-${Date.now()}`,
+        voucherNumber: vNumber,
+        type: 'RECEIPT',
+        date: new Date().toISOString().split('T')[0],
+        amount: cashCollected,
+        beneficiaryOrPayer: `الكابتن ${driverName}`,
+        paymentMethod: 'CASH',
+        referenceNumber: 'CASH-CLOSE',
+        accountId: 'acc-1010', // الصندوق الرئيسي
+        contraAccountId: 'acc-1040', // عهد ومحافظ الكباتن
+        notes: `إغلاق وتوريد عهدة نقدية عن ${settledCount} طرد من الكابتن ${driverName}${notes ? ' - ' + notes : ''}`,
+        status: 'POSTED',
+        createdAt: new Date().toISOString(),
+      };
+      vouchers.push(newVoucher);
 
-  res.json({
-    success: true,
-    message: `تم إغلاق عهدة الكابتن واستلام ${cashClosed.toFixed(2)} د.أ نقداً عن ${count} طرد مسلّم`,
-    closedCount: count,
-    cashClosed,
-  });
+      const mainCash = accounts.find((a) => a.id === 'acc-1010');
+      const driverCustody = accounts.find((a) => a.id === 'acc-1040');
+      if (mainCash) mainCash.balance += cashCollected;
+      if (driverCustody) driverCustody.balance -= cashCollected;
+
+      journalEntries.push({
+        id: `je-${Date.now()}`,
+        entryNumber: `JE-2026-${String(journalEntries.length + 1).padStart(4, '0')}`,
+        date: new Date().toISOString(),
+        description: `قيد قبض وتوريد عهدة الكابتن [${driverName}] - سند قبض ${vNumber}`,
+        referenceType: 'VOUCHER',
+        referenceId: newVoucher.id,
+        lines: [
+          {
+            accountId: 'acc-1010',
+            accountCode: '1010',
+            accountName: 'الصندوق النقدي الرئيسي (خزينة دارجو)',
+            debit: cashCollected,
+            credit: 0,
+            note: `استلام نقدي بالصندوق`,
+          },
+          {
+            accountId: 'acc-1040',
+            accountCode: '1040',
+            accountName: 'عهد ومحافظ الكباتن المعلقة',
+            debit: 0,
+            credit: cashCollected,
+            note: `إغلاق عهدة الكابتن ${driverName}`,
+          },
+        ],
+        totalDebit: cashCollected,
+        totalCredit: cashCollected,
+        createdByName: 'نظام دارجو المحاسبي',
+        createdAt: new Date().toISOString(),
+      });
+
+      saveDatabase();
+    }
+
+    res.json({
+      success: true,
+      message: `تم إغلاق عهدة الكابتن واستلام ${cashCollected.toFixed(2)} د.أ نقداً عن ${settledCount} طرد مسلّم`,
+      closedCount: settledCount,
+      cashClosed: cashCollected,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'فشل إغلاق عهدة السائق' });
+  }
 });
 
 // 18. POST /api/routes/optimize: Smart Driver Route Optimization
@@ -3801,55 +3602,11 @@ app.post('/api/returns/handover', requireAuth, (req, res) => {
   });
 });
 
-// 21. POST /api/orders/:id/verify-pod: Verify Delivery with OTP, Digital Signature & Proof Photo
-app.post('/api/orders/:id/verify-pod', requireAuth, (req, res) => {
-  const ctx = getRequesterContext(req);
-  const { otp, signature, photo, driverNote, bypassOtp } = req.body;
-  const order = orders.find((o) => o.id === req.params.id);
-  if (!order) {
-    return res.status(404).json({ error: 'الطلبية غير موجودة' });
-  }
-
-  if (!canAccessOrder(ctx, order)) {
-    return res.status(403).json({ error: 'غير مصرح بتأكيد تسليم هذه الشحنة' });
-  }
-
-  let otpMatched = false;
-  if (!bypassOtp) {
-    if (!otp) {
-      return res.status(400).json({ error: 'يرجى إدخال رمز التحقق السري (OTP) المكون من 4 أرقام' });
-    }
-    if (order.deliveryOtp && otp.trim() !== order.deliveryOtp.trim()) {
-      return res.status(400).json({ error: 'رمز التحقق (OTP) غير صحيح، يرجى التأكد من العميل المستلم' });
-    }
-    otpMatched = true;
-  }
-
-  order.status = 'DELIVERED';
-  order.deliveredAt = new Date().toISOString();
-  order.updatedAt = new Date().toISOString();
-  order.otpVerified = otpMatched;
-  if (signature) order.recipientSignature = signature;
-  if (photo) order.deliveryPhoto = photo;
-
-  order.statusLogs = [
-    ...(order.statusLogs || []),
-    {
-      id: `log-${Date.now()}`,
-      orderId: order.id,
-      fromStatus: 'OUT_FOR_DELIVERY',
-      toStatus: 'DELIVERED',
-      note: otpMatched
-        ? `تم تأكيد التسليم بنجاح مع مطابقة رمز التحقق السري (OTP: ${order.deliveryOtp}) وتوثيق التوقيع الإلكتروني`
-        : `تم تأكيد التسليم مع تجاوز الرمز يدوياً بواسطة الكابتن (${driverNote || 'بناء على موافقة العمليات'})`,
-      createdAt: new Date().toISOString(),
-    },
-  ];
-
-  res.json({
-    success: true,
-    message: `تم تسليم الطرد رقم (${order.sequence}) بنجاح وتوثيق إثبات التسليم الإلكتروني`,
-    order: sanitizeOrderForRole(order, ctx),
+// 21. POST /api/orders/:id/verify-pod: Deprecated/Disabled legacy OTP POD route (Fails closed)
+app.post('/api/orders/:id/verify-pod', requireAuth, (_req, res) => {
+  return res.status(410).json({
+    error: 'OTP_FEATURE_DISABLED',
+    message: 'ميزة التحقق برمز OTP معطلة في هذا الإصدار. يجب إتمام عمليات التسليم حصراً عبر مسار العمليات التشغيلية الرسمي /api/operational/delivery',
   });
 });
 
@@ -3942,8 +3699,8 @@ app.post('/api/merchants/:id/api-keys', requireAuth, (req, res) => {
   });
 });
 
-// 25. POST /api/webhooks/shopify: Automated External Webhook Receiver
-app.post('/api/webhooks/shopify', (req, res) => {
+// 25. POST /api/webhooks/shopify: Automated External Webhook Receiver backed by Supabase
+app.post('/api/webhooks/shopify', async (req, res) => {
   try {
     const {
       merchantId = 'u-mer-1',
@@ -3954,58 +3711,64 @@ app.post('/api/webhooks/shopify', (req, res) => {
       area = 'عبدون',
       codAmount = 45.0,
       itemsDescription = 'طلب إلكتروني من متجر شوبيفاي',
+      referenceNumber,
     } = req.body;
 
-    const deliveryFee = 3.0;
+    const targetMerchant = users.find((u) => u.id === merchantId);
+    const targetTenantId = targetMerchant?.parentUserId || 't-default';
+
+    const deliveryFee = getMerchantDeliveryFee(merchantId, governorate) || 3.0;
     const totalCollection = parseFloat(codAmount) || 45.0;
     const merchantCollection = Math.max(0, totalCollection - deliveryFee);
 
-    const webhookOrder: Order = {
-      id: `ord-webhook-${Date.now()}`,
-      sequence: `ORD-2026-${nextSequenceNumber++}`,
-      referenceNumber: `SHPFY-${Math.floor(1000 + Math.random() * 9000)}`,
-      status: 'PENDING',
-      paymentType: 'COD',
+    const refNum = referenceNumber || (req.headers['x-shopify-order-id'] ? `SHPFY-${req.headers['x-shopify-order-id']}` : `SHPFY-${Math.floor(1000 + Math.random() * 9000)}`);
+    const shopifyWebhookId = (req.headers['x-shopify-webhook-id'] as string) || `webhook-shopify-${targetTenantId}-${merchantId}-${refNum}`;
+
+    const canonicalPayload: CanonicalOrderPayload = {
       merchantId,
-      driverId: null,
       recipientName: customerName,
       recipientPhone: phone,
+      recipientPhoneAlt: null,
       governorate,
       area,
-      fullAddress: address,
-      merchantCollection,
-      deliveryFee,
-      totalCollection,
-      isSettledWithMerchant: false,
-      isSettledWithDriver: false,
+      subArea: null,
+      streetAddress: address || `${governorate} - ${area}`,
+      referenceNumber: refNum,
+      paymentType: 'COD',
+      paymentMethod: 'COD',
       packageType: itemsDescription,
+      packageWeightKg: 1.0,
       piecesCount: 1,
-      deliveryAttempts: 0,
-      deliveryOtp: Math.floor(1000 + Math.random() * 9000).toString(),
       notes: 'تم الاستيراد التلقائي عبر الويب هوك (Shopify Webhook)',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      statusLogs: [
-        {
-          id: `log-${Date.now()}`,
-          orderId: `ord-webhook-${Date.now()}`,
-          fromStatus: null,
-          toStatus: 'PENDING',
-          note: 'تم استقبال الطلب آلياً عبر رابط Webhook المتجر الإلكتروني',
-          createdAt: new Date().toISOString(),
-        },
-      ],
+      totalCollectionInput: totalCollection,
+      merchantCollectionInput: merchantCollection,
     };
 
-    orders.unshift(webhookOrder);
-    saveDatabase();
+    const { shipment } = await orderPersistenceService.createOrderIdempotent({
+      tenantId: targetTenantId,
+      merchantId,
+      idempotencyKey: shopifyWebhookId,
+      canonicalPayload,
+      deliveryFee,
+      merchantCollection,
+      totalCollection,
+      actorId: null,
+      actorName: 'Shopify Webhook Engine',
+      actorRole: 'INTEGRATION',
+    });
+
+    const mappedOrder = mapShipmentRowToOrder(shipment, users);
+
     res.status(201).json({
       success: true,
       message: 'تم استلام وتوليد الشحنة آلياً بنجاح بموجب Webhook',
-      order: populateOrder(webhookOrder),
-      waybillSequence: webhookOrder.sequence,
+      order: populateOrder(mappedOrder),
+      waybillSequence: mappedOrder.sequence,
     });
   } catch (err: any) {
+    if (err instanceof OrderPersistenceError) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
     res.status(500).json({ error: err.message });
   }
 });
@@ -9323,7 +9086,7 @@ app.get('/api/merchants/:merchantId/invoices', requireAuth, (req, res) => {
 });
 
 // POST /api/merchants/:merchantId/invoices
-app.post('/api/merchants/:merchantId/invoices', requireAuth, (req, res) => {
+app.post('/api/merchants/:merchantId/invoices', requireAuth, async (req, res) => {
   try {
     const ctx = getRequesterContext(req);
     const { merchantId } = req.params;
@@ -9364,48 +9127,51 @@ app.post('/api/merchants/:merchantId/invoices', requireAuth, (req, res) => {
     let createdOrder: Order | undefined = undefined;
 
     if (type === 'SALES' && createDeliveryOrder) {
-      const orderSeq = `ORD-2026-${String(nextSequenceNumber++).padStart(4, '0')}`;
       const delFee = Number(deliveryFee) || 2.0;
       const gTotal = Number(grandTotal) || 0;
       const merchColl = Math.max(0, gTotal - delFee);
 
-      createdOrder = {
-        id: `ord-${Date.now()}`,
-        sequence: orderSeq,
-        referenceNumber: invoiceNumber,
-        status: 'PENDING',
-        paymentType: paymentMethod === 'COD' ? 'COD' : 'PREPAID',
+      const targetMerchantObj = users.find((u) => u.id === merchantId);
+      const targetTenantId = targetMerchantObj?.parentUserId || ctx.tenantId || 't-default';
+
+      const canonicalPayload: CanonicalOrderPayload = {
         merchantId,
         recipientName: partyName || 'عميل المتجر',
         recipientPhone: partyPhone || '0790000000',
+        recipientPhoneAlt: null,
         governorate: deliveryGovernorate || 'عمان',
         area: deliveryArea || 'عمان',
-        subArea: '',
-        fullAddress: deliveryFullAddress || partyAddress || 'عمان',
-        merchantCollection: merchColl,
-        deliveryFee: delFee,
-        totalCollection: gTotal,
-        isSettledWithMerchant: false,
-        isSettledWithDriver: false,
+        subArea: null,
+        streetAddress: deliveryFullAddress || partyAddress || 'عمان',
+        referenceNumber: invoiceNumber,
+        paymentType: (paymentMethod === 'COD' ? 'COD' : 'PREPAID') as PaymentType,
+        paymentMethod: paymentMethod === 'COD' ? 'COD' : (paymentMethod === 'CLIQ' ? 'CLIQ' : 'PREPAID'),
         packageType: 'طرود وبضائع المتجر',
+        packageWeightKg: 1.0,
         piecesCount: items.reduce((sum: number, it: any) => sum + (Number(it.quantity) || 1), 0),
-        deliveryAttempts: 0,
         notes: `تم إنشاء الشحنة تلقائياً من فاتورة المبيعات [${invoiceNumber}] | ${items.map((it: any) => `${it.productName} (${it.quantity})`).join(', ')}`,
-        statusLogs: [
-          {
-            id: `log-${Date.now()}`,
-            orderId: `ord-${Date.now()}`,
-            fromStatus: null,
-            toStatus: 'PENDING',
-            note: `إنشاء طلبية شحن وتوصيل من فاتورة المبيعات ${invoiceNumber}`,
-            createdAt: new Date().toISOString(),
-          },
-        ],
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        totalCollectionInput: gTotal,
+        merchantCollectionInput: merchColl,
       };
 
-      orders.unshift(createdOrder);
+      try {
+        const { shipment } = await orderPersistenceService.createOrderIdempotent({
+          tenantId: targetTenantId,
+          merchantId,
+          idempotencyKey: `pos-invoice-${targetTenantId}-${merchantId}-${invoiceNumber}`,
+          canonicalPayload,
+          deliveryFee: delFee,
+          merchantCollection: merchColl,
+          totalCollection: gTotal,
+          actorId: ctx.userId || null,
+          actorName: ctx.user?.name || null,
+          actorRole: ctx.user?.role || null,
+        });
+
+        createdOrder = populateOrder(mapShipmentRowToOrder(shipment, users));
+      } catch (posErr: any) {
+        console.error('[POS] Failed to persist delivery order:', posErr);
+      }
     }
 
     const newInvoice: MerchantInvoice = {
