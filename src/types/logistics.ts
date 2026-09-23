@@ -2,6 +2,7 @@ export type Role =
   | 'SUPER_ADMIN'
   | 'ADMIN'
   | 'OPERATOR'
+  | 'DISPATCHER'
   | 'MERCHANT'
   | 'CASHIER'
   | 'ACCOUNTANT'

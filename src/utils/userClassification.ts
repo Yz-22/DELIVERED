@@ -9,11 +9,12 @@ export type ManagedUserCategory = 'SUPER_ADMIN' | 'OPERATIONS_ADMIN' | 'STAFF_PO
  * Canonical mapping:
  * - SUPER_ADMIN -> SUPER_ADMIN (Platform Super Admin tier)
  * - ADMIN -> OPERATIONS_ADMIN (Operations Admin tier / Company Admin)
- * - OPERATOR, ACCOUNTANT, DISPATCHER, CASHIER, STAFF, DRIVER, MERCHANT, etc. -> STAFF_POS (Operational staff & POS tier)
+ * - OPERATOR, ACCOUNTANT, DISPATCHER, CASHIER, STAFF, DRIVER, MERCHANT -> STAFF_POS (Operational staff & POS tier)
+ * - Unknown / malformed role -> null (fails closed)
  */
-export function classifyManagedUser(user: Partial<User> | null | undefined): ManagedUserCategory {
+export function classifyManagedUser(user: Partial<User> | null | undefined): ManagedUserCategory | null {
   if (!user || !user.role) {
-    return 'STAFF_POS';
+    return null;
   }
 
   const role = String(user.role).trim().toUpperCase();
@@ -26,8 +27,20 @@ export function classifyManagedUser(user: Partial<User> | null | undefined): Man
     return 'OPERATIONS_ADMIN';
   }
 
-  // All operational employee roles belong to STAFF_POS
-  return 'STAFF_POS';
+  if (
+    role === 'OPERATOR' ||
+    role === 'ACCOUNTANT' ||
+    role === 'DISPATCHER' ||
+    role === 'CASHIER' ||
+    role === 'STAFF' ||
+    role === 'DRIVER' ||
+    role === 'MERCHANT'
+  ) {
+    return 'STAFF_POS';
+  }
+
+  // Unknown or malformed roles fail closed to null
+  return null;
 }
 
 export function isOperationsAdmin(user: Partial<User> | null | undefined): boolean {

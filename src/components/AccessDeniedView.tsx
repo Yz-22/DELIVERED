@@ -58,6 +58,11 @@ export const AccessDeniedView: React.FC<AccessDeniedViewProps> = ({
       color: 'text-slate-700 bg-slate-50 border-slate-200',
       badge: 'فريق عمل',
     },
+    DISPATCHER: {
+      label: 'مسؤول التوجيه والتوزيع (Dispatcher)',
+      color: 'text-cyan-700 bg-cyan-50 border-cyan-200',
+      badge: 'توجيه وتوزيع',
+    },
   };
 
   const currentRoleInfo = roleDisplayNames[currentRole] || {
