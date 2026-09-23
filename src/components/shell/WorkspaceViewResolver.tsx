@@ -243,6 +243,9 @@ export const WorkspaceViewResolver: React.FC<WorkspaceViewResolverProps> = ({
                 setActiveSection('operations');
               }}
               onNavigateToSection={(sec) => setActiveSection(sec as AppSection)}
+              onViewOrderDetails={(order) => setActiveOrderDetails(order)}
+              onRefresh={fetchOrders}
+              isLoading={isLoading}
             />
           </main>
         ) : (
