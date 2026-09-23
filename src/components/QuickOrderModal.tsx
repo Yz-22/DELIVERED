@@ -8,6 +8,7 @@ interface QuickOrderModalProps {
   onClose: () => void;
   onSubmit: (data: any) => void;
   merchants: User[];
+  currentUser?: User | null;
   onAddNewMerchant?: (merchantData: Partial<User>) => Promise<User | null>;
 }
 
@@ -16,6 +17,7 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
   onClose,
   onSubmit,
   merchants,
+  currentUser,
   onAddNewMerchant,
 }) => {
   const [localMerchants, setLocalMerchants] = useState<User[]>(merchants);
@@ -29,9 +31,23 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
     city: 'عمان',
   });
 
+  const isMerchantUser = currentUser?.role === 'MERCHANT';
+  const isCashierUser = currentUser?.role === 'CASHIER';
+
+  const defaultMerchantId = isMerchantUser
+    ? currentUser?.id || ''
+    : isCashierUser
+    ? currentUser?.parentUserId || ''
+    : '';
+
   useEffect(() => {
     setLocalMerchants(merchants);
-  }, [merchants]);
+    if (isMerchantUser && currentUser?.id) {
+      setMerchantId(currentUser.id);
+    } else if (isCashierUser && currentUser?.parentUserId) {
+      setMerchantId(currentUser.parentUserId);
+    }
+  }, [merchants, currentUser?.id, currentUser?.parentUserId, isMerchantUser, isCashierUser]);
 
   const [recipientName, setRecipientName] = useState('');
   const [recipientPhone, setRecipientPhone] = useState('');
@@ -39,7 +55,7 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
   const [area, setArea] = useState('');
   const [totalCollection, setTotalCollection] = useState('25');
   const [deliveryFee, setDeliveryFee] = useState('3.0');
-  const [merchantId, setMerchantId] = useState(merchants[0]?.id || '');
+  const [merchantId, setMerchantId] = useState(defaultMerchantId);
   const [notes, setNotes] = useState('');
 
   const handleQuickAddMerchant = async (e: React.FormEvent) => {
@@ -122,6 +138,18 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
       alert('يرجى ملء اسم المستلم، رقم الهاتف، والمنطقة');
       return;
     }
+
+    const finalMerchantId = isMerchantUser
+      ? (currentUser?.id || merchantId)
+      : isCashierUser
+      ? (currentUser?.parentUserId || merchantId)
+      : merchantId;
+
+    if (!finalMerchantId && !isMerchantUser && !isCashierUser) {
+      alert('يرجى اختيار المتجر التابع له الشحنة أولاً');
+      return;
+    }
+
     onSubmit({
       recipientName,
       recipientPhone,
@@ -129,7 +157,7 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
       area,
       totalCollection: parseFloat(totalCollection) || 25,
       deliveryFee: parseFloat(deliveryFee) || 3,
-      merchantId: merchantId || merchants[0]?.id,
+      merchantId: finalMerchantId,
       notes,
     });
     // Reset form
@@ -265,43 +293,63 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <label className="block text-xs font-bold text-slate-700">المتجر التابع له *</label>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsAddingMerchant(!isAddingMerchant);
-                  setMerchantError('');
-                }}
-                className="text-[11px] font-bold text-amber-700 hover:text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-2 py-0.5 rounded-md transition-all flex items-center gap-1 cursor-pointer"
-                title="إضافة تاجر جديد"
-              >
-                <Plus className="w-3 h-3 stroke-[2.5]" />
-                <span>إضافة تاجر غير موجود</span>
-              </button>
+              {!isMerchantUser && !isCashierUser && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsAddingMerchant(!isAddingMerchant);
+                    setMerchantError('');
+                  }}
+                  className="text-[11px] font-bold text-amber-700 hover:text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-2 py-0.5 rounded-md transition-all flex items-center gap-1 cursor-pointer"
+                  title="إضافة تاجر جديد"
+                >
+                  <Plus className="w-3 h-3 stroke-[2.5]" />
+                  <span>إضافة تاجر غير موجود</span>
+                </button>
+              )}
             </div>
-            <div className="flex items-center gap-1.5">
-              <select
-                value={merchantId}
-                onChange={(e) => setMerchantId(e.target.value)}
-                className="flex-1 text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg p-2 text-slate-900"
-              >
-                {localMerchants.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.commercialName || m.name}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsAddingMerchant(!isAddingMerchant);
-                  setMerchantError('');
-                }}
-                className="p-2 bg-amber-500 hover:bg-amber-600 active:scale-95 text-slate-950 font-bold rounded-lg transition-all shadow-xs flex items-center justify-center cursor-pointer border border-amber-600/30 shrink-0"
-                title="إضافة تاجر جديد (+)"
-              >
-                <Plus className="w-4 h-4 stroke-[2.5]" />
-              </button>
-            </div>
+
+            {isMerchantUser ? (
+              <div className="p-2 bg-slate-100 border border-slate-300 rounded-lg text-xs sm:text-sm font-semibold text-slate-800 flex items-center justify-between">
+                <span>{currentUser?.commercialName || currentUser?.name} (متجرك المعتمد)</span>
+                <span className="text-[10px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 font-bold">
+                  حساب التاجر
+                </span>
+              </div>
+            ) : isCashierUser ? (
+              <div className="p-2 bg-slate-100 border border-slate-300 rounded-lg text-xs sm:text-sm font-semibold text-slate-800 flex items-center justify-between">
+                <span>{currentUser?.commercialName || currentUser?.name || 'المتجر الرئيسي'} (فرع: {currentUser?.branch || 'الفرع المعين'})</span>
+                <span className="text-[10px] text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200 font-bold">
+                  كاشير المتجر
+                </span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5">
+                <select
+                  value={merchantId}
+                  onChange={(e) => setMerchantId(e.target.value)}
+                  className="flex-1 text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg p-2 text-slate-900"
+                >
+                  <option value="">-- اختر المتجر / التاجر صاحب الشحنة --</option>
+                  {localMerchants.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.commercialName || m.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsAddingMerchant(!isAddingMerchant);
+                    setMerchantError('');
+                  }}
+                  className="p-2 bg-amber-500 hover:bg-amber-600 active:scale-95 text-slate-950 font-bold rounded-lg transition-all shadow-xs flex items-center justify-center cursor-pointer border border-amber-600/30 shrink-0"
+                  title="إضافة تاجر جديد (+)"
+                >
+                  <Plus className="w-4 h-4 stroke-[2.5]" />
+                </button>
+              </div>
+            )}
 
             {/* Inline Quick Add Merchant */}
             {isAddingMerchant && (

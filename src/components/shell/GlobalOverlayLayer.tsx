@@ -150,6 +150,7 @@ export const GlobalOverlayLayer: React.FC<GlobalOverlayLayerProps> = ({
         onSubmit={onSubmitCreateOrder}
         merchants={merchants}
         drivers={drivers}
+        currentUser={currentUser}
         onAddNewMerchant={onAddNewUser}
       />
 
@@ -159,6 +160,7 @@ export const GlobalOverlayLayer: React.FC<GlobalOverlayLayerProps> = ({
         onClose={onCloseQuickModal}
         onSubmit={onSubmitQuickOrder}
         merchants={merchants}
+        currentUser={currentUser}
         onAddNewMerchant={onAddNewUser}
       />
 

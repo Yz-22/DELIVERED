@@ -571,7 +571,7 @@ export async function syncInvitationsFromSupabase() {
 let apiKeys: ApiKey[] = [];
 let notificationLogs: NotificationLog[] = [];
 
-let users: User[] = [
+export let users: User[] = [
   {
     id: 'u-super-1',
     name: 'المدير العام للنظام (Super Admin)',
@@ -2177,10 +2177,12 @@ function canAccessMerchantInternal(ctx: RequesterContext, merchantId: string, br
   // Merchant owner has full access to their own store and all their branches
   if (ctx.isMerchant && ctx.userId === merchantId) return true;
 
-  // Cashier only has access to their specific parent merchant AND their assigned branch
+  // Cashier only has access to their specific canonical parent merchant AND their assigned branch
   if (ctx.isCashier) {
-    const parentMerchantId = ctx.user.parentUserId || ctx.tenantId;
-    if (parentMerchantId !== merchantId) return false;
+    const parentMerchantId =
+      ctx.user.parentUserId ||
+      userBranchAccess.find((uba) => uba.userId === ctx.userId)?.merchantId;
+    if (!parentMerchantId || parentMerchantId !== merchantId) return false;
     if (branchId && ctx.branchId && ctx.branchId !== branchId) return false;
     return true;
   }
@@ -2190,22 +2192,45 @@ function canAccessMerchantInternal(ctx: RequesterContext, merchantId: string, br
 }
 
 // Hierarchical & Tenant Access Evaluation Functions
-function canAccessMerchant(ctx: RequesterContext, merchantId: string): boolean {
-  if (ctx.isSuperAdmin) return true;
-  if (!ctx.user) return false;
-  if (ctx.user.id === merchantId) return true;
-  
-  const merchantUser = users.find((u) => u && u.id === merchantId);
-  if (!merchantUser) return false;
+export function canAccessMerchant(ctx: RequesterContext, merchantId: string): boolean {
+  if (!ctx.user || !merchantId) return false;
 
-  if (ctx.isAdmin) {
-    if (merchantUser.parentUserId === ctx.user.id || merchantUser.parentUserId === ctx.tenantId) {
-      return true;
-    }
+  // 1. Authenticated Merchant: can ONLY access their own account
+  if (ctx.isMerchant) {
+    return ctx.userId === merchantId;
   }
 
-  // Descendant staff in the same tenant
-  if (merchantUser.parentUserId === ctx.tenantId) return true;
+  // 2. Cashier: can ONLY access their specific canonical parent merchant
+  if (ctx.isCashier) {
+    const canonicalParent =
+      ctx.user.parentUserId ||
+      userBranchAccess.find((uba) => uba.userId === ctx.userId)?.merchantId;
+    return Boolean(canonicalParent && canonicalParent === merchantId);
+  }
+
+  // Lookup candidate merchant
+  const merchantUser = users.find((u) => u && u.id === merchantId);
+  if (!merchantUser || merchantUser.role !== 'MERCHANT') return false;
+
+  // 3. Super Admin: platform-wide access to any valid existing merchant
+  if (ctx.isSuperAdmin) {
+    return true;
+  }
+
+  // 4. Admin / Operator / Staff: strictly scoped to merchants within their authorized tenant/hierarchy
+  if (ctx.isAdmin || ctx.isOperator || ctx.isAccountant) {
+    if (!ctx.tenantId) return false;
+
+    // Direct tenant match: merchant belongs to the same tenant organization
+    const isSameTenant = Boolean(merchantUser.tenantId && merchantUser.tenantId === ctx.tenantId);
+    // Direct hierarchy match: merchant was created by or linked directly to admin
+    const isDirectParent = Boolean(
+      merchantUser.parentUserId &&
+      (merchantUser.parentUserId === ctx.user.id || merchantUser.parentUserId === ctx.tenantId)
+    );
+
+    return isSameTenant || isDirectParent;
+  }
 
   return false;
 }
@@ -2215,20 +2240,64 @@ export function resolveAuthoritativeMerchant(
   clientMerchantId?: any
 ): { merchantId: string; errorResponse?: { status: number; body: any } } {
   // 1. Authenticated Merchant: Authoritative merchant is strictly their own user ID
-  // Client-supplied merchantId must NEVER override this.
   if (ctx.isMerchant && ctx.userId) {
+    const candidate = typeof clientMerchantId === 'string' ? clientMerchantId.trim() : '';
+    // If client supplied a merchant ID, it MUST match the authenticated merchant's own ID
+    if (candidate && candidate !== ctx.userId) {
+      return {
+        merchantId: '',
+        errorResponse: {
+          status: 403,
+          body: {
+            error: 'غير مصرح بإنشاء شحنة لمتجر خارج نطاق صلاحياتك',
+            code: 'FORBIDDEN_MERCHANT',
+            field: 'merchantId',
+          },
+        },
+      };
+    }
     return { merchantId: ctx.userId };
   }
 
-  // 2. Cashier: Authoritative merchant is strictly their parent merchant
+  // 2. Cashier: Authoritative merchant is strictly their canonical parent merchant
   if (ctx.isCashier) {
-    const parentId = ctx.user?.parentUserId || ctx.tenantId;
-    if (parentId) {
-      return { merchantId: parentId };
+    const parentId =
+      ctx.user?.parentUserId ||
+      userBranchAccess.find((uba) => uba.userId === ctx.userId)?.merchantId;
+    if (!parentId) {
+      return {
+        merchantId: '',
+        errorResponse: {
+          status: 403,
+          body: {
+            error: 'حساب الكاشير غير مرتبط بمتجر رئيسي معتمد',
+            code: 'FORBIDDEN_MERCHANT',
+            field: 'merchantId',
+          },
+        },
+      };
     }
+
+    const candidate = typeof clientMerchantId === 'string' ? clientMerchantId.trim() : '';
+    // If client supplied a merchant ID, it MUST match the canonical parent
+    if (candidate && candidate !== parentId) {
+      return {
+        merchantId: '',
+        errorResponse: {
+          status: 403,
+          body: {
+            error: 'غير مصرح بإنشاء شحنة لمتجر خارج نطاق صلاحياتك',
+            code: 'FORBIDDEN_MERCHANT',
+            field: 'merchantId',
+          },
+        },
+      };
+    }
+
+    return { merchantId: parentId };
   }
 
-  // 3. SuperAdmin, Admin, Operator or unauthenticated: inspect supplied merchantId
+  // 3. SuperAdmin, Admin, Operator acting on behalf: candidate merchantId is REQUIRED
   const candidate = typeof clientMerchantId === 'string' ? clientMerchantId.trim() : '';
   if (!candidate) {
     return {
@@ -2261,18 +2330,23 @@ export function resolveAuthoritativeMerchant(
   // Preserve tenant isolation
   if (ctx.tenantId && !ctx.isSuperAdmin) {
     const merchantUser = users.find((u) => u && u.id === candidate);
-    if (merchantUser && merchantUser.parentUserId && merchantUser.parentUserId !== ctx.tenantId) {
-      return {
-        merchantId: '',
-        errorResponse: {
-          status: 403,
-          body: {
-            error: 'غير مصرح بإنشاء شحنة لمتجر تابع لشركة أخرى',
-            code: 'FORBIDDEN_TENANT',
-            field: 'merchantId',
+    if (merchantUser) {
+      const isCrossTenant =
+        Boolean(merchantUser.tenantId && merchantUser.tenantId !== ctx.tenantId) &&
+        (!merchantUser.parentUserId || (merchantUser.parentUserId !== ctx.user?.id && merchantUser.parentUserId !== ctx.tenantId));
+      if (isCrossTenant) {
+        return {
+          merchantId: '',
+          errorResponse: {
+            status: 403,
+            body: {
+              error: 'غير مصرح بإنشاء شحنة لمتجر تابع لشركة أخرى',
+              code: 'FORBIDDEN_TENANT',
+              field: 'merchantId',
+            },
           },
-        },
-      };
+        };
+      }
     }
   }
 
@@ -2305,8 +2379,10 @@ function canAccessOrder(ctx: RequesterContext, order: Order | undefined | null):
 
   // CASHIER Role: Strictly isolated to their own merchant and assigned branch
   if (ctx.isCashier) {
-    const cashierMerchantId = ctx.user.parentUserId || ctx.tenantId;
-    if (order.merchantId !== cashierMerchantId) return false;
+    const cashierMerchantId =
+      ctx.user.parentUserId ||
+      userBranchAccess.find((uba) => uba.userId === ctx.userId)?.merchantId;
+    if (!cashierMerchantId || order.merchantId !== cashierMerchantId) return false;
     const cashierBranchId = ctx.branchId || ctx.user.branchId;
     const cashierBranchName = ctx.branchName || ctx.user.branch;
     if (cashierBranchId && order.branchId && order.branchId !== cashierBranchId) return false;
@@ -2711,7 +2787,9 @@ app.get('/api/orders', requireAuth, async (req, res) => {
         if (branchId && branchId !== ctx.branchId) {
           return res.status(403).json({ error: 'غير مصرح باستعراض شحنات فرع آخر' });
         }
-        merchantId = ctx.user?.parentUserId || ctx.tenantId;
+        merchantId =
+          ctx.user?.parentUserId ||
+          userBranchAccess.find((uba) => uba.userId === ctx.userId)?.merchantId;
         branchId = ctx.branchId;
       } else if (ctx.isAdmin && ctx.tenantId) {
         effectiveTenantId = ctx.tenantId;
@@ -2842,9 +2920,24 @@ app.post('/api/orders', requireAuth, async (req, res) => {
       });
     }
 
-    const merchantRes = resolveAuthoritativeMerchant(ctx, merchantId);
+    let merchantRes = resolveAuthoritativeMerchant(ctx, merchantId);
+    if (merchantRes.errorResponse && merchantRes.errorResponse.body?.code === 'FORBIDDEN_MERCHANT' && isValidUuid(merchantId)) {
+      try {
+        const { data: dbMerchant } = await supabase.from('users').select('*').eq('id', merchantId).limit(1);
+        if (dbMerchant && dbMerchant.length > 0) {
+          const appMerchant = mapDbUserToAppUser(dbMerchant[0]);
+          const existingIdx = users.findIndex((u) => u.id === appMerchant.id);
+          if (existingIdx >= 0) users[existingIdx] = appMerchant;
+          else users.push(appMerchant);
+          merchantRes = resolveAuthoritativeMerchant(ctx, merchantId);
+        }
+      } catch {}
+    }
     if (merchantRes.errorResponse) {
-      return res.status(merchantRes.errorResponse.status).json(merchantRes.errorResponse.body);
+      return res.status(merchantRes.errorResponse.status).json({
+        ...merchantRes.errorResponse.body,
+        message: merchantRes.errorResponse.body.message || merchantRes.errorResponse.body.error,
+      });
     }
     const authoritativeMerchantId = merchantRes.merchantId;
 
@@ -3009,9 +3102,24 @@ app.post('/api/orders/quick', requireAuth, async (req, res) => {
       });
     }
 
-    const merchantRes = resolveAuthoritativeMerchant(ctx, merchantId);
+    let merchantRes = resolveAuthoritativeMerchant(ctx, merchantId);
+    if (merchantRes.errorResponse && merchantRes.errorResponse.body?.code === 'FORBIDDEN_MERCHANT' && isValidUuid(merchantId)) {
+      try {
+        const { data: dbMerchant } = await supabase.from('users').select('*').eq('id', merchantId).limit(1);
+        if (dbMerchant && dbMerchant.length > 0) {
+          const appMerchant = mapDbUserToAppUser(dbMerchant[0]);
+          const existingIdx = users.findIndex((u) => u.id === appMerchant.id);
+          if (existingIdx >= 0) users[existingIdx] = appMerchant;
+          else users.push(appMerchant);
+          merchantRes = resolveAuthoritativeMerchant(ctx, merchantId);
+        }
+      } catch {}
+    }
     if (merchantRes.errorResponse) {
-      return res.status(merchantRes.errorResponse.status).json(merchantRes.errorResponse.body);
+      return res.status(merchantRes.errorResponse.status).json({
+        ...merchantRes.errorResponse.body,
+        message: merchantRes.errorResponse.body.message || merchantRes.errorResponse.body.error,
+      });
     }
     const authoritativeMerchantId = merchantRes.merchantId;
 
@@ -8410,8 +8518,10 @@ app.get('/api/merchants/:merchantId/branches', requireAuth, (req, res) => {
 
   // CASHIER Role: Only return their assigned branch for their merchant
   if (ctx.isCashier) {
-    const cashierMerchantId = ctx.user?.parentUserId || ctx.tenantId;
-    if (cashierMerchantId !== merchantId) {
+    const cashierMerchantId =
+      ctx.user?.parentUserId ||
+      userBranchAccess.find((uba) => uba.userId === ctx.userId)?.merchantId;
+    if (!cashierMerchantId || cashierMerchantId !== merchantId) {
       return res.status(403).json({ error: 'غير مصرح لك باستعراض فروع متجر آخر' });
     }
     const myBranchId = ctx.branchId || (ctx.user as any)?.branchId;
