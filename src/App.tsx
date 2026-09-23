@@ -708,6 +708,9 @@ export default function App() {
       if (res.ok) {
         showToast('تم إنشاء البوليصة والطلبية بنجاح');
         fetchOrders();
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        showToast(errData.message || 'حدث خطأ أثناء حفظ الطلبية في قاعدة البيانات', 'error');
       }
     } catch (e) {
       showToast('حدث خطأ أثناء إنشاء الطلبية', 'error');
@@ -725,6 +728,9 @@ export default function App() {
       if (res.ok) {
         showToast('تم تسجيل الطلبية السريعة بنجاح');
         fetchOrders();
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        showToast(errData.message || 'حدث خطأ أثناء حفظ الطلبية السريعة', 'error');
       }
     } catch (e) {
       showToast('حدث خطأ أثناء حفظ الطلبية السريعة', 'error');
@@ -743,6 +749,9 @@ export default function App() {
         const result = await res.json();
         showToast(result.message || 'تم استيراد الدفعة بنجاح');
         fetchOrders();
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        showToast(errData.message || 'حدث خطأ أثناء استيراد الدفعة', 'error');
       }
     } catch (e) {
       showToast('حدث خطأ أثناء استيراد الدفعة', 'error');

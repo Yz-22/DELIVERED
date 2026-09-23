@@ -60,6 +60,8 @@ export const CreateOrderModal: React.FC<CreateOrderModalProps> = ({
     notes: '',
   });
 
+  const [formError, setFormError] = useState<string | null>(null);
+
   const handleQuickAddMerchant = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newMerchantForm.commercialName.trim()) {
@@ -168,8 +170,6 @@ export const CreateOrderModal: React.FC<CreateOrderModalProps> = ({
       merchantCollection: netMerchant.toFixed(1),
     });
   };
-
-  const [formError, setFormError] = useState<string | null>(null);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
