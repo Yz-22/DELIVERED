@@ -150,6 +150,7 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
       return;
     }
 
+    const formSessionKey = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `quick-modal-${Date.now()}`;
     onSubmit({
       recipientName,
       recipientPhone,
@@ -159,6 +160,7 @@ export const QuickOrderModal: React.FC<QuickOrderModalProps> = ({
       deliveryFee: parseFloat(deliveryFee) || 3,
       merchantId: finalMerchantId,
       notes,
+      idempotencyKey: formSessionKey,
     });
     // Reset form
     setRecipientName('');

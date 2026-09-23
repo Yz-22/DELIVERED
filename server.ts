@@ -2982,12 +2982,22 @@ app.post('/api/orders', requireAuth, async (req, res) => {
     await ensureTenantRecordExists(targetTenantId);
 
     // Extract client idempotency key if passed in headers or body
-    const idempotencyKey = (
+    const rawIdempotencyKey = (
       req.headers['idempotency-key'] ||
       req.headers['x-idempotency-key'] ||
       req.body.idempotencyKey ||
       ''
-    ).toString().trim() || null;
+    ).toString().trim();
+
+    // Canonical non-empty key resolution:
+    // 1. Explicit client idempotency key (header/body) - preserves client retry identity
+    // 2. Deterministic reference-based key if referenceNumber provided
+    // 3. Fallback UUID guaranteeing non-empty key for atomic DB idempotency table insertion
+    const idempotencyKey = rawIdempotencyKey || (
+      referenceNumber && String(referenceNumber).trim() !== ''
+        ? `ord-${targetTenantId}-${authoritativeMerchantId}-${String(referenceNumber).trim()}`
+        : crypto.randomUUID()
+    );
 
     // Authoritative Payment Contract Validation & Normalization
     const paymentValidation = validateAndNormalizePaymentContract({
@@ -3137,12 +3147,14 @@ app.post('/api/orders/quick', requireAuth, async (req, res) => {
       (ctx.isSuperAdmin ? '00000000-0000-0000-0000-000000000001' : authoritativeMerchantId);
     await ensureTenantRecordExists(targetTenantId);
 
-    const idempotencyKey = (
+    const rawIdempotencyKey = (
       req.headers['idempotency-key'] ||
       req.headers['x-idempotency-key'] ||
       req.body.idempotencyKey ||
       ''
-    ).toString().trim() || null;
+    ).toString().trim();
+
+    const idempotencyKey = rawIdempotencyKey || crypto.randomUUID();
 
     // Authoritative Payment Contract Validation & Normalization
     const paymentValidation = validateAndNormalizePaymentContract({

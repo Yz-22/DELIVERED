@@ -266,13 +266,24 @@ export class OrderPersistenceService {
     const payloadHash = computeCanonicalPayloadHash(normalizedPayload);
     const requestType = params.requestType || 'ORDER_CREATE';
 
+    // Canonical non-empty idempotency key resolution:
+    // 1. Explicit key from caller/client
+    // 2. Deterministic key if reference number provided
+    // 3. Fallback UUID guaranteeing non-empty key so RPC persists idempotency record atomically
+    const rawKey = (params.idempotencyKey || '').trim();
+    const resolvedIdempotencyKey = rawKey !== ''
+      ? rawKey
+      : (normalizedPayload.referenceNumber && normalizedPayload.referenceNumber.trim() !== '')
+        ? `ord-${params.tenantId}-${params.merchantId}-${normalizedPayload.referenceNumber.trim()}`
+        : crypto.randomUUID();
+
     // Call canonical atomic creation RPC
     const { data, error } = await this.supabase.rpc('create_order_idempotent', {
       p_tenant_id: params.tenantId,
       p_merchant_id: params.merchantId,
       p_branch_id: params.branchId || null,
       p_request_type: requestType,
-      p_idempotency_key: params.idempotencyKey || null,
+      p_idempotency_key: resolvedIdempotencyKey,
       p_payload_hash: payloadHash,
       p_recipient_name: normalizedPayload.recipientName,
       p_recipient_phone: normalizedPayload.recipientPhone,

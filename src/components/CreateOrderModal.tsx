@@ -226,8 +226,10 @@ export const CreateOrderModal: React.FC<CreateOrderModalProps> = ({
       canonicalPhoneAlt = altVal.canonicalPhone || '';
     }
 
+    const formSessionKey = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `ord-modal-${Date.now()}`;
     onSubmit({
       ...formData,
+      idempotencyKey: formSessionKey,
       merchantId: finalMerchantId,
       recipientPhone: phoneVal.canonicalPhone,
       recipientPhoneAlt: canonicalPhoneAlt,

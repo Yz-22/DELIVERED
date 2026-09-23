@@ -700,10 +700,14 @@ export default function App() {
   // Create standard order
   const handleCreateOrder = async (orderData: any) => {
     try {
+      const clientKey = orderData.idempotencyKey || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `ord-client-${Date.now()}`);
       const res = await fetch('/api/orders', {
         method: 'POST',
-        headers: getAppAuthHeaders(currentUser),
-        body: JSON.stringify(orderData),
+        headers: {
+          ...getAppAuthHeaders(currentUser),
+          'Idempotency-Key': clientKey,
+        },
+        body: JSON.stringify({ ...orderData, idempotencyKey: clientKey }),
       });
       if (res.ok) {
         showToast('تم إنشاء البوليصة والطلبية بنجاح');
@@ -720,10 +724,14 @@ export default function App() {
   // Quick order
   const handleQuickOrder = async (orderData: any) => {
     try {
+      const clientKey = orderData.idempotencyKey || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `quick-client-${Date.now()}`);
       const res = await fetch('/api/orders/quick', {
         method: 'POST',
-        headers: getAppAuthHeaders(currentUser),
-        body: JSON.stringify(orderData),
+        headers: {
+          ...getAppAuthHeaders(currentUser),
+          'Idempotency-Key': clientKey,
+        },
+        body: JSON.stringify({ ...orderData, idempotencyKey: clientKey }),
       });
       if (res.ok) {
         showToast('تم تسجيل الطلبية السريعة بنجاح');
