@@ -39,6 +39,12 @@ export const CreateOrderModal: React.FC<CreateOrderModalProps> = ({
 
   useEffect(() => {
     setLocalMerchants(merchants);
+    if (merchants.length > 0) {
+      setFormData((prev) => ({
+        ...prev,
+        merchantId: prev.merchantId || merchants[0].id,
+      }));
+    }
   }, [merchants]);
 
   const [formData, setFormData] = useState({

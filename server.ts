@@ -53,6 +53,7 @@ import {
   OrderPersistenceError,
   computeCanonicalPayloadHash,
   mapShipmentRowToOrder,
+  validateAndNormalizePaymentContract,
   type CanonicalOrderPayload,
 } from './src/services/orderPersistenceService.ts';
 
@@ -2209,6 +2210,75 @@ function canAccessMerchant(ctx: RequesterContext, merchantId: string): boolean {
   return false;
 }
 
+export function resolveAuthoritativeMerchant(
+  ctx: RequesterContext,
+  clientMerchantId?: any
+): { merchantId: string; errorResponse?: { status: number; body: any } } {
+  // 1. Authenticated Merchant: Authoritative merchant is strictly their own user ID
+  // Client-supplied merchantId must NEVER override this.
+  if (ctx.isMerchant && ctx.userId) {
+    return { merchantId: ctx.userId };
+  }
+
+  // 2. Cashier: Authoritative merchant is strictly their parent merchant
+  if (ctx.isCashier) {
+    const parentId = ctx.user?.parentUserId || ctx.tenantId;
+    if (parentId) {
+      return { merchantId: parentId };
+    }
+  }
+
+  // 3. SuperAdmin, Admin, Operator or unauthenticated: inspect supplied merchantId
+  const candidate = typeof clientMerchantId === 'string' ? clientMerchantId.trim() : '';
+  if (!candidate) {
+    return {
+      merchantId: '',
+      errorResponse: {
+        status: 400,
+        body: {
+          error: 'يرجى تحديد التاجر / المتجر صاحب الطلبية',
+          code: 'VALIDATION_ERROR',
+          field: 'merchantId',
+        },
+      },
+    };
+  }
+
+  if (ctx.user && !canAccessMerchant(ctx, candidate)) {
+    return {
+      merchantId: '',
+      errorResponse: {
+        status: 403,
+        body: {
+          error: 'غير مصرح بإنشاء شحنة لمتجر خارج نطاق صلاحياتك',
+          code: 'FORBIDDEN_MERCHANT',
+          field: 'merchantId',
+        },
+      },
+    };
+  }
+
+  // Preserve tenant isolation
+  if (ctx.tenantId && !ctx.isSuperAdmin) {
+    const merchantUser = users.find((u) => u && u.id === candidate);
+    if (merchantUser && merchantUser.parentUserId && merchantUser.parentUserId !== ctx.tenantId) {
+      return {
+        merchantId: '',
+        errorResponse: {
+          status: 403,
+          body: {
+            error: 'غير مصرح بإنشاء شحنة لمتجر تابع لشركة أخرى',
+            code: 'FORBIDDEN_TENANT',
+            field: 'merchantId',
+          },
+        },
+      };
+    }
+  }
+
+  return { merchantId: candidate };
+}
+
 function canAccessDriver(ctx: RequesterContext, driverId: string): boolean {
   if (ctx.isSuperAdmin) return true;
   if (!ctx.user) return false;
@@ -2740,29 +2810,54 @@ app.post('/api/orders', requireAuth, async (req, res) => {
       notes,
     } = req.body;
 
-    if (!recipientName || !recipientPhone || !governorate || !area || !merchantId) {
-      return res.status(400).json({ error: 'يرجى ملء جميع الحقول الإلزامية' });
+    if (!recipientName || String(recipientName).trim() === '') {
+      return res.status(400).json({
+        error: 'يرجى إدخال اسم المستلم',
+        code: 'VALIDATION_ERROR',
+        field: 'recipientName',
+      });
     }
 
-    if (!canAccessMerchant(ctx, merchantId)) {
-      return res.status(403).json({ error: 'غير مصرح بإنشاء شحنة لمتجر خارج نطاق صلاحياتك' });
+    if (!recipientPhone || String(recipientPhone).trim() === '') {
+      return res.status(400).json({
+        error: 'يرجى إدخال رقم هاتف المستلم',
+        code: 'VALIDATION_ERROR',
+        field: 'recipientPhone',
+      });
     }
 
-    if (driverId && !canAccessDriver(ctx, driverId)) {
-      return res.status(403).json({ error: 'غير مصرح بتعيين سائق خارج نطاق شركتك' });
+    if (!governorate || String(governorate).trim() === '') {
+      return res.status(400).json({
+        error: 'يرجى تحديد المحافظة',
+        code: 'VALIDATION_ERROR',
+        field: 'governorate',
+      });
     }
+
+    if (!area || String(area).trim() === '') {
+      return res.status(400).json({
+        error: 'يرجى تحديد المنطقة',
+        code: 'VALIDATION_ERROR',
+        field: 'area',
+      });
+    }
+
+    const merchantRes = resolveAuthoritativeMerchant(ctx, merchantId);
+    if (merchantRes.errorResponse) {
+      return res.status(merchantRes.errorResponse.status).json(merchantRes.errorResponse.body);
+    }
+    const authoritativeMerchantId = merchantRes.merchantId;
 
     const finalDeliveryFee =
       deliveryFee !== undefined && deliveryFee !== null && deliveryFee !== ''
         ? parseFloat(deliveryFee)
-        : getMerchantDeliveryFee(merchantId, governorate);
+        : getMerchantDeliveryFee(authoritativeMerchantId, governorate);
     const tot = totalCollection !== undefined && totalCollection !== null && totalCollection !== ''
       ? parseFloat(totalCollection)
       : (parseFloat(merchantCollection) || 0) + finalDeliveryFee;
     const mColl = totalCollection !== undefined && totalCollection !== null && totalCollection !== ''
       ? Math.max(0, tot - finalDeliveryFee)
       : (parseFloat(merchantCollection) || 0);
-    const calcDriverFee = driverId ? getDriverCompensationFee(driverId, governorate) : undefined;
 
     let orderBranchId: string | undefined = req.body.branchId;
     let orderBranchName: string | undefined = undefined;
@@ -2771,14 +2866,14 @@ app.post('/api/orders', requireAuth, async (req, res) => {
       orderBranchId = ctx.branchId;
       orderBranchName = ctx.branchName;
     } else if (orderBranchId) {
-      const bObj = merchantBranches.find((b) => b.id === orderBranchId && b.merchantId === merchantId);
+      const bObj = merchantBranches.find((b) => b.id === orderBranchId && b.merchantId === authoritativeMerchantId);
       if (bObj) {
         orderBranchName = bObj.name;
       } else {
         orderBranchId = undefined;
       }
     } else {
-      const mainB = merchantBranches.find((b) => b.merchantId === merchantId && b.isMain);
+      const mainB = merchantBranches.find((b) => b.merchantId === authoritativeMerchantId && b.isMain);
       if (mainB) {
         orderBranchId = mainB.id;
         orderBranchName = mainB.name;
@@ -2786,7 +2881,11 @@ app.post('/api/orders', requireAuth, async (req, res) => {
     }
 
     // Resolve tenant ID safely
-    const targetTenantId = ctx.tenantId || (ctx.isSuperAdmin ? '00000000-0000-0000-0000-000000000001' : merchantId);
+    const merchantObj = users.find((u) => u && u.id === authoritativeMerchantId) || (ctx.userId === authoritativeMerchantId ? ctx.user : undefined);
+    const targetTenantId =
+      ctx.tenantId ||
+      merchantObj?.parentUserId ||
+      (ctx.isSuperAdmin ? '00000000-0000-0000-0000-000000000001' : authoritativeMerchantId);
     await ensureTenantRecordExists(targetTenantId);
 
     // Extract client idempotency key if passed in headers or body
@@ -2797,43 +2896,59 @@ app.post('/api/orders', requireAuth, async (req, res) => {
       ''
     ).toString().trim() || null;
 
+    // Authoritative Payment Contract Validation & Normalization
+    const paymentValidation = validateAndNormalizePaymentContract({
+      paymentType,
+      paymentMethod,
+      cliqReference,
+    });
+    if (!paymentValidation.success) {
+      return res.status(paymentValidation.status).json({
+        error: paymentValidation.error,
+        code: paymentValidation.code,
+        field: paymentValidation.field,
+      });
+    }
+
     const canonicalPayload: CanonicalOrderPayload = {
-      merchantId,
+      merchantId: authoritativeMerchantId,
       merchantBranchId: orderBranchId || null,
       recipientName: String(recipientName).trim(),
       recipientPhone: String(recipientPhone).trim(),
-      recipientPhoneAlt: recipientPhoneAlt ? String(recipientPhoneAlt).trim() : null,
+      recipientPhoneAlt: recipientPhoneAlt && String(recipientPhoneAlt).trim() !== '' ? String(recipientPhoneAlt).trim() : null,
       governorate: String(governorate).trim(),
       area: String(area).trim(),
-      subArea: subArea ? String(subArea).trim() : null,
-      streetAddress: fullAddress || `${governorate} - ${area}`,
+      subArea: subArea && String(subArea).trim() !== '' ? String(subArea).trim() : null,
+      streetAddress: (fullAddress && String(fullAddress).trim() !== '') ? String(fullAddress).trim() : `${governorate} - ${area}`,
       packageType: packageType || 'طرد عادي',
       packageWeightKg: 1.0,
       piecesCount: parseInt(piecesCount) || 1,
-      paymentType: paymentType as PaymentType,
-      paymentMethod: paymentMethod || (paymentType === 'CLIQ' ? 'CLIQ' : 'CASH'),
-      cliqReference: cliqReference || null,
+      paymentType: paymentValidation.paymentType,
+      paymentMethod: paymentValidation.paymentMethod,
+      cliqReference: paymentValidation.cliqReference,
       totalCollectionInput: tot,
       merchantCollectionInput: mColl,
-      referenceNumber: referenceNumber || null,
-      notes: notes || null,
+      referenceNumber: referenceNumber && String(referenceNumber).trim() !== '' ? String(referenceNumber).trim() : null,
+      notes: notes && String(notes).trim() !== '' ? String(notes).trim() : null,
     };
 
     let resultOrder: Order;
 
     try {
       // Authoritative Supabase DB Order Creation via RPC
+      // Canonical Invariant: Registration creates ZERO legs and driver_id = NULL.
+      // Authoritative driver assignment is managed strictly through operational dispatch / shipment_legs.
       const { shipment, isReplay } = await orderPersistenceService.createOrderIdempotent({
         tenantId: targetTenantId,
-        merchantId,
+        merchantId: authoritativeMerchantId,
         branchId: orderBranchId || null,
         idempotencyKey,
         canonicalPayload,
         deliveryFee: finalDeliveryFee,
         merchantCollection: mColl,
         totalCollection: tot,
-        driverId: driverId || null,
-        driverFee: calcDriverFee,
+        driverId: null,
+        driverFee: 0,
         actorId: ctx.userId || null,
         actorName: ctx.user?.name || null,
         actorRole: ctx.user?.role || null,
@@ -2870,22 +2985,48 @@ app.post('/api/orders/quick', requireAuth, async (req, res) => {
       notes,
     } = req.body;
 
-    if (!recipientName || !recipientPhone || !area || !merchantId) {
-      return res.status(400).json({ error: 'الاسم، الهاتف، المنطقة، والتاجر حقول مطلوبة للطلبية السريعة' });
+    if (!recipientName || String(recipientName).trim() === '') {
+      return res.status(400).json({
+        error: 'يرجى إدخال اسم المستلم',
+        code: 'VALIDATION_ERROR',
+        field: 'recipientName',
+      });
     }
 
-    if (!canAccessMerchant(ctx, merchantId)) {
-      return res.status(403).json({ error: 'غير مصرح بإنشاء شحنة لمتجر خارج نطاق صلاحياتك' });
+    if (!recipientPhone || String(recipientPhone).trim() === '') {
+      return res.status(400).json({
+        error: 'يرجى إدخال رقم هاتف المستلم',
+        code: 'VALIDATION_ERROR',
+        field: 'recipientPhone',
+      });
     }
+
+    if (!area || String(area).trim() === '') {
+      return res.status(400).json({
+        error: 'يرجى تحديد المنطقة',
+        code: 'VALIDATION_ERROR',
+        field: 'area',
+      });
+    }
+
+    const merchantRes = resolveAuthoritativeMerchant(ctx, merchantId);
+    if (merchantRes.errorResponse) {
+      return res.status(merchantRes.errorResponse.status).json(merchantRes.errorResponse.body);
+    }
+    const authoritativeMerchantId = merchantRes.merchantId;
 
     const fee =
       deliveryFee !== undefined && deliveryFee !== null && deliveryFee !== ''
         ? parseFloat(deliveryFee)
-        : getMerchantDeliveryFee(merchantId, governorate);
+        : getMerchantDeliveryFee(authoritativeMerchantId, governorate);
     const tot = parseFloat(totalCollection) || 0;
     const mColl = Math.max(0, tot - fee);
 
-    const targetTenantId = ctx.tenantId || (ctx.isSuperAdmin ? '00000000-0000-0000-0000-000000000001' : merchantId);
+    const merchantObj = users.find((u) => u && u.id === authoritativeMerchantId) || (ctx.userId === authoritativeMerchantId ? ctx.user : undefined);
+    const targetTenantId =
+      ctx.tenantId ||
+      merchantObj?.parentUserId ||
+      (ctx.isSuperAdmin ? '00000000-0000-0000-0000-000000000001' : authoritativeMerchantId);
     await ensureTenantRecordExists(targetTenantId);
 
     const idempotencyKey = (
@@ -2895,17 +3036,32 @@ app.post('/api/orders/quick', requireAuth, async (req, res) => {
       ''
     ).toString().trim() || null;
 
+    // Authoritative Payment Contract Validation & Normalization
+    const paymentValidation = validateAndNormalizePaymentContract({
+      paymentType: req.body.paymentType,
+      paymentMethod: req.body.paymentMethod,
+      cliqReference: req.body.cliqReference,
+    });
+    if (!paymentValidation.success) {
+      return res.status(paymentValidation.status).json({
+        error: paymentValidation.error,
+        code: paymentValidation.code,
+        field: paymentValidation.field,
+      });
+    }
+
     const canonicalPayload: CanonicalOrderPayload = {
-      merchantId,
+      merchantId: authoritativeMerchantId,
       recipientName: String(recipientName).trim(),
       recipientPhone: String(recipientPhone).trim(),
       governorate: String(governorate).trim(),
       area: String(area).trim(),
-      streetAddress: fullAddress || `${governorate}، ${area}`,
+      streetAddress: (fullAddress && String(fullAddress).trim() !== '') ? String(fullAddress).trim() : `${governorate}، ${area}`,
       packageType: 'طرد سريع',
       piecesCount: 1,
-      paymentType: 'COD',
-      paymentMethod: 'CASH',
+      paymentType: paymentValidation.paymentType,
+      paymentMethod: paymentValidation.paymentMethod,
+      cliqReference: paymentValidation.cliqReference,
       totalCollectionInput: tot,
       merchantCollectionInput: mColl,
       notes: notes || 'طلبية سريعة',
@@ -2916,13 +3072,15 @@ app.post('/api/orders/quick', requireAuth, async (req, res) => {
     try {
       const { shipment } = await orderPersistenceService.createOrderIdempotent({
         tenantId: targetTenantId,
-        merchantId,
+        merchantId: authoritativeMerchantId,
         idempotencyKey,
         requestType: 'ORDER_QUICK_CREATE',
         canonicalPayload,
         deliveryFee: fee,
         merchantCollection: mColl,
         totalCollection: tot,
+        driverId: null,
+        driverFee: 0,
         actorId: ctx.userId || null,
         actorName: ctx.user?.name || null,
         actorRole: ctx.user?.role || null,
@@ -2977,6 +3135,21 @@ app.post('/api/orders/batch', requireAuth, async (req, res) => {
       const refNum = item.referenceNumber || `BATCH-${Date.now()}-${i + 1}`;
       const itemKey = item.idempotencyKey || `batch-${targetTenantId}-${targetMerchantId}-${refNum}`;
 
+      // Authoritative Payment Contract Validation & Normalization for Batch Item
+      const paymentValidation = validateAndNormalizePaymentContract({
+        paymentType: item.paymentType,
+        paymentMethod: item.paymentMethod,
+        cliqReference: item.cliqReference,
+      });
+      if (!paymentValidation.success) {
+        errors.push({
+          index: i,
+          referenceNumber: refNum,
+          error: paymentValidation.error,
+        });
+        continue;
+      }
+
       const canonicalPayload: CanonicalOrderPayload = {
         merchantId: targetMerchantId,
         merchantBranchId: item.branchId || null,
@@ -2988,8 +3161,9 @@ app.post('/api/orders/batch', requireAuth, async (req, res) => {
         subArea: item.subArea || null,
         streetAddress: item.fullAddress || `${gov} - ${area}`,
         referenceNumber: refNum,
-        paymentType: 'COD',
-        paymentMethod: 'COD',
+        paymentType: paymentValidation.paymentType,
+        paymentMethod: paymentValidation.paymentMethod,
+        cliqReference: paymentValidation.cliqReference,
         packageType: item.packageType || 'دفعة طرود',
         packageWeightKg: item.packageWeightKg ? Number(item.packageWeightKg) : 1.0,
         piecesCount: item.piecesCount ? parseInt(item.piecesCount) : 1,
@@ -3724,6 +3898,12 @@ app.post('/api/webhooks/shopify', async (req, res) => {
     const refNum = referenceNumber || (req.headers['x-shopify-order-id'] ? `SHPFY-${req.headers['x-shopify-order-id']}` : `SHPFY-${Math.floor(1000 + Math.random() * 9000)}`);
     const shopifyWebhookId = (req.headers['x-shopify-webhook-id'] as string) || `webhook-shopify-${targetTenantId}-${merchantId}-${refNum}`;
 
+    const paymentValidation = validateAndNormalizePaymentContract({
+      paymentType: 'COD',
+      paymentMethod: undefined,
+      cliqReference: null,
+    });
+
     const canonicalPayload: CanonicalOrderPayload = {
       merchantId,
       recipientName: customerName,
@@ -3734,8 +3914,9 @@ app.post('/api/webhooks/shopify', async (req, res) => {
       subArea: null,
       streetAddress: address || `${governorate} - ${area}`,
       referenceNumber: refNum,
-      paymentType: 'COD',
-      paymentMethod: 'COD',
+      paymentType: paymentValidation.success ? paymentValidation.paymentType : 'COD',
+      paymentMethod: paymentValidation.success ? paymentValidation.paymentMethod : 'CASH',
+      cliqReference: paymentValidation.success ? paymentValidation.cliqReference : null,
       packageType: itemsDescription,
       packageWeightKg: 1.0,
       piecesCount: 1,
@@ -9134,6 +9315,25 @@ app.post('/api/merchants/:merchantId/invoices', requireAuth, async (req, res) =>
       const targetMerchantObj = users.find((u) => u.id === merchantId);
       const targetTenantId = targetMerchantObj?.parentUserId || ctx.tenantId || 't-default';
 
+      let posPaymentType: string = 'PREPAID';
+      let posPaymentMethod: string = 'UNSPECIFIED';
+      if (paymentMethod === 'COD') {
+        posPaymentType = 'COD';
+        posPaymentMethod = 'CASH';
+      } else if (paymentMethod === 'CLIQ') {
+        posPaymentType = 'PREPAID';
+        posPaymentMethod = 'CLIQ';
+      } else {
+        posPaymentType = 'PREPAID';
+        posPaymentMethod = 'UNSPECIFIED';
+      }
+
+      const paymentValidation = validateAndNormalizePaymentContract({
+        paymentType: posPaymentType,
+        paymentMethod: posPaymentMethod,
+        cliqReference: null,
+      });
+
       const canonicalPayload: CanonicalOrderPayload = {
         merchantId,
         recipientName: partyName || 'عميل المتجر',
@@ -9144,8 +9344,9 @@ app.post('/api/merchants/:merchantId/invoices', requireAuth, async (req, res) =>
         subArea: null,
         streetAddress: deliveryFullAddress || partyAddress || 'عمان',
         referenceNumber: invoiceNumber,
-        paymentType: (paymentMethod === 'COD' ? 'COD' : 'PREPAID') as PaymentType,
-        paymentMethod: paymentMethod === 'COD' ? 'COD' : (paymentMethod === 'CLIQ' ? 'CLIQ' : 'PREPAID'),
+        paymentType: paymentValidation.success ? paymentValidation.paymentType : 'COD',
+        paymentMethod: paymentValidation.success ? paymentValidation.paymentMethod : 'CASH',
+        cliqReference: paymentValidation.success ? paymentValidation.cliqReference : null,
         packageType: 'طرود وبضائع المتجر',
         packageWeightKg: 1.0,
         piecesCount: items.reduce((sum: number, it: any) => sum + (Number(it.quantity) || 1), 0),

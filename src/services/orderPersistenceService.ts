@@ -5,6 +5,19 @@ import {
   validateAndNormalizeJordanPhone,
   validateAndNormalizeSecondaryJordanPhone,
 } from '../utils/jordanPhone.ts';
+import {
+  validateAndNormalizePaymentContract,
+  type CanonicalPaymentType,
+  type CanonicalPaymentMethod,
+  type PaymentNormalizationResult,
+} from '../utils/paymentContract.ts';
+
+export {
+  validateAndNormalizePaymentContract,
+  type CanonicalPaymentType,
+  type CanonicalPaymentMethod,
+  type PaymentNormalizationResult,
+};
 
 export class OrderPersistenceError extends Error {
   public code: string;
@@ -55,9 +68,19 @@ export function computeCanonicalPayloadHash(payload: CanonicalOrderPayload): str
     canonicalPhoneAlt = altValidation.isValid ? altValidation.canonicalPhone : (payload.recipientPhoneAlt || '').replace(/[\s-]/g, '');
   }
 
+  const paymentNorm = validateAndNormalizePaymentContract({
+    paymentType: payload.paymentType,
+    paymentMethod: payload.paymentMethod,
+    cliqReference: payload.cliqReference,
+  });
+
+  const canonicalPaymentType = paymentNorm.success ? paymentNorm.paymentType : (payload.paymentType || 'COD');
+  const canonicalPaymentMethod = paymentNorm.success ? paymentNorm.paymentMethod : (payload.paymentMethod || 'CASH');
+  const canonicalCliqRef = paymentNorm.success ? paymentNorm.cliqReference : null;
+
   const normalized = {
     area: (payload.area || '').trim().toLowerCase(),
-    cliq_reference: (payload.cliqReference || '').trim() || null,
+    cliq_reference: canonicalCliqRef,
     governorate: (payload.governorate || '').trim().toLowerCase(),
     location_coordinates: (payload.locationCoordinates || '').trim() || null,
     merchant_branch_id: payload.merchantBranchId || null,
@@ -68,8 +91,8 @@ export function computeCanonicalPayloadHash(payload: CanonicalOrderPayload): str
     notes: (payload.notes || '').trim() || null,
     package_type: (payload.packageType || '').trim(),
     package_weight_kg: payload.packageWeightKg ? Number(payload.packageWeightKg).toFixed(2) : '1.00',
-    payment_method: (payload.paymentMethod || 'CASH').toUpperCase(),
-    payment_type: payload.paymentType,
+    payment_method: canonicalPaymentMethod,
+    payment_type: canonicalPaymentType,
     pieces_count: payload.piecesCount || 1,
     recipient_name: (payload.recipientName || '').trim().toLowerCase(),
     recipient_phone: canonicalPhone,
@@ -216,28 +239,32 @@ export class OrderPersistenceService {
       canonicalPhoneAlt = altValidation.canonicalPhone;
     }
 
+    // Authoritative Payment Contract Validation & Normalization
+    const paymentValidation = validateAndNormalizePaymentContract({
+      paymentType: params.canonicalPayload.paymentType,
+      paymentMethod: params.canonicalPayload.paymentMethod,
+      cliqReference: params.canonicalPayload.cliqReference,
+    });
+
+    if (!paymentValidation.success) {
+      throw new OrderPersistenceError(
+        paymentValidation.code,
+        paymentValidation.error,
+        paymentValidation.status
+      );
+    }
+
     const normalizedPayload: CanonicalOrderPayload = {
       ...params.canonicalPayload,
       recipientPhone: phoneValidation.canonicalPhone,
       recipientPhoneAlt: canonicalPhoneAlt,
+      paymentType: paymentValidation.paymentType,
+      paymentMethod: paymentValidation.paymentMethod,
+      cliqReference: paymentValidation.cliqReference,
     };
 
     const payloadHash = computeCanonicalPayloadHash(normalizedPayload);
     const requestType = params.requestType || 'ORDER_CREATE';
-
-    // Map payment type & payment method
-    let paymentType = 'COD';
-    let paymentMethod = 'CASH';
-    if (normalizedPayload.paymentType === 'CLIQ') {
-      paymentType = 'PREPAID';
-      paymentMethod = 'CLIQ';
-    } else if (normalizedPayload.paymentType === 'PREPAID') {
-      paymentType = 'PREPAID';
-      paymentMethod = normalizedPayload.paymentMethod || 'BANK_TRANSFER';
-    } else {
-      paymentType = 'COD';
-      paymentMethod = 'CASH';
-    }
 
     // Call canonical atomic creation RPC
     const { data, error } = await this.supabase.rpc('create_order_idempotent', {
@@ -256,9 +283,9 @@ export class OrderPersistenceService {
       p_address: normalizedPayload.streetAddress,
       p_package_details: normalizedPayload.packageType,
       p_notes: normalizedPayload.notes || null,
-      p_payment_type: paymentType,
-      p_payment_method: paymentMethod,
-      p_cliq_reference: normalizedPayload.cliqReference || null,
+      p_payment_type: paymentValidation.paymentType,
+      p_payment_method: paymentValidation.paymentMethod,
+      p_cliq_reference: paymentValidation.cliqReference,
       p_weight: normalizedPayload.packageWeightKg || 1.00,
       p_pieces: normalizedPayload.piecesCount || 1,
       p_reference_number: normalizedPayload.referenceNumber || null,

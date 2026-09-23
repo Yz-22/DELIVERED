@@ -201,7 +201,7 @@ export type OrderStatus =
   | 'DELIVERED' // تم التسليم
   | 'RETURNED'; // مرتجع
 
-export type PaymentType = 'COD' | 'CLIQ' | 'PREPAID';
+export type PaymentType = 'COD' | 'CLIQ' | 'PREPAID' | 'POSTPAID';
 
 export type SubscriptionPlanType = 'ENTERPRISE' | 'PROFESSIONAL' | 'GROWTH' | 'TRIAL' | 'CUSTOM';
 export type SubscriptionStatus = 'ACTIVE' | 'SUSPENDED' | 'EXPIRED' | 'TRIAL';
