@@ -10905,21 +10905,6 @@ const handleInitiateReturn = async (req: express.Request, res: express.Response)
       ctx
     );
 
-    // Keep in-memory mock dev database logs in sync
-    const inMemOrder = orders.find((o) => o.id === shipmentId);
-    if (inMemOrder) {
-      if (!inMemOrder.statusLogs) inMemOrder.statusLogs = [];
-      inMemOrder.statusLogs.push({
-        id: `log-${Date.now()}`,
-        orderId: inMemOrder.id,
-        fromStatus: inMemOrder.status,
-        toStatus: inMemOrder.status,
-        note: `بدء مسار الإرجاع التشغيلي (RETURN leg created): ${returnReason}`,
-        createdAt: new Date().toISOString(),
-      });
-      saveDatabase();
-    }
-
     res.json({ success: true, ...result, requestId: reqId });
   } catch (err) {
     handleOperationalError(res, err, reqId);
@@ -10971,20 +10956,6 @@ const handleCustomerReturnPickup = async (req: express.Request, res: express.Res
       ctx
     );
 
-    const inMemOrder = orders.find((o) => o.id === shipmentId);
-    if (inMemOrder) {
-      if (!inMemOrder.statusLogs) inMemOrder.statusLogs = [];
-      inMemOrder.statusLogs.push({
-        id: `log-${Date.now()}`,
-        orderId: inMemOrder.id,
-        fromStatus: inMemOrder.status,
-        toStatus: inMemOrder.status,
-        note: `استلام الطرد المرتجع من العميل إلى عهدة السائق`,
-        createdAt: new Date().toISOString(),
-      });
-      saveDatabase();
-    }
-
     res.json({ success: true, ...result, requestId: reqId });
   } catch (err) {
     handleOperationalError(res, err, reqId);
@@ -11030,24 +11001,6 @@ const handleMerchantReturnReceipt = async (req: express.Request, res: express.Re
       },
       ctx
     );
-
-    // Terminal return transaction: in-memory state transitions to RETURNED
-    const inMemOrder = orders.find((o) => o.id === shipmentId);
-    if (inMemOrder) {
-      const prevStatus = inMemOrder.status;
-      inMemOrder.status = 'RETURNED';
-      inMemOrder.updatedAt = new Date().toISOString();
-      if (!inMemOrder.statusLogs) inMemOrder.statusLogs = [];
-      inMemOrder.statusLogs.push({
-        id: `log-${Date.now()}`,
-        orderId: inMemOrder.id,
-        fromStatus: prevStatus,
-        toStatus: 'RETURNED',
-        note: `تأكيد استلام التاجر للطرد المرتجع في الفرع وإغلاق دورة حياة الشحنة`,
-        createdAt: new Date().toISOString(),
-      });
-      saveDatabase();
-    }
 
     res.json({ success: true, ...result, requestId: reqId });
   } catch (err) {

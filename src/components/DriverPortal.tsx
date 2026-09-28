@@ -35,6 +35,7 @@ import {
 import { Order, User } from '../types/logistics';
 import { getAuthHeaders } from '../lib/auth';
 import { useI18n } from '../lib/i18n';
+import { CameraBarcodeScanner } from './CameraBarcodeScanner';
 
 interface DriverStop {
   legId: string;
@@ -159,6 +160,12 @@ export const DriverPortal: React.FC<DriverPortalProps> = ({
   const [signatureData, setSignatureData] = useState<string | null>(null);
   const [isDelivering, setIsDelivering] = useState(false);
   const [deliveryError, setDeliveryError] = useState<string | null>(null);
+
+  // Barcode Camera Scanner States & Verification
+  const [isPickupScannerOpen, setIsPickupScannerOpen] = useState(false);
+  const [isDeliveryScannerOpen, setIsDeliveryScannerOpen] = useState(false);
+  const [targetScanStop, setTargetScanStop] = useState<DriverStop | null>(null);
+  const [deliveryBarcodeVerified, setDeliveryBarcodeVerified] = useState(false);
 
   // Failure Modal State
   const [failureModalStop, setFailureModalStop] = useState<DriverStop | null>(null);
@@ -321,14 +328,78 @@ export const DriverPortal: React.FC<DriverPortalProps> = ({
   }, [selectedDriverId]);
 
   // --------------------------------------------------------------------------
-  // CANONICAL DELIVERY ACTION (EXECUTE_COMPLETE_CUSTOMER_DELIVERY)
+  // CANONICAL DELIVERY & SCAN ACTIONS
   // --------------------------------------------------------------------------
+  const handlePickupScan = async (scannedCode: string) => {
+    const code = scannedCode.trim();
+    if (!code) return;
+
+    const matchStop = targetScanStop || activeStops.find(
+      (s) => s.sequence === code || s.shipmentId === code || s.trackingNumber === code
+    );
+
+    if (!matchStop) {
+      showToast(`خطأ: الباركود الممسوح (${code}) لا يطابق أي شحنة مسندة إليك!`, 'error');
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/operational/release', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(currentUser),
+        },
+        body: JSON.stringify({
+          shipmentId: matchStop.shipmentId,
+          legId: matchStop.legId,
+          targetDriverId: selectedDriverId,
+          evidenceBarcode: code,
+          notes: 'تأكيد استلام السائق للشحنة عبر مسح الباركود بكاميرا الهاتف',
+        }),
+      });
+
+      if (res.ok) {
+        showToast(`تم مسح الباركود واستلام الشحنة (${matchStop.sequence}) في حوزتك بنجاح!`, 'success');
+        setIsPickupScannerOpen(false);
+        setTargetScanStop(null);
+        fetchWorkload();
+        onOrderUpdated?.();
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        showToast(errData.message || 'فشل استلام الشحنة', 'error');
+      }
+    } catch (err) {
+      showToast('خطأ في الاتصال بالسيرفر أثناء مسح الاستلام', 'error');
+    }
+  };
+
+  const handleDeliveryBarcodeScan = (scannedCode: string) => {
+    const code = scannedCode.trim();
+    if (!deliveryModalStop) return;
+
+    const isMatch =
+      code === deliveryModalStop.sequence ||
+      code === deliveryModalStop.shipmentId ||
+      code === deliveryModalStop.trackingNumber;
+
+    if (isMatch) {
+      setDeliveryBarcodeVerified(true);
+      setDeliveryError(null);
+      showToast(`تم التحقق بنجاح من مطابقة باركود الشحنة (${code})!`, 'success');
+    } else {
+      setDeliveryBarcodeVerified(false);
+      setDeliveryError(`خطأ: الباركود الممسوح (${code}) لا يطابق الشحنة المراد تسليمها (${deliveryModalStop.sequence})!`);
+    }
+  };
+
   const openDeliveryModal = (stop: DriverStop) => {
     if (!stop.custody.isInDriverCustody) {
-      showToast('تنبيه: الطرد غير موجود في حوزتك الفعلية بالمركبة، يجب استلامه أولاً من المستودع', 'error');
+      showToast('تنبيه: الطرد غير موجود في حوزتك الفعلية بالمركبة، يجب استلامه أولاً ومسح الباركود', 'error');
       return;
     }
     setDeliveryModalStop(stop);
+    setDeliveryBarcodeVerified(false);
     const initialMethod = stop.paymentType === 'PREPAID' ? 'PREPAID' : stop.paymentType === 'CLIQ' ? 'CLIQ' : 'CASH';
     setPaymentMethod(initialMethod);
     setAmountPaid(initialMethod === 'PREPAID' ? 0 : stop.codAmount);
@@ -342,6 +413,12 @@ export const DriverPortal: React.FC<DriverPortalProps> = ({
   const handleConfirmDelivery = async () => {
     if (!deliveryModalStop) return;
     setDeliveryError(null);
+
+    // Mandate Camera Barcode Verification
+    if (!deliveryBarcodeVerified) {
+      setDeliveryError('إلزامي: يجب مسح باركود الشحنة بالكاميرا للتحقق من مطابقة الطرد قبل التسليم');
+      return;
+    }
 
     // Validation
     if (paymentMethod === 'CLIQ' && !cliqRef.trim()) {
@@ -841,17 +918,26 @@ export const DriverPortal: React.FC<DriverPortalProps> = ({
                       <span>{t.driver.recordFailure}</span>
                     </button>
 
-                    <button
-                      onClick={() => openDeliveryModal(priorityStop)}
-                      className={`col-span-2 sm:col-span-1 min-h-[44px] py-2.5 px-3 rounded-2xl text-xs font-black flex items-center justify-center gap-1.5 shadow-xs transition-all ${
-                        priorityStop.custody.isInDriverCustody
-                          ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                          : 'bg-slate-200 text-slate-500 cursor-not-allowed'
-                      }`}
-                    >
-                      <Check className="w-4 h-4" />
-                      <span>{t.driver.confirmDelivery}</span>
-                    </button>
+                    {priorityStop.custody.isInDriverCustody ? (
+                      <button
+                        onClick={() => openDeliveryModal(priorityStop)}
+                        className="col-span-2 sm:col-span-1 min-h-[44px] py-2.5 px-3 rounded-2xl text-xs font-black flex items-center justify-center gap-1.5 shadow-xs transition-all bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer"
+                      >
+                        <Check className="w-4 h-4" />
+                        <span>{t.driver.confirmDelivery}</span>
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => {
+                          setTargetScanStop(priorityStop);
+                          setIsPickupScannerOpen(true);
+                        }}
+                        className="col-span-2 sm:col-span-1 min-h-[44px] py-2.5 px-3 rounded-2xl text-xs font-black flex items-center justify-center gap-1.5 shadow-xs transition-all bg-amber-500 hover:bg-amber-600 text-slate-950 cursor-pointer"
+                      >
+                        <QrCode className="w-4 h-4" />
+                        <span>مسح استلام الشحنة</span>
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
@@ -966,17 +1052,26 @@ export const DriverPortal: React.FC<DriverPortalProps> = ({
                           <span>{t.driver.recordFailure}</span>
                         </button>
 
-                        <button
-                          onClick={() => openDeliveryModal(stop)}
-                          className={`col-span-2 sm:col-span-1 min-h-[44px] py-2.5 px-3 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 shadow-xs transition-all ${
-                            stop.custody.isInDriverCustody
-                              ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                              : 'bg-slate-200 text-slate-500 cursor-not-allowed'
-                          }`}
-                        >
-                          <Check className="w-4 h-4" />
-                          <span>{t.driver.confirmDelivery}</span>
-                        </button>
+                        {stop.custody.isInDriverCustody ? (
+                          <button
+                            onClick={() => openDeliveryModal(stop)}
+                            className="col-span-2 sm:col-span-1 min-h-[44px] py-2.5 px-3 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 shadow-xs transition-all bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer"
+                          >
+                            <Check className="w-4 h-4" />
+                            <span>{t.driver.confirmDelivery}</span>
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => {
+                              setTargetScanStop(stop);
+                              setIsPickupScannerOpen(true);
+                            }}
+                            className="col-span-2 sm:col-span-1 min-h-[44px] py-2.5 px-3 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 shadow-xs transition-all bg-amber-500 hover:bg-amber-600 text-slate-950 cursor-pointer"
+                          >
+                            <QrCode className="w-4 h-4" />
+                            <span>مسح استلام الشحنة</span>
+                          </button>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -1233,6 +1328,48 @@ export const DriverPortal: React.FC<DriverPortalProps> = ({
                 </div>
               )}
 
+              {/* Mandatory Parcel Barcode Verification Section */}
+              <div className="space-y-2 p-3.5 bg-amber-50/80 rounded-2xl border border-amber-300">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <QrCode className="w-4 h-4 text-amber-600" />
+                    <span className="font-black text-slate-900 text-xs">التحقق من باركود الشحنة بالكاميرا:</span>
+                  </div>
+                  {deliveryBarcodeVerified ? (
+                    <span className="text-[11px] font-bold text-emerald-700 bg-emerald-100 border border-emerald-300 px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>تم التحقق</span>
+                    </span>
+                  ) : (
+                    <span className="text-[10px] font-bold text-amber-800 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded-full">
+                      مطلوب للتحقق
+                    </span>
+                  )}
+                </div>
+
+                {!deliveryBarcodeVerified ? (
+                  <button
+                    type="button"
+                    onClick={() => setIsDeliveryScannerOpen(true)}
+                    className="w-full min-h-[44px] py-2.5 px-4 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs rounded-xl flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer"
+                  >
+                    <QrCode className="w-4 h-4" />
+                    <span>مسح باركود الشحنة بالكاميرا ({deliveryModalStop.sequence})</span>
+                  </button>
+                ) : (
+                  <div className="p-2.5 bg-emerald-100/70 border border-emerald-300 rounded-xl text-emerald-950 text-xs font-bold flex items-center justify-between">
+                    <span>✓ تم مطابقة الباركود لشحنة ({deliveryModalStop.sequence}) بنجاح</span>
+                    <button
+                      type="button"
+                      onClick={() => setIsDeliveryScannerOpen(true)}
+                      className="text-[10px] text-emerald-800 underline font-bold cursor-pointer"
+                    >
+                      إعادة المسح
+                    </button>
+                  </div>
+                )}
+              </div>
+
               <div className="bg-slate-50 rounded-2xl p-3.5 border border-slate-200 flex items-center justify-between">
                 <div>
                   <div className="text-slate-500">{t.driver.recipient}:</div>
@@ -1482,6 +1619,24 @@ export const DriverPortal: React.FC<DriverPortalProps> = ({
           </div>
         </div>
       )}
+
+      {/* Camera Barcode Scanners for Driver Workflows */}
+      <CameraBarcodeScanner
+        isOpen={isPickupScannerOpen}
+        onClose={() => {
+          setIsPickupScannerOpen(false);
+          setTargetScanStop(null);
+        }}
+        onScan={handlePickupScan}
+        title="مسح باركود الطرد عند الاستلام من المستودع/التاجر"
+      />
+
+      <CameraBarcodeScanner
+        isOpen={isDeliveryScannerOpen}
+        onClose={() => setIsDeliveryScannerOpen(false)}
+        onScan={handleDeliveryBarcodeScan}
+        title="مسح باركود الشحنة للتحقق عند التوصيل"
+      />
     </div>
   );
 };

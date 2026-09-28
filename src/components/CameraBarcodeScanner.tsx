@@ -61,9 +61,15 @@ export const CameraBarcodeScanner: React.FC<CameraBarcodeScannerProps> = ({
   const readerElementId = 'html5qr-code-full-region';
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const lastScannedTimeRef = useRef<number>(0);
+
   // Handle successful scan
   const handleScanSuccess = useCallback((decodedText: string) => {
     if (!decodedText) return;
+
+    const now = Date.now();
+    if (now - lastScannedTimeRef.current < 1500) return;
+    lastScannedTimeRef.current = now;
     
     // Vibrate if supported
     if (navigator.vibrate) {

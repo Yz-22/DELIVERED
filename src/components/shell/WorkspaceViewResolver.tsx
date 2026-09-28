@@ -509,7 +509,7 @@ export const WorkspaceViewResolver: React.FC<WorkspaceViewResolverProps> = ({
 
       {/* 11. Admin Settings & Pricing */}
       {activeSection === 'settings' && (
-        currentRole === 'ADMIN' ? (
+        (currentRole === 'ADMIN' || currentRole === 'SUPER_ADMIN') ? (
           <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5">
             <AdminSettings
               merchants={merchants}
@@ -519,7 +519,7 @@ export const WorkspaceViewResolver: React.FC<WorkspaceViewResolverProps> = ({
         ) : (
           <AccessDeniedView
             sectionTitle="إعدادات النظام، التسعير والمناطق"
-            requiredRole="مدير العمليات والنظام (ADMIN)"
+            requiredRole="مدير العمليات والشركة (ADMIN / SUPER_ADMIN)"
             currentRole={currentRole}
             onNavigateHome={handleNavigateHome}
             homeSectionName={homeSectionName}
