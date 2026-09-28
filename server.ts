@@ -3724,7 +3724,7 @@ app.post('/api/settlements/drivers/:driverId/close-cash', requireAuth, async (re
 });
 
 // 18. POST /api/routes/optimize: Smart Driver Route Optimization
-app.post('/api/routes/optimize', requireAuth, (req, res) => {
+app.post('/api/routes/optimize', requireAuth, async (req, res) => {
   const ctx = getRequesterContext(req);
   const { driverId } = req.body;
   if (!driverId) {
@@ -3736,9 +3736,17 @@ app.post('/api/routes/optimize', requireAuth, (req, res) => {
   }
 
   const driver = users.find((u) => u.id === driverId);
-  const activeOrders = orders.filter(
-    (o) => o.driverId === driverId && ['OUT_FOR_DELIVERY', 'PENDING', 'PICKING', 'POSTPONED'].includes(o.status)
-  );
+  const tenantFilter = (!ctx.isSuperAdmin && ctx.tenantId) ? ctx.tenantId : undefined;
+
+  const { shipments } = await orderPersistenceService.getShipments({
+    tenantId: tenantFilter,
+    driverId,
+    limit: 1000,
+  });
+
+  const activeOrders = shipments
+    .map((s) => mapShipmentRowToOrder(s, users))
+    .filter((o) => ['OUT_FOR_DELIVERY', 'PENDING', 'PICKING', 'POSTPONED'].includes(o.status));
 
   if (activeOrders.length === 0) {
     return res.status(400).json({ error: 'لا توجد طرود نشطة لهذا الكابتن لترتيب مسارها' });
@@ -3771,15 +3779,6 @@ app.post('/api/routes/optimize', requireAuth, (req, res) => {
     const scoreA = areaProximityOrder[a.area] || 50;
     const scoreB = areaProximityOrder[b.area] || 50;
     return scoreA - scoreB;
-  });
-
-  // Assign routeOrderIndex
-  sortedOrders.forEach((so, idx) => {
-    const o = orders.find((ord) => ord.id === so.id);
-    if (o) {
-      o.routeOrderIndex = idx + 1;
-      o.updatedAt = new Date().toISOString();
-    }
   });
 
   // Calculate stats
@@ -3905,13 +3904,15 @@ app.post('/api/orders/:id/verify-pod', requireAuth, (_req, res) => {
 });
 
 // 22. POST /api/orders/:id/send-sms: Send SMS / WhatsApp Notification with OTP & Tracking URL
-app.post('/api/orders/:id/send-sms', requireAuth, (req, res) => {
+app.post('/api/orders/:id/send-sms', requireAuth, async (req, res) => {
   const ctx = getRequesterContext(req);
-  const order = orders.find((o) => o.id === req.params.id);
-  if (!order) {
+  const tenantFilter = (!ctx.isSuperAdmin && ctx.tenantId) ? ctx.tenantId : undefined;
+  const dbShipment = await orderPersistenceService.getShipmentById(req.params.id, tenantFilter);
+  if (!dbShipment) {
     return res.status(404).json({ error: 'الطلبية غير موجودة' });
   }
 
+  const order = mapShipmentRowToOrder(dbShipment, users);
   if (!canAccessOrder(ctx, order)) {
     return res.status(403).json({ error: 'غير مصرح بالوصول إلى هذه الشحنة' });
   }
@@ -9024,35 +9025,20 @@ app.get('/api/reports/driver-cash-statement', requireAuth, (req, res) => {
 });
 
 // GET /api/reports/operational-summary
-app.get('/api/reports/operational-summary', requireAuth, (req, res) => {
-  const ctx = getRequesterContext(req);
-  if (!ctx.isSuperAdmin && ctx.userRole !== 'ADMIN' && ctx.userRole !== 'ACCOUNTANT' && ctx.userRole !== 'OPERATOR') {
-    return res.status(403).json({ error: 'غير مصرح' });
+app.get('/api/reports/operational-summary', requireAuth, async (req, res) => {
+  try {
+    const ctx = getRequesterContext(req);
+    if (!ctx.isSuperAdmin && ctx.userRole !== 'ADMIN' && ctx.userRole !== 'ACCOUNTANT' && ctx.userRole !== 'OPERATOR') {
+      return res.status(403).json({ error: 'غير مصرح' });
+    }
+
+    const tenantFilter = (!ctx.isSuperAdmin && ctx.tenantId) ? ctx.tenantId : undefined;
+    const summary = await orderPersistenceService.getOperationalSummary(tenantFilter);
+
+    res.json(summary);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'خطأ في جلب الملخص العملياتي' });
   }
-
-  const deliveredOrders = orders.filter((o) => o.status === 'DELIVERED').length;
-  const outForDeliveryOrders = orders.filter((o) => o.status === 'OUT_FOR_DELIVERY').length;
-  const inHubOrders = orders.filter((o) => o.status === 'RECEIVED_AT_HUB' || o.status === 'PICKING').length;
-  const returnedOrders = orders.filter((o) => o.status === 'RETURNED' || o.status === 'CANCELLED').length;
-  const total = orders.length;
-  const successRate = total > 0 ? `${((deliveredOrders / total) * 100).toFixed(1)}%` : '0%';
-
-  const govMap: Record<string, number> = {};
-  for (const ord of orders) {
-    const g = ord.governorate || 'عمان';
-    govMap[g] = (govMap[g] || 0) + 1;
-  }
-  const byGovernorate = Object.entries(govMap).map(([name, count]) => ({ name, count }));
-
-  res.json({
-    totalOrders: total,
-    deliveredOrders,
-    outForDeliveryOrders,
-    inHubOrders,
-    returnedOrders,
-    successRate,
-    byGovernorate,
-  });
 });
 
 // =============================================================
